@@ -34,7 +34,9 @@ The final application will be a browser based Digital Audio Workstation (DAW) de
 - <b>User Management</b>: Users will be able to create accounts and log in to access and their saved music projects.
 - <b>Dashboard and Project Management</b>: Users will be able to create, view, save, load, rename, export, and manage their music projects.
 - <b>Sequence, Playback, and Export</b>: Users will be able to create musical sequences using a visual grid, add and remove notes, control playback, adjust tempo, and export their work in a supported format such as .wav.
-- <b>Instruments and Effects</b>: Users will be able to share projects with other musicians and collaborate remotely.  This will include multiple users editing the same project or accessing shared project files.
+- <b>Instruments and Effects</b>: Users will be able to choose from a selection of instruments and effects to create music.
+- <b>Collaboration</b>: Users will be able to share projects with other musicians and collaborate remotely.  This will include multiple users editing the same project or accessing shared project files.
+
 
 The application will use Java and Spring Boot for server-side functionality, PostgreSQL for data persistence, and browser-based technologies for the interactive music editor and audio playback. The application will be deployed using Render.
 

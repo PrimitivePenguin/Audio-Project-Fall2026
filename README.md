@@ -1,7 +1,7 @@
 # CMPT276 Project - Group 18
 
 # What is the name of your web application?
-TBD - (Team Browser DAW)
+JukeBox
 
 # Do we have a clear understanding of the problem?
 - How is this problem solved currently (if at all)?

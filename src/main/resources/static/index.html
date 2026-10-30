@@ -2,209 +2,32 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Sequencer Test</title>
-    <style>
-        :root {
-            font-family: Arial, sans-serif;
-            color: #172033;
-            background: #eef2f7;
-        }
-
-        body {
-            max-width: 760px;
-            margin: 40px auto;
-            padding: 0 20px;
-        }
-
-        main {
-            padding: 28px;
-            background: #ffffff;
-            border: 1px solid #d5dce8;
-            border-radius: 8px;
-        }
-
-        h1 {
-            margin-top: 0;
-        }
-
-        .controls,
-        .transport {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            align-items: center;
-            margin: 18px 0;
-        }
-
-        button,
-        input {
-            font: inherit;
-        }
-
-        button {
-            padding: 8px 14px;
-            cursor: pointer;
-        }
-
-        button:disabled {
-            cursor: not-allowed;
-            opacity: 0.5;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(16, minmax(28px, 1fr));
-            gap: 5px;
-            margin: 20px 0;
-        }
-
-        .step {
-            min-height: 42px;
-            padding: 0;
-            background: #f4f6fa;
-            border: 1px solid #b9c3d3;
-            border-radius: 4px;
-        }
-
-        .step.active {
-            background: #f2b84b;
-            border-color: #b4770d;
-        }
-
-        .step.current {
-            outline: 3px solid #2574a9;
-            outline-offset: 1px;
-        }
-
-        #status {
-            min-height: 24px;
-            color: #3d4d67;
-        }
-
-        @media (max-width: 600px) {
-            body {
-                margin: 20px auto;
-            }
-
-            main {
-                padding: 18px;
-            }
-
-            .grid {
-                grid-template-columns: repeat(8, minmax(28px, 1fr));
-            }
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JukeBox — Piano roll</title>
+    <link rel="stylesheet" href="/css/sequencer.css">
 </head>
 <body>
 <main>
-    <h1>Audio Sequencer Test</h1>
-    <p>Select an audio file, choose the steps where it should play, then press Play.</p>
-
-    <div class="controls">
-        <label for="audioFile">Audio file:</label>
-        <input id="audioFile" type="file" accept="audio/*">
-    </div>
-
-    <div class="transport">
-        <label for="bpm">BPM:</label>
-        <input id="bpm" type="number" min="40" max="240" value="120">
-        <button id="playButton" type="button" disabled>Play</button>
-        <button id="stopButton" type="button" disabled>Stop</button>
-    </div>
-
-    <p id="status" role="status">Choose an audio file to begin.</p>
-    <div id="stepGrid" class="grid" aria-label="Sequencer steps"></div>
+    <header><p class="eyebrow">JUKEBOX / ITERATION 1</p><h1>Piano roll</h1><p>Click notes to build a pattern. Scroll vertically for C2–B5.</p></header>
+    <section class="transport" aria-label="Playback controls">
+        <button id="playButton" type="button">▶ Play</button>
+        <button id="stopButton" type="button">■ Stop</button>
+        <label>BPM <input id="bpm" type="number" min="40" max="240" value="120"></label>
+        <label>Loop start <input id="loopStart" type="number" min="1" max="16" value="1"></label>
+        <label>Loop end <input id="loopEnd" type="number" min="1" max="16" value="16"></label>
+    </section>
+    <p class="hint">16 steps · 4/4 · one step per note. Loop endpoints are inclusive. Stop to change loop markers.</p>
+    <p id="status" role="status">Ready. Add notes, then press Play.</p>
+    <div id="pianoViewport" class="piano-viewport" aria-label="Scrollable piano roll"><div id="pianoGrid" class="piano-grid"></div></div>
+    <section class="sample-panel" aria-label="Sample compatibility track">
+        <h2>Sample track</h2>
+        <label>Upload audio <input id="audioFile" type="file" accept="audio/*"></label>
+        <p id="sampleStatus">Optional: upload a sample and select its trigger steps below.</p>
+        <div id="stepGrid" class="sample-grid" aria-label="Sample steps"></div>
+    </section>
 </main>
-
+<script src="/js/NoteSequence.js"></script>
 <script src="/js/SequencerEngine.js"></script>
-<script>
-    const audioFile = document.getElementById("audioFile");
-    const bpmInput = document.getElementById("bpm");
-    const playButton = document.getElementById("playButton");
-    const stopButton = document.getElementById("stopButton");
-    const status = document.getElementById("status");
-    const stepGrid = document.getElementById("stepGrid");
-
-    let engine = null;
-    let audioLoaded = false;
-
-    for (let step = 0; step < 16; step += 1) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "step";
-        button.textContent = step + 1;
-        button.dataset.step = step;
-        button.setAttribute("aria-label", `Step ${step + 1}`);
-        button.addEventListener("click", () => {
-            if (!engine) return;
-            const isActive = !button.classList.contains("active");
-            button.classList.toggle("active", isActive);
-            engine.setStep("uploaded", step, isActive);
-        });
-        stepGrid.appendChild(button);
-    }
-
-    audioFile.addEventListener("change", async event => {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        try {
-            // File selection is a user gesture, so creating the context here is allowed.
-            engine = new SequencerEngine();
-            engine.initContext();
-
-            const audioBuffer = await engine.audioContext.decodeAudioData(
-                await file.arrayBuffer()
-            );
-
-            engine.addTrack("uploaded", audioBuffer);
-            engine.setBpm(Number(bpmInput.value));
-            engine.onStepTick(highlightStep);
-            audioLoaded = true;
-            playButton.disabled = false;
-            stopButton.disabled = false;
-            status.textContent = `Loaded: ${file.name}`;
-        } catch (error) {
-            audioLoaded = false;
-            playButton.disabled = true;
-            stopButton.disabled = true;
-            status.textContent = `Could not load audio: ${error.message}`;
-            console.error(error);
-        }
-    });
-
-    bpmInput.addEventListener("change", () => {
-        if (engine) engine.setBpm(Number(bpmInput.value));
-    });
-
-    playButton.addEventListener("click", async () => {
-        if (!audioLoaded) return;
-
-        await engine.audioContext.resume();
-        engine.play();
-        status.textContent = "Playing";
-    });
-
-    stopButton.addEventListener("click", () => {
-        if (!engine) return;
-        engine.stop();
-        clearCurrentStep();
-        status.textContent = "Stopped";
-    });
-
-    function highlightStep(step) {
-        clearCurrentStep();
-        const button = stepGrid.querySelector(`[data-step="${step}"]`);
-        if (button) button.classList.add("current");
-    }
-
-    function clearCurrentStep() {
-        stepGrid.querySelectorAll(".current").forEach(button => {
-            button.classList.remove("current");
-        });
-    }
-</script>
+<script src="/js/sequencer-ui.js"></script>
 </body>
 </html>

@@ -25,6 +25,13 @@ class SequencerEngine {
         this.isPlaying = false;
         this.currentStep = 0;
         this.totalSteps = TOTAL_STEPS;
+        this.loopStart = 0;
+        this.loopEnd = TOTAL_STEPS;
+        this.sequence = new NoteSequence(this.totalSteps);
+        this.pitchedVoices = new Set();
+        this.stepEvents = [];
+        this.onError = null;
+        this.voiceFactory = null;
 
         // Scheduler (lookahead pattern s/o Chris Wilson https://web.dev/articles/audio-scheduling)
         this.lookaheadTimer = null;
@@ -50,29 +57,46 @@ class SequencerEngine {
             this.masterGain.gain.value = MASTER_GAIN;
             this.masterGain.connect(this.audioContext.destination);
         }
-        if (this.audioContext.state === 'suspended') {
-            this.audioContext.resume();
-        }
     }
 
     // --- Transport Controls ---
     play() {
-        this.initContext();
-        if (this.isPlaying) return;
-
-        this.isPlaying = true;
-        this.runId++;
-        this.currentStep = 0;
-        this.nextNoteTime = this.audioContext.currentTime + START_DELAY_SEC;
-
-        this.lookaheadTimer = setInterval(() => this.scheduler(), SCHEDULE_INTERVAL_MS);
+        if (this.isPlaying || this.startPromise) return this.startPromise || Promise.resolve();
+        const token = ++this.runId;
+        const start = async () => {
+            this.initContext();
+            if (this.audioContext.state !== 'running') await this.audioContext.resume();
+            if (token !== this.runId) return;
+            this.isPlaying = true;
+            this.currentStep = this.loopStart;
+            this.nextNoteTime = this.audioContext.currentTime + START_DELAY_SEC;
+            this.scheduler();
+            this.lookaheadTimer = setInterval(() => {
+                try { this.scheduler(); }
+                catch (error) { this.stop(); if (this.onError) this.onError(error); }
+            }, SCHEDULE_INTERVAL_MS);
+        };
+        const pending = start().catch(error => {
+            if (token === this.runId) this.stop();
+            throw error;
+        });
+        this.startPromise = pending;
+        pending.finally(() => {
+            if (this.startPromise === pending) this.startPromise = null;
+        }).catch(() => {});
+        return pending;
     }
 
     stop() {
         this.isPlaying = false;
         this.runId++; // invalidates any pending UI timeouts
         clearInterval(this.lookaheadTimer);
-        this.currentStep = 0;
+        this.currentStep = this.loopStart;
+        this.startPromise = null;
+        this.stepEvents = [];
+        this.visibleStep = null;
+        this.pitchedVoices.forEach(voice => voice.stop());
+        this.pitchedVoices.clear();
 
         // Silence anything already scheduled or still ringing
         this.tracks.forEach((track) => {
@@ -88,10 +112,31 @@ class SequencerEngine {
         this.bpm = Math.max(MIN_BPM, Math.min(MAX_BPM, newBpm));
     }
 
+    setLoopRange(start, end) {
+        if (this.isPlaying || this.startPromise) throw new Error('Stop playback before changing the loop.');
+        if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > this.totalSteps || start >= end) {
+            throw new RangeError('Loop must contain at least one valid step.');
+        }
+        this.loopStart = start;
+        this.loopEnd = end;
+        this.currentStep = start;
+    }
+
+    // UI reads the same audio clock; no second playback scheduler.
+    getPlaybackStep() {
+        let step = this.visibleStep ?? null;
+        while (this.stepEvents.length && this.stepEvents[0].time <= this.audioContext.currentTime) {
+            step = this.stepEvents.shift().step;
+        }
+        this.visibleStep = this.isPlaying ? step : null;
+        return this.visibleStep;
+    }
+
     // --- Track & Grid Management ---
     addTrack(trackId, audioBuffer) {
         this.initContext(); // guarantees audioContext and masterGain exist
 
+        this.removeTrack(trackId);
         // Per-track gain node for volume control
         const gainNode = this.audioContext.createGain();
         gainNode.gain.value = DEFAULT_TRACK_GAIN;
@@ -118,13 +163,20 @@ class SequencerEngine {
 
     setStep(trackId, stepIndex, isActive) {
         const track = this.tracks.get(trackId);
-        if (track && stepIndex >= 0 && stepIndex < this.totalSteps) {
-            track.steps[stepIndex] = isActive;
+        if (track && Number.isInteger(stepIndex) && stepIndex >= 0 && stepIndex < this.totalSteps) {
+            track.steps[stepIndex] = Boolean(isActive);
         }
     }
 
     // --- Core Lookahead Scheduler ---
     scheduler() {
+        if (!this.isPlaying) return;
+        const duration = 60 / this.bpm / STEPS_PER_BEAT;
+        const missed = Math.max(0, Math.ceil((this.audioContext.currentTime - this.nextNoteTime) / duration));
+        if (missed) {
+            this.nextNoteTime += missed * duration;
+            this.currentStep = this.loopStart + (this.currentStep - this.loopStart + missed) % (this.loopEnd - this.loopStart);
+        }
         // Schedule every step that falls inside the lookahead window
         while (this.nextNoteTime < this.audioContext.currentTime + SCHEDULE_AHEAD_SEC) {
             this.scheduleStep(this.currentStep, this.nextNoteTime);
@@ -137,10 +189,21 @@ class SequencerEngine {
         const stepDuration = 60.0 / this.bpm / STEPS_PER_BEAT;
 
         this.nextNoteTime += stepDuration;
-        this.currentStep = (this.currentStep + 1) % this.totalSteps;
+        this.currentStep = this.currentStep + 1 >= this.loopEnd ? this.loopStart : this.currentStep + 1;
     }
 
     scheduleStep(stepIndex, time) {
+        // Bound history even for legacy consumers that only use onStepTick().
+        this.stepEvents = this.stepEvents.filter(event => event.time >= this.audioContext.currentTime - 1);
+        this.stepEvents.push({ step: stepIndex, time });
+        this.sequence.notesAt(stepIndex).forEach(note => {
+            const event = { ...note, when: time + (note.startStep - stepIndex) * 60 / this.bpm / STEPS_PER_BEAT, duration: note.durationSteps * 60 / this.bpm / STEPS_PER_BEAT };
+            const voice = this.voiceFactory
+                ? this.voiceFactory(event, this.audioContext, this.masterGain)
+                : this.createPitchedVoice(event);
+            this.pitchedVoices.add(voice);
+            voice.finished.finally(() => this.pitchedVoices.delete(voice));
+        });
         // 1. Notify the UI, delayed to roughly match the audio.
         //    runId check drops callbacks left over from a previous run.
         if (this.onStepTickCallback) {
@@ -163,10 +226,31 @@ class SequencerEngine {
 
             // Track the source so stop() can silence it; clean up when it finishes
             track.activeSources.add(source);
-            source.onended = () => track.activeSources.delete(source);
+            source.onended = () => { track.activeSources.delete(source); source.disconnect(); };
 
             source.start(time);
         });
+    }
+
+    // Future instruments implement (event, sharedContext, output) => { stop(), finished: Promise }.
+    createPitchedVoice(event) {
+        const oscillator = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+        oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
+        oscillator.connect(gain);
+        gain.connect(this.masterGain);
+        const end = event.when + event.duration;
+        const ramp = Math.min(0.005, event.duration / 4);
+        gain.gain.setValueAtTime(0, event.when);
+        gain.gain.linearRampToValueAtTime(event.velocity * 0.02, event.when + ramp);
+        gain.gain.setValueAtTime(event.velocity * 0.02, end - ramp);
+        gain.gain.linearRampToValueAtTime(0, end);
+        const finished = new Promise(resolve => {
+            oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); resolve(); };
+        });
+        oscillator.start(event.when);
+        oscillator.stop(end);
+        return { finished, stop: () => { try { oscillator.stop(); } catch (_) {} } };
     }
 
     // --- UI Event Hook ---

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaboration WebSocket Test</title>
+    <style>
+        body {
+            max-width: 760px;
+            margin: 40px auto;
+            padding: 0 20px;
+            font-family: Arial, sans-serif;
+            color: #172033;
+        }
+
+        main {
+            padding: 28px;
+            border: 1px solid #d5dce8;
+            border-radius: 8px;
+        }
+
+        label {
+            display: block;
+            margin-top: 14px;
+            font-weight: bold;
+        }
+
+        input,
+        textarea,
+        button {
+            box-sizing: border-box;
+            width: 100%;
+            margin-top: 6px;
+            padding: 9px;
+            font: inherit;
+        }
+
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+
+        .track-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 10px;
+            align-items: end;
+            margin: 20px 0;
+        }
+
+        .track-form label {
+            margin-top: 0;
+        }
+
+        .track-form button {
+            width: auto;
+            cursor: pointer;
+        }
+
+        .track {
+            margin-top: 18px;
+            padding: 14px;
+            border: 1px solid #d5dce8;
+            border-radius: 6px;
+        }
+
+        .track-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .track-header h3 {
+            margin: 0;
+        }
+
+        .track-header small {
+            color: #64748b;
+        }
+
+        .track-audio-status {
+            display: block;
+            margin-top: 8px;
+            color: #3d4d67;
+        }
+
+        .track-file {
+            width: auto;
+            margin: 10px 0 0;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(16, minmax(24px, 1fr));
+            gap: 4px;
+            margin-top: 12px;
+        }
+
+        .step {
+            min-height: 36px;
+            padding: 0;
+            background: #f4f6fa;
+            border: 1px solid #b9c3d3;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .step.active {
+            background: #f2b84b;
+            border-color: #b4770d;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        .actions button {
+            width: auto;
+            cursor: pointer;
+        }
+
+        .transport {
+            display: flex;
+            gap: 10px;
+            align-items: end;
+            margin-top: 18px;
+        }
+
+        .transport label {
+            margin-top: 0;
+        }
+
+        .transport input {
+            width: 90px;
+        }
+
+        .transport button {
+            width: auto;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        #status {
+            min-height: 24px;
+            color: #3d4d67;
+        }
+
+        #messages {
+            min-height: 80px;
+            padding: 12px;
+            overflow: auto;
+            background: #f4f6fa;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+
+        @media (max-width: 600px) {
+            .track-form {
+                grid-template-columns: 1fr;
+            }
+
+            .steps {
+                grid-template-columns: repeat(8, minmax(28px, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Collaboration WebSocket Test</h1>
+    <p id="status" role="status">Disconnected</p>
+
+    <label for="projectId">Project ID</label>
+    <input id="projectId" value="demo-project">
+
+    <label for="userId">User ID</label>
+    <input id="userId" value="browser-user">
+
+    <div class="actions">
+        <button id="connectButton" type="button">Connect</button>
+        <button id="disconnectButton" type="button" disabled>Disconnect</button>
+    </div>
+
+    <div class="transport">
+        <label for="bpm">BPM
+            <input id="bpm" type="number" min="40" max="240" value="120">
+        </label>
+        <button id="playButton" type="button" disabled>Play</button>
+        <button id="stopButton" type="button" disabled>Stop</button>
+    </div>
+
+    <div class="track-form">
+        <label for="trackName">Track name
+            <input id="trackName" value="Track 1">
+        </label>
+        <label for="trackAudio">Audio file
+            <input id="trackAudio" type="file" accept="audio/*">
+        </label>
+        <button id="addTrackButton" type="button" disabled>Add track</button>
+    </div>
+
+    <h2>Tracks</h2>
+    <div id="tracks"><p>No tracks yet.</p></div>
+    <h2>Activity</h2>
+    <pre id="messages">No changes received yet.</pre>
+</main>
+
+<script src="/js/SequencerEngine.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.1.1/bundles/stomp.umd.min.js"></script>
+<script>
+    const GRID_STEPS = 16;
+    const client = new StompJs.Client({
+        brokerURL: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`,
+        reconnectDelay: 5000,
+        debug: () => {}
+    });
+
+    const projectId = document.getElementById("projectId");
+    const userId = document.getElementById("userId");
+    const trackName = document.getElementById("trackName");
+    const trackAudio = document.getElementById("trackAudio");
+    const connectButton = document.getElementById("connectButton");
+    const disconnectButton = document.getElementById("disconnectButton");
+    const bpmInput = document.getElementById("bpm");
+    const playButton = document.getElementById("playButton");
+    const stopButton = document.getElementById("stopButton");
+    const addTrackButton = document.getElementById("addTrackButton");
+    const status = document.getElementById("status");
+    const tracksElement = document.getElementById("tracks");
+    const messages = document.getElementById("messages");
+    const engine = new SequencerEngine();
+    const tracks = new Map();
+
+    client.onConnect = () => {
+        status.textContent = "Connected";
+        connectButton.disabled = true;
+        disconnectButton.disabled = false;
+        addTrackButton.disabled = false;
+        client.subscribe(`/topic/projects/${projectId.value}`, message => {
+            const change = JSON.parse(message.body);
+            applyRemoteChange(change);
+            messages.textContent = `${change.type} ${change.targetId || ""}\n${messages.textContent}`;
+        });
+
+        publishChange("REQUEST_STATE", "", {});
+    };
+
+    client.onDisconnect = () => {
+        status.textContent = "Disconnected";
+        connectButton.disabled = false;
+        disconnectButton.disabled = true;
+        addTrackButton.disabled = true;
+        playButton.disabled = true;
+        stopButton.disabled = true;
+    };
+
+    client.onStompError = frame => {
+        status.textContent = `Broker error: ${frame.headers["message"] || "unknown error"}`;
+    };
+
+    connectButton.addEventListener("click", () => client.activate());
+    disconnectButton.addEventListener("click", () => client.deactivate());
+
+    bpmInput.addEventListener("change", () => engine.setBpm(Number(bpmInput.value)));
+
+    playButton.addEventListener("click", async () => {
+        engine.setBpm(Number(bpmInput.value));
+        await engine.audioContext.resume();
+        engine.play();
+        stopButton.disabled = false;
+        status.textContent = "Playing";
+    });
+
+    stopButton.addEventListener("click", () => {
+        engine.stop();
+        status.textContent = "Stopped";
+    });
+
+    addTrackButton.addEventListener("click", async () => {
+        const file = trackAudio.files[0];
+        if (!file) {
+            status.textContent = "Choose an audio file before adding a track.";
+            return;
+        }
+
+        try {
+            engine.initContext();
+            const audioBuffer = await engine.audioContext.decodeAudioData(await file.arrayBuffer());
+            const trackId = crypto.randomUUID();
+            const track = createTrack(trackId, trackName.value.trim() || file.name);
+            track.hasAudio = true;
+            engine.addTrack(trackId, audioBuffer);
+            renderTracks();
+            playButton.disabled = false;
+            publishChange("ADD_TRACK", trackId, { name: track.name });
+            trackAudio.value = "";
+            status.textContent = `Added ${track.name}`;
+        } catch (error) {
+            status.textContent = `Could not add track: ${error.message}`;
+        }
+    });
+
+    function createTrack(trackId, name) {
+        if (tracks.has(trackId)) return tracks.get(trackId);
+
+        const track = {
+            id: trackId,
+            name,
+            hasAudio: false,
+            steps: new Array(GRID_STEPS).fill(false)
+        };
+        tracks.set(trackId, track);
+        renderTracks();
+        return track;
+    }
+
+    function renderTracks() {
+        tracksElement.replaceChildren();
+        if (tracks.size === 0) {
+            tracksElement.innerHTML = "<p>No tracks yet.</p>";
+            return;
+        }
+
+        tracks.forEach(track => {
+            const container = document.createElement("section");
+            container.className = "track";
+            container.dataset.trackId = track.id;
+
+            const header = document.createElement("div");
+            header.className = "track-header";
+            header.innerHTML = `<h3></h3><small>${track.hasAudio ? "Audio loaded" : "Track synced"}</small>`;
+            header.querySelector("h3").textContent = track.name;
+            container.appendChild(header);
+
+            const fileInput = document.createElement("input");
+            fileInput.className = "track-file";
+            fileInput.type = "file";
+            fileInput.accept = "audio/*";
+            fileInput.addEventListener("change", event => loadAudioForTrack(track, event.target.files[0]));
+            container.appendChild(fileInput);
+
+            const audioStatus = document.createElement("small");
+            audioStatus.className = "track-audio-status";
+            audioStatus.textContent = track.hasAudio
+                ? "Local audio loaded."
+                : "Choose a local audio file to hear this track.";
+            container.appendChild(audioStatus);
+
+            const steps = document.createElement("div");
+            steps.className = "steps";
+            for (let step = 0; step < GRID_STEPS; step += 1) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `step${track.steps[step] ? " active" : ""}`;
+                button.textContent = step + 1;
+                button.disabled = !track.hasAudio;
+                button.addEventListener("click", () => toggleStep(track, step));
+                steps.appendChild(button);
+            }
+            container.appendChild(steps);
+            tracksElement.appendChild(container);
+        });
+    }
+
+    async function loadAudioForTrack(track, file) {
+        if (!file) return;
+        try {
+            engine.initContext();
+            const audioBuffer = await engine.audioContext.decodeAudioData(await file.arrayBuffer());
+            engine.addTrack(track.id, audioBuffer);
+            track.hasAudio = true;
+            track.steps.forEach((isActive, step) => engine.setStep(track.id, step, isActive));
+            renderTracks();
+            playButton.disabled = false;
+            status.textContent = `Loaded audio for ${track.name}`;
+        } catch (error) {
+            status.textContent = `Could not load track audio: ${error.message}`;
+        }
+    }
+
+    function toggleStep(track, step) {
+        track.steps[step] = !track.steps[step];
+        if (track.hasAudio) engine.setStep(track.id, step, track.steps[step]);
+        renderTracks();
+        publishChange("SET_BEAT", track.id, { step, isActive: track.steps[step] });
+    }
+
+    function applyRemoteChange(change) {
+        if (change.projectId !== projectId.value) return;
+
+        if (change.type === "ADD_TRACK") {
+            createTrack(change.targetId, change.payload.name);
+        }
+
+        if (change.type === "SET_BEAT") {
+            const track = tracks.get(change.targetId);
+            if (!track) return;
+            track.steps[change.payload.step] = change.payload.isActive;
+            if (track.hasAudio) engine.setStep(track.id, change.payload.step, track.steps[change.payload.step]);
+            renderTracks();
+        }
+    }
+
+    function publishChange(type, targetId, payload) {
+        client.publish({
+            destination: `/app/projects/${projectId.value}/sync`,
+            body: JSON.stringify({
+                projectId: projectId.value,
+                userId: userId.value,
+                type,
+                targetId,
+                payload,
+                timestamp: Date.now()
+            })
+        });
+    }
+</script>
+</body>
+</html>

@@ -8,7 +8,7 @@
 </head>
 <body>
 <main>
-    <header><p class="eyebrow">JUKEBOX / ITERATION 1</p><h1>Piano roll</h1><p>Click notes to build a pattern. Scroll vertically for C2–B5.</p></header>
+    <header><p class="eyebrow">JUKEBOX / ITERATION 1</p><h1>Piano roll</h1><p>Click notes to build a pattern. Scroll to explore pitches and measures. MIDI files stay local to your browser.</p></header>
     <section class="transport" aria-label="Playback controls">
         <button id="playButton" type="button">▶ Play</button>
         <button id="stopButton" type="button">■ Stop</button>
@@ -16,18 +16,54 @@
         <label>Loop start <input id="loopStart" type="number" min="1" max="16" value="1"></label>
         <label>Loop end <input id="loopEnd" type="number" min="1" max="16" value="16"></label>
     </section>
-    <p class="hint">16 steps · 4/4 · one step per note. Loop endpoints are inclusive. Stop to change loop markers.</p>
+    <p id="tempoInfo" class="hint"></p>
+    <section class="transport" aria-label="Timeline and MIDI">
+        <label>Pattern steps <input id="patternSteps" type="number" min="1" max="65536" value="16"></label>
+        <button id="addBar" type="button">+ Measure</button><button id="removeBar" type="button">− Measure</button>
+        <label>Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi"></label>
+        <button id="exportMidi" type="button">Export MIDI</button>
+        <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
+        <button id="newSequence" type="button">New Sequence</button>
+    </section>
+    <section class="transport" aria-label="Note editing">
+        <strong>All Notes</strong>
+        <button id="findNotes" type="button">Find Notes</button>
+        <label>Length (steps) <input id="noteLength" type="text" inputmode="decimal" value="1" aria-describedby="lengthHelp"></label>
+        <button id="lengthDecrease" type="button" aria-label="Shorten by one step">−1 step</button>
+        <button id="lengthIncrease" type="button" aria-label="Lengthen by one step">+1 step</button>
+        <label>Velocity <input id="velocity" type="number" min="1" max="127" value="89"></label>
+        <button id="deleteNote" type="button" disabled>Delete note</button>
+        <button id="nextOverlap" type="button" disabled>Next overlapping note</button>
+        <label>Lowest MIDI <input id="pitchLow" type="number" min="0" max="127" value="36"></label>
+        <label>Highest MIDI <input id="pitchHigh" type="number" min="0" max="127" value="83"></label>
+    </section>
+    <p id="compositionInfo" role="status">0 notes · 1 musical track</p>
+    <p id="lengthHelp" class="hint">Length accepts fractional steps. Use ±1 step (or Arrow Up/Down) for whole-step adjustments. The minimum is one MIDI tick; selected notes show exact ticks below.</p>
+    <p id="noteInfo" class="hint"></p>
+    <p class="hint">One step = a sixteenth note. Loop endpoints are inclusive; Stop before resizing the pattern, importing MIDI, or changing loop markers. Shortening the pattern past notes is rejected. MIDI export excludes sample audio and unsupported events.</p>
     <p id="status" role="status">Ready. Add notes, then press Play.</p>
-    <div id="pianoViewport" class="piano-viewport" aria-label="Scrollable piano roll"><div id="pianoGrid" class="piano-grid"></div></div>
+    <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll"><div id="pianoSpacer"></div><canvas id="pianoCanvas" aria-label="All Notes piano roll. Click to add or select; drag either edge to resize."></canvas></div>
     <section class="sample-panel" aria-label="Sample compatibility track">
         <h2>Sample track</h2>
         <label>Upload audio <input id="audioFile" type="file" accept="audio/*"></label>
-        <p id="sampleStatus">Optional: upload a sample and select its trigger steps below.</p>
-        <div id="stepGrid" class="sample-grid" aria-label="Sample steps"></div>
+        <button id="removeSample" type="button" disabled>Remove Sample</button>
+        <p id="sampleName">No sample loaded.</p>
+        <div class="transport">
+            <label>Trigger at step <input id="sampleTriggerStep" type="number" min="1" step="1" max="16" value="1"></label>
+            <button id="addSampleTrigger" type="button" disabled>Add Trigger</button>
+        </div>
+        <p id="sampleStatus" role="status">Upload an audio sample, then add trigger steps.</p>
+        <p id="sampleTriggerSummary">No active triggers.</p>
+        <ul id="sampleTriggers" class="sample-triggers" aria-label="Active sample trigger steps"></ul>
+        <button id="samplePreviousPage" type="button" disabled>Previous triggers</button>
+        <button id="sampleNextPage" type="button" disabled>Next triggers</button>
     </section>
 </main>
+<script src="/js/vendor/tonejs-midi-2.0.28.js"></script>
 <script src="/js/NoteSequence.js"></script>
 <script src="/js/SequencerEngine.js"></script>
+<script src="/js/midi-io.js"></script>
+<script src="/js/PianoRollEditor.js"></script>
 <script src="/js/sequencer-ui.js"></script>
 </body>
 </html>

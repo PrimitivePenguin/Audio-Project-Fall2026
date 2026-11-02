@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log In - JukeBox</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f7; margin: 0; }
+        main { max-width: 360px; margin: 60px auto; padding: 24px; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        h1 { margin-top: 0; }
+        label { display: block; margin-top: 14px; font-weight: 600; }
+        input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; }
+        .error { color: #c0392b; margin: 8px 0; }
+        .success { color: #1e8449; margin: 8px 0; }
+        button { margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 4px; background: #4a5bdc; color: #fff; font-size: 1em; cursor: pointer; }
+        .role { padding: 2px 8px; border-radius: 4px; }
+        .role.user { background: #e8ebfb; color: #4a5bdc; }
+        .role.admin { background: #fdecea; color: #c0392b; }
+        p.alt { text-align: center; margin-top: 16px; }
+    </style>
+</head>
+<body>
+<main>
+    <!-- Already logged in: show who, and a logout button -->
+    <div th:if="${currentUser != null}">
+        <h1>Welcome back</h1>
+        <p>You are logged in as <strong th:text="${currentUser.username}">alice</strong>.</p>
+        <!-- Role in bold; admins get a different colour so the two are easy to tell apart -->
+        <p>Role: <strong class="role" th:classappend="${currentUser.roleType.name() == 'ADMIN'} ? 'admin' : 'user'"
+                         th:text="${currentUser.roleType}">USER</strong></p>
+        <p><a th:href="@{/}">Go to JukeBox</a></p>
+        <form th:action="@{/logout}" method="post">
+            <button type="submit">Log out</button>
+        </form>
+    </div>
+
+    <!-- Not logged in: show the login form -->
+    <div th:unless="${currentUser != null}">
+        <h1>Log in</h1>
+
+        <!-- ?registered and ?logout come from the redirects in the controller -->
+        <p class="success" th:if="${param.registered != null}">Account created. You can log in now.</p>
+        <p class="success" th:if="${param.logout != null}">You have been logged out.</p>
+        <p class="error" th:if="${error != null}" th:text="${error}">Invalid username or password</p>
+
+        <form th:action="@{/login}" method="post">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" th:value="${username}" required autofocus>
+
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required>
+
+            <button type="submit">Log in</button>
+        </form>
+
+        <p class="alt">No account? <a th:href="@{/signup}">Sign up</a></p>
+    </div>
+</main>
+</body>
+</html>

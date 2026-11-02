@@ -183,6 +183,11 @@
     <label for="userId">User ID</label>
     <input id="userId" value="browser-user">
 
+    <label for="projectName">Placeholder project name</label>
+    <input id="projectName" value="Shared demo project">
+    <button id="updateProjectButton" type="button" disabled>Update project</button>
+    <pre id="projectJson"></pre>
+
     <div class="actions">
         <button id="connectButton" type="button">Connect</button>
         <button id="disconnectButton" type="button" disabled>Disconnect</button>
@@ -225,6 +230,9 @@
 
     const projectId = document.getElementById("projectId");
     const userId = document.getElementById("userId");
+    const projectName = document.getElementById("projectName");
+    const updateProjectButton = document.getElementById("updateProjectButton");
+    const projectJson = document.getElementById("projectJson");
     const trackName = document.getElementById("trackName");
     const trackAudio = document.getElementById("trackAudio");
     const connectButton = document.getElementById("connectButton");
@@ -238,12 +246,73 @@
     const messages = document.getElementById("messages");
     const engine = new SequencerEngine();
     const tracks = new Map();
+    const project = {
+        version: 1,
+        id: projectId.value,
+        name: projectName.value,
+        tracks: []
+    };
+
+    function renderProject() {
+        projectJson.textContent = JSON.stringify(project, null, 2);
+    }
+
+    renderProject();
+    const pendingChangesKey = () =>
+        `jukebox:pending-changes:${projectId.value}:${userId.value}`;
+
+    function readPendingChanges() {
+        try {
+            return JSON.parse(localStorage.getItem(pendingChangesKey()) || "[]");
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function writePendingChanges(changes) {
+        try {
+            if (changes.length === 0) {
+                localStorage.removeItem(pendingChangesKey());
+            } else {
+                localStorage.setItem(pendingChangesKey(), JSON.stringify(changes));
+            }
+        } catch (error) {
+            status.textContent = "Offline changes could not be saved locally.";
+        }
+    }
+
+    function queueChange(change) {
+        const pendingChanges = readPendingChanges();
+        pendingChanges.push(change);
+        writePendingChanges(pendingChanges);
+    }
+
+    function flushPendingChanges() {
+        if (!client.connected) return;
+
+        const pendingChanges = readPendingChanges();
+        while (pendingChanges.length > 0 && client.connected) {
+            const change = pendingChanges[0];
+            try {
+                client.publish({
+                    destination: `/app/projects/${change.projectId}/sync`,
+                    body: JSON.stringify(change)
+                });
+                pendingChanges.shift();
+                writePendingChanges(pendingChanges);
+            } catch (error) {
+                writePendingChanges(pendingChanges);
+                return;
+            }
+        }
+    }
 
     client.onConnect = () => {
         status.textContent = "Connected";
         connectButton.disabled = true;
         disconnectButton.disabled = false;
         addTrackButton.disabled = false;
+        updateProjectButton.disabled = false;
         client.subscribe(`/topic/projects/${projectId.value}`, message => {
             const change = JSON.parse(message.body);
             applyRemoteChange(change);
@@ -251,6 +320,7 @@
         });
 
         publishChange("REQUEST_STATE", "", {});
+        flushPendingChanges();
     };
 
     client.onDisconnect = () => {
@@ -258,6 +328,7 @@
         connectButton.disabled = false;
         disconnectButton.disabled = true;
         addTrackButton.disabled = true;
+        updateProjectButton.disabled = true;
         playButton.disabled = true;
         stopButton.disabled = true;
     };
@@ -268,6 +339,13 @@
 
     connectButton.addEventListener("click", () => client.activate());
     disconnectButton.addEventListener("click", () => client.deactivate());
+
+    updateProjectButton.addEventListener("click", () => {
+        project.name = projectName.value.trim() || "Untitled project";
+        renderProject();
+        publishChange("UPDATE_PROJECT", project.id, { name: project.name });
+        status.textContent = `Updated ${project.name}`;
+    });
 
     bpmInput.addEventListener("change", () => engine.setBpm(Number(bpmInput.value)));
 
@@ -318,6 +396,8 @@
             steps: new Array(GRID_STEPS).fill(false)
         };
         tracks.set(trackId, track);
+        project.tracks.push({ id: trackId, name, steps: track.steps });
+        renderProject();
         renderTracks();
         return track;
     }
@@ -390,6 +470,7 @@
         track.steps[step] = !track.steps[step];
         if (track.hasAudio) engine.setStep(track.id, step, track.steps[step]);
         renderTracks();
+        renderProject();
         publishChange("SET_BEAT", track.id, { step, isActive: track.steps[step] });
     }
 
@@ -400,27 +481,45 @@
             createTrack(change.targetId, change.payload.name);
         }
 
+        if (change.type === "UPDATE_PROJECT") {
+            project.name = change.payload.name;
+            projectName.value = project.name;
+            renderProject();
+        }
+
         if (change.type === "SET_BEAT") {
             const track = tracks.get(change.targetId);
             if (!track) return;
             track.steps[change.payload.step] = change.payload.isActive;
             if (track.hasAudio) engine.setStep(track.id, change.payload.step, track.steps[change.payload.step]);
             renderTracks();
+            renderProject();
         }
     }
 
     function publishChange(type, targetId, payload) {
-        client.publish({
-            destination: `/app/projects/${projectId.value}/sync`,
-            body: JSON.stringify({
-                projectId: projectId.value,
-                userId: userId.value,
-                type,
-                targetId,
-                payload,
-                timestamp: Date.now()
-            })
-        });
+        const change = {
+            projectId: projectId.value,
+            userId: userId.value,
+            type,
+            targetId,
+            payload,
+            timestamp: Date.now()
+        };
+
+        if (type !== "REQUEST_STATE" && !client.connected) {
+            queueChange(change);
+            return;
+        }
+
+        try {
+            client.publish({
+                destination: `/app/projects/${change.projectId}/sync`,
+                body: JSON.stringify(change)
+            });
+        } catch (error) {
+            queueChange(change);
+        }
     }
 </script>
 </body>

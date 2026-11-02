@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign Up - JukeBox</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f7; margin: 0; }
+        main { max-width: 360px; margin: 60px auto; padding: 24px; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        h1 { margin-top: 0; }
+        label { display: block; margin-top: 14px; font-weight: 600; }
+        input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; }
+        input.invalid { border-color: #c0392b; }
+        .error { color: #c0392b; font-size: .9em; margin-top: 4px; }
+        button { margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 4px; background: #4a5bdc; color: #fff; font-size: 1em; cursor: pointer; }
+        .hint { color: #777; font-weight: normal; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Create an account</h1>
+
+    <form th:action="@{/signup}" th:object="${signupForm}" method="post">
+        <label for="username">Username</label>
+        <input id="username" type="text" th:field="*{username}" th:errorclass="invalid" required maxlength="50">
+        <div class="error" th:if="${#fields.hasErrors('username')}" th:errors="*{username}"></div>
+
+        <label for="email">Email <span class="hint">(optional)</span></label>
+        <input id="email" type="email" th:field="*{email}" th:errorclass="invalid" maxlength="100">
+        <div class="error" th:if="${#fields.hasErrors('email')}" th:errors="*{email}"></div>
+
+        <label for="password">Password</label>
+        <input id="password" type="password" th:field="*{password}" th:errorclass="invalid" required minlength="6">
+        <div class="error" th:if="${#fields.hasErrors('password')}" th:errors="*{password}"></div>
+
+        <label for="confirmPassword">Confirm password</label>
+        <input id="confirmPassword" type="password" th:field="*{confirmPassword}" th:errorclass="invalid" required>
+        <div class="error" th:if="${#fields.hasErrors('confirmPassword')}" th:errors="*{confirmPassword}"></div>
+        <div class="error" th:if="${#fields.hasErrors('passwordConfirmed')}" th:errors="*{passwordConfirmed}"></div>
+
+        <button type="submit">Sign up</button>
+    </form>
+</main>
+</body>
+</html>

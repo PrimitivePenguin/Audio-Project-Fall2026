@@ -1,0 +1,31 @@
+:root { font-family: system-ui, sans-serif; color: #213047; background: #eef2f6; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; }
+main { max-width: 1180px; margin: auto; background: white; padding: 28px; border: 1px solid #d4dce6; border-radius: 12px; }
+h1 { margin: 4px 0; } h2 { font-size: 1rem; }
+.eyebrow { color: #53677e; font-size: .75rem; letter-spacing: .14em; }
+.transport { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 24px; }
+input, button, select { font: inherit; } input[type=number] { width: 72px; padding: 7px; }
+button { cursor: pointer; border: 1px solid #a5b3c4; border-radius: 4px; padding: 9px 15px; }
+#playButton { background: #244eb2; color: white; }
+button:disabled { opacity: .5; cursor: default; }
+.hint, #sampleStatus { font-size: .85rem; color: #53677e; }
+#status { min-height: 24px; }
+.piano-viewport { height: 610px; overflow: auto; border: 1px solid #a5b3c4; }
+#pianoSpacer { pointer-events: none; }
+.piano-viewport { position: relative; }
+#pianoCanvas { position: absolute; display: block; }
+select { font: inherit; max-width: 260px; padding: 6px; }
+button:focus-visible, canvas:focus-visible { outline: 3px solid #d57b0f; }
+.sample-panel { margin-top: 24px; }
+@media (max-width: 650px) { body { padding: 8px; } main { padding: 14px; } }
+
+
+#noteLength { width: 130px; padding: 7px; }
+#compositionInfo { color: #244eb2; font-weight: 600; }
+#pianoCanvas { touch-action: none; user-select: none; }
+
+.sample-triggers { max-height: 260px; overflow: auto; padding-left: 24px; }
+.sample-triggers li { padding: 4px; }
+.sample-triggers button { margin-left: 16px; padding: 4px 10px; }
+.sample-triggers .current { background: #f4d997; }

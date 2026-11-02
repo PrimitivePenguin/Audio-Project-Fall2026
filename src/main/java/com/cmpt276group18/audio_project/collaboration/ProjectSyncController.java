@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
@@ -25,17 +26,17 @@ public class ProjectSyncController {
     }
 
     @MessageMapping("/projects/{projectId}/sync")
-    public void synchronize(ProjectChange change) {
-        String destination = "/topic/projects/" + change.projectId();
+    public void synchronize(@DestinationVariable String projectId, ProjectChange change) {
+        String destination = "/topic/projects/" + projectId;
 
         if ("REQUEST_STATE".equals(change.type())) {
-            projectState.getOrDefault(change.projectId(), List.of())
+            projectState.getOrDefault(projectId, List.of())
                 .forEach(savedChange -> messagingTemplate.convertAndSend(destination, savedChange));
             return;
         }
 
         projectState
-            .computeIfAbsent(change.projectId(), ignored -> new CopyOnWriteArrayList<>())
+            .computeIfAbsent(projectId, ignored -> new CopyOnWriteArrayList<>())
             .add(change);
 
         messagingTemplate.convertAndSend(destination, change);

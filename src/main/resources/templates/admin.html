@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Admin - JukeBox</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f7; margin: 0; }
+        main { max-width: 800px; margin: 40px auto; padding: 24px; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        h1 { margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
+        .role { padding: 2px 8px; border-radius: 4px; }
+        .role.user { background: #e8ebfb; color: #4a5bdc; }
+        .role.admin { background: #fdecea; color: #c0392b; }
+        .error { color: #c0392b; }
+        .success { color: #1e8449; }
+        .muted { color: #999; }
+        button { padding: 4px 10px; border: 0; border-radius: 4px; background: #4a5bdc; color: #fff; cursor: pointer; }
+        .top { display: flex; justify-content: space-between; align-items: center; }
+    </style>
+</head>
+<body>
+<main>
+    <div class="top">
+        <h1>Admin</h1>
+        <form th:action="@{/logout}" method="post"><button type="submit">Log out</button></form>
+    </div>
+    <p>Logged in as <strong th:text="${currentUser.username}">admin</strong>
+       (<strong class="role admin">ADMIN</strong>)</p>
+
+    <!-- Messages from the last role change -->
+    <p class="success" th:if="${message != null}" th:text="${message}">Role updated</p>
+    <p class="error" th:if="${error != null}" th:text="${error}">Error</p>
+
+    <table>
+        <thead>
+        <tr><th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Change role</th></tr>
+        </thead>
+        <tbody>
+        <tr th:each="user : ${users}">
+            <td th:text="${user.id}">1</td>
+            <td th:text="${user.username}">alice</td>
+            <td th:text="${user.email ?: '-'}">alice@sfu.ca</td>
+            <td><strong class="role" th:classappend="${user.roleType.name() == 'ADMIN'} ? 'admin' : 'user'"
+                        th:text="${user.roleType}">USER</strong></td>
+            <td>
+                <!-- No dropdown on your own row, so you can't remove your own admin role -->
+                <span class="muted" th:if="${user.id == currentUser.id}">(you)</span>
+                <form th:unless="${user.id == currentUser.id}"
+                      th:action="@{/admin/users/{id}/role(id=${user.id})}" method="post">
+                    <select name="role">
+                        <option th:each="r : ${roles}" th:value="${r}" th:text="${r}"
+                                th:selected="${r == user.roleType}">USER</option>
+                    </select>
+                    <button type="submit">Save</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+</main>
+</body>
+</html>

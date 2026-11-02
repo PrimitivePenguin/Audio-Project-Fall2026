@@ -1,7 +1,9 @@
 package com.cmpt276group18.audio_project.service;
 
 import java.util.Optional;
+import java.util.List;
 
+import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -53,5 +55,21 @@ public class UserService {
     public Optional<UserInfo> findById(Integer id) {
         if (id == null) { return Optional.empty(); }
         return userRepository.findById(id);
+    }
+
+    // ADMIN
+    
+    // Find every user, sort by ID
+    public List<UserInfo> findAllUsers() {
+        return userRepository.findAll(Sort.by("id"));
+    }
+
+    // Change a user's role, set to false if no user with that id
+    public boolean changeRole(Integer id, UserInfo.RoleType newRole) {
+        Optional<UserInfo> user = findById(id);
+        if (user.isEmpty() || newRole == null) { return false; }
+        user.get().setRoleType(newRole);
+        userRepository.save(user.get());
+        return true;
     }
 }

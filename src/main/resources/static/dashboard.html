@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JukeBox — Project Dashboard</title>
+    <link rel="stylesheet" href="/css/sequencer.css">
+</head>
+<body>
+<main style="max-width: 900px; margin: 40px auto; padding: 20px;">
+    <header style="margin-bottom: 24px;">
+        <p class="eyebrow">JUKEBOX / DASHBOARD</p>
+        <h1>Project Manager</h1>
+        <p>Create, view, rename, export, and manage your stored MIDI projects.</p>
+        <p><a href="/index.html">← Back to Piano Roll Editor</a></p>
+    </header>
+
+    <section class="transport" style="margin-bottom: 20px; padding: 16px; background: #f1f5f9; border-radius: 8px;">
+        <h2>Create New Project</h2>
+        <label>Project Name <input id="newProjectName" type="text" placeholder="My Song"></label>
+        <button id="createBtn" type="button">Create Project</button>
+    </section>
+
+    <section class="transport" style="margin-bottom: 20px; padding: 16px; background: #f1f5f9; border-radius: 8px;">
+        <h2>Import MIDI File</h2>
+        <label>Upload MIDI <input id="importFile" type="file" accept=".mid,.midi,audio/midi"></label>
+    </section>
+
+    <h2>Saved Projects Library</h2>
+    <p id="status" role="status" class="hint">Ready.</p>
+    <ul id="projectList" style="list-style: none; padding: 0;"></ul>
+</main>
+
+
+<script src="/js/vendor/tonejs-midi-2.0.28.js"></script>
+<script src="/js/NoteSequence.js"></script>
+<script src="/js/midi-io.js"></script>
+<script src="/js/dashboardmanager.js"></script>
+<script src="/js/dashboard_ui.js"></script>
+</body>
+</html>

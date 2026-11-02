@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const buttonGroup = document.createElement('div');
 
-            // --- Open / Edit button ---
+            //Open button
             const openBtn = document.createElement('button');
             openBtn.textContent = 'Open';
             openBtn.type = 'button';
@@ -41,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.location.href = '/index.html';
             };
 
-            // Download / Export MIDI button
+            //Download button
             const exportBtn = document.createElement('button');
             exportBtn.textContent = 'Download MIDI';
             exportBtn.type = 'button';
@@ -71,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            // Rename button
+            //Rename button
             const renameBtn = document.createElement('button');
             renameBtn.textContent = 'Rename';
             renameBtn.type = 'button';
@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            // Delete button
+            //Delete button
             const deleteBtn = document.createElement('button');
             deleteBtn.textContent = 'Delete';
             deleteBtn.type = 'button';

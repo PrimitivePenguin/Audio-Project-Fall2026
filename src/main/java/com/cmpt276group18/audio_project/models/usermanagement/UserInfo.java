@@ -91,7 +91,7 @@ public class UserInfo {
         if (email == null || email.isBlank()) {
             this.email = null;
         } else {
-            this.email.trim().toLowerCase();
+            this.email = email.trim().toLowerCase();
         }
     }
     public String getEmail() { return email; }

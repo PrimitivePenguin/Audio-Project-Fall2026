@@ -54,6 +54,16 @@ Login: http://localhost:8080/login
 
 Logout (also at): http://localhost:8080/login
 
+### 2.3 User vs Admin
+The text beside "Role:" will say either "ADMIN" or "USER" based on the account's role. Default is set to USER, as such to change it to ADMIN you have to go to http://localhost:8080/h2-console and log into the h2-console with the credential above.
+
+Then, paste the following into the textbox and run it:
+```
+UPDATE users SET role_type = 'ADMIN' WHERE username = 'testnamehere';
+```
+Once run and you go back to http://localhost:8080/login, it will show "ADMIN" in red instead of "USER" in blue like before. If you want to change from ADMIN to USER, replace 'ADMIN' with 'USER'
+
+
 ## To-Dos
 - Implement http://localhost:8080/logout as it currently shows errors
 - make it such that if you want to logout, you go to /settings, not to /login

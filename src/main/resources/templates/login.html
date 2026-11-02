@@ -13,6 +13,9 @@
         .error { color: #c0392b; margin: 8px 0; }
         .success { color: #1e8449; margin: 8px 0; }
         button { margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 4px; background: #4a5bdc; color: #fff; font-size: 1em; cursor: pointer; }
+        .role { padding: 2px 8px; border-radius: 4px; }
+        .role.user { background: #e8ebfb; color: #4a5bdc; }
+        .role.admin { background: #fdecea; color: #c0392b; }
         p.alt { text-align: center; margin-top: 16px; }
     </style>
 </head>
@@ -22,6 +25,9 @@
     <div th:if="${currentUser != null}">
         <h1>Welcome back</h1>
         <p>You are logged in as <strong th:text="${currentUser.username}">alice</strong>.</p>
+        <!-- Role in bold; admins get a different colour so the two are easy to tell apart -->
+        <p>Role: <strong class="role" th:classappend="${currentUser.roleType.name() == 'ADMIN'} ? 'admin' : 'user'"
+                         th:text="${currentUser.roleType}">USER</strong></p>
         <p><a th:href="@{/}">Go to JukeBox</a></p>
         <form th:action="@{/logout}" method="post">
             <button type="submit">Log out</button>

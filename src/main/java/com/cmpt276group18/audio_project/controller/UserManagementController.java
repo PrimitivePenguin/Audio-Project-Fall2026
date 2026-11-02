@@ -53,12 +53,12 @@ public class UserManagementController {
         if (result.hasErrors()) return "signup";   // show page again with errors
 
         userService.register(signupForm);
-        return "redirect:/login";
+        return "redirect:/login?registered";
     }
 
     // Login
     @GetMapping("/login")
-    public String showLogin(HttpSession session, Model modele) {
+    public String showLogin(HttpSession session, Model model) {
         // Retrieve user info
         Optional<UserInfo> current = userService.findById((Integer)session.getAttribute(SESSION_USER_ID));
         // Already logged in -> show who + logout button
@@ -81,8 +81,15 @@ public class UserManagementController {
         }
 
         HttpSession session = request.getSession();
-        request.changeSessionId(); //prevent expired session
+        request.changeSessionId(); // new session ID on login to prevent stale session from being attacked
         session.setAttribute(SESSION_USER_ID, user.get().getId());
-        return "redirect";
+        return "redirect:/login";
+    }
+
+    // Logout
+    @PostMapping("/logout")
+    public String logout(HttpSession session) {
+        session.invalidate(); // Thanos snap the session out of existence
+        return "redirect:/login?logout"; // Logout page show logged out
     }
 }

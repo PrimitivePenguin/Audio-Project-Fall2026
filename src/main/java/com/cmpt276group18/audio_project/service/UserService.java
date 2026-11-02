@@ -1,5 +1,7 @@
 package com.cmpt276group18.audio_project.service;
 
+import java.util.Optional;
+
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -34,8 +36,22 @@ public class UserService {
         return userRepository.save(user);
     }
 
-    // For the login page later: checks a typed password against the stored hash
+    // checks a typed password against the stored hash
+    // never check raw password by itself
     public boolean passwordMatches(String rawPassword, UserInfo user) {
         return passwordEncoder.matches(rawPassword, user.getPassword());
+    }
+
+    // LOGIN: Returns if username and password are both right (otherwise empty)
+    public Optional<UserInfo> login(String username, String rawPassword) {
+        // check if empty
+        if (username == null || rawPassword == null) { return Optional.empty(); }
+        return userRepository.findByUsername(username.trim()).filter(user -> passwordMatches(rawPassword, user));
+    }
+
+    // FindById (via session in id)
+    public Optional<UserInfo> findById(Integer id) {
+        if (id == null) { return Optional.empty(); }
+        return userRepository.findById(id);
     }
 }

@@ -1,16 +1,47 @@
 ## 1. Basic User Management
 
-http://localhost:8080/h2-console
-Login to h2-console to view database: 
-- JDBC URL: jdbc:h2:mem:jukebox
-- User Name: sa (stands for system administrator))
-- Password: Leave empty, currently there is none
+Admin Account: 
+Username: admin
+Password: adminadmin
 
-Click on "USERS" and run the command to see the database
 
-NOTE: This is a test, change the values so that no one can log in easily, turning it into an environmental variable
+## 2. Manual Testing
 
-### 1.1 Running Tests on UserInfo
+### 2.1 Signup
+Create an account at: 
+https://audio-project-fall2026.onrender.com/signup
+
+Username and password are required, email is not, both username and email must be unique.
+
+### 2.2 Login/out
+Login: https://audio-project-fall2026.onrender.com/login
+
+Logout: https://audio-project-fall2026.onrender.com/
+
+### 2.3 User vs Admin
+The text beside "Role:" will say either ADMIN or USERbased on the account's role. Default is set to USER. Admin has access to the admin page which lets you change roles between ADMIN or USER. Changing your own role as admin is disable to prevent everyone from being unable to access it.
+
+Test user account:
+Username: johndoe
+Password: johndoe
+
+Admin Account: 
+Username: admin
+Password: adminadmin
+
+
+## 3. Running Tests on UserInfo Locally
+
+### 3.1 Setup
+
+Terminal 1. Localhost:8080
+```
+.\mvnw.cmd spring-boot:run
+```
+
+### 3.2 Running Tests on UserInfo
+
+Run the tests in a separate terminal.
 
 1. Only UserInfo tests
 ```
@@ -28,42 +59,16 @@ Result is at end of output
 
 
 
-### 1.2 Current Limits on User Management:
-- Restarting the app deletes all data
-- No home page after login yet
-- Tests for User Info is done, however login/logout features can only be manually tested
-
-## 2. Manual Testing
-
-Signup: http://localhost:8080/signup
-
-Login: http://localhost:8080/login
-
-Note: 
-- logging in / out / signing up from homepage is currently not implemented
-- if you are logged in, you must go to http://localhost:8080/login in order to logout
-
-### 2.1 Signup
-Create an account at: 
-http://localhost:8080/signup
-
-Username and password are required, email is not, both username and email must be unique.
-
-### 2.2 Login/out
-Login: http://localhost:8080/login
-
-Logout (also at): http://localhost:8080/login
-
-### 2.3 User vs Admin
-The text beside "Role:" will say either "ADMIN" or "USER" based on the account's role. Default is set to USER, as such to change it to ADMIN you have to go to http://localhost:8080/h2-console and log into the h2-console with the credential above.
-
-Then, paste the following into the textbox and run it:
-```
-UPDATE users SET role_type = 'ADMIN' WHERE username = 'testnamehere';
-```
-Once run and you go back to http://localhost:8080/login, it will show "ADMIN" in red instead of "USER" in blue like before. If you want to change from ADMIN to USER, replace 'ADMIN' with 'USER'
+### 3.3 Current Limits on User Management:
+- Automatic tests for User Info is done, however login/logout features can only be manually tested
 
 
-## To-Dos
-- Implement http://localhost:8080/logout as it currently shows errors
+
+
+## 4. To-Dos
 - make it such that if you want to logout, you go to /settings, not to /login
+- Make it such that when you login you're redirected elsewhere such as /home or simply / as it currently stays at login
+- Update password or email
+- Delete account
+- Profile customizeability
+- Have it remember the user (optional)

@@ -29,6 +29,8 @@
         <p>Role: <strong class="role" th:classappend="${currentUser.roleType.name() == 'ADMIN'} ? 'admin' : 'user'"
                          th:text="${currentUser.roleType}">USER</strong></p>
         <p><a th:href="@{/}">Go to JukeBox</a></p>
+        <!-- Only admins see this link -->
++       <p th:if="${currentUser.roleType.name() == 'ADMIN'}"><a th:href="@{/admin}">Go to admin page</a></p>
         <form th:action="@{/logout}" method="post">
             <button type="submit">Log out</button>
         </form>

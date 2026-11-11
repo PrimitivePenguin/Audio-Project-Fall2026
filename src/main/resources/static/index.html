@@ -7,42 +7,74 @@
     <link rel="stylesheet" href="/css/sequencer.css">
 </head>
 <body>
-<main>
-    <header><p class="eyebrow">JUKEBOX / ITERATION 1</p><h1>Piano roll</h1><p>Click notes to build a pattern. Scroll to explore pitches and measures. MIDI files stay local to your browser.</p><p id="currentUser" role="status">Checking login...</p><nav aria-label="Account actions"><button type="button" onclick="window.location.href='/login'">Log in</button><button type="button" onclick="window.location.href='/signup'">Register</button><form action="/logout" method="post" style="display: inline"><button type="submit">Logout</button></form></nav></header>
-    <section class="transport" aria-label="Playback controls">
-        <button id="playButton" type="button">▶ Play</button>
-        <button id="stopButton" type="button">■ Stop</button>
-        <label>BPM <input id="bpm" type="number" min="40" max="240" value="120"></label>
-        <label>Loop start <input id="loopStart" type="number" min="1" max="16" value="1"></label>
-        <label>Loop end <input id="loopEnd" type="number" min="1" max="16" value="16"></label>
-    </section>
-    <p id="tempoInfo" class="hint"></p>
-    <section class="transport" aria-label="Timeline and MIDI">
-        <label>Pattern steps <input id="patternSteps" type="number" min="1" max="65536" value="16"></label>
-        <button id="addBar" type="button">+ Measure</button><button id="removeBar" type="button">− Measure</button>
-        <label>Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi"></label>
+<main class="daw-workspace">
+    <header class="toolbar primary-toolbar" aria-label="Transport and project controls">
+        <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
+        <div class="control-group" aria-label="Playback controls">
+            <button id="playButton" type="button" title="Space">▶ Play</button>
+            <button id="stopButton" type="button">■ Stop</button>
+            <label>BPM <input id="bpm" type="number" min="40" max="240" value="120"></label>
+        </div>
+        <div class="control-group" aria-label="Loop controls">
+            <label>Loop <input id="loopStart" type="number" min="1" max="16" value="1" aria-label="Loop start"></label>
+            <label>to <input id="loopEnd" type="number" min="1" max="16" value="16" aria-label="Loop end"></label>
+        </div>
+        <div class="control-group">
+            <button id="undoNotes" type="button">Undo</button>
+            <button id="redoNotes" type="button">Redo</button>
+        </div>
+        <label class="file-control">Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" aria-label="Import MIDI"></label>
         <button id="exportMidi" type="button">Export MIDI</button>
-        <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
-        <button id="newSequence" type="button">New Sequence</button>
-    </section>
-    <section class="transport" aria-label="Note editing">
+        <a class="button-link" href="/dashboard.html">Project Dashboard</a>
+        <details class="account-menu popup-menu">
+            <summary>Account</summary>
+            <nav class="popup-content" aria-label="Account actions">
+                <p id="currentUser" role="status">Checking login...</p>
+                <button type="button" onclick="window.location.href='/login'">Log in</button>
+                <button type="button" onclick="window.location.href='/signup'">Register</button>
+                <form action="/logout" method="post" style="display: inline"><button type="submit">Logout</button></form>
+            </nav>
+        </details>
+    </header>
+    <section class="toolbar editing-toolbar" aria-label="Piano-roll editing">
         <strong>All Notes</strong>
+        <div class="control-group">
+            <label>Length (steps) <input id="noteLength" type="text" inputmode="decimal" value="1" aria-describedby="lengthHelp"></label>
+            <button id="lengthDecrease" type="button" aria-label="Shorten selected notes by one step">−1 step</button>
+            <button id="lengthIncrease" type="button" aria-label="Lengthen selected notes by one step">+1 step</button>
+            <label>Velocity <input id="velocity" type="number" min="1" max="127" value="89"></label>
+        </div>
+        <span id="selectionCount" aria-live="polite">0 selected</span>
+        <div class="control-group">
+            <button id="copyNotes" type="button">Copy</button>
+            <button id="cutNotes" type="button">Cut</button>
+            <button id="pasteNotes" type="button">Paste</button>
+            <button id="duplicateNotes" type="button">Duplicate</button>
+            <button id="deleteNote" type="button" disabled>Delete selected</button>
+        </div>
         <button id="findNotes" type="button">Find Notes</button>
-        <label>Length (steps) <input id="noteLength" type="text" inputmode="decimal" value="1" aria-describedby="lengthHelp"></label>
-        <button id="lengthDecrease" type="button" aria-label="Shorten by one step">−1 step</button>
-        <button id="lengthIncrease" type="button" aria-label="Lengthen by one step">+1 step</button>
-        <label>Velocity <input id="velocity" type="number" min="1" max="127" value="89"></label>
-        <button id="deleteNote" type="button" disabled>Delete note</button>
-        <button id="nextOverlap" type="button" disabled>Next overlapping note</button>
-        <label>Lowest MIDI <input id="pitchLow" type="number" min="0" max="127" value="36"></label>
-        <label>Highest MIDI <input id="pitchHigh" type="number" min="0" max="127" value="83"></label>
-    </section>
-    <p id="compositionInfo" role="status">0 notes · 1 musical track</p>
-    <p id="lengthHelp" class="hint">Length accepts fractional steps. Use ±1 step (or Arrow Up/Down) for whole-step adjustments. The minimum is one MIDI tick; selected notes show exact ticks below.</p>
-    <p id="noteInfo" class="hint"></p>
-    <p class="hint">One step = a sixteenth note. Loop endpoints are inclusive; Stop before resizing the pattern, importing MIDI, or changing loop markers. Shortening the pattern past notes is rejected. MIDI export excludes sample audio and unsupported events.</p>
-    <p id="status" role="status">Ready. Add notes, then press Play.</p>
-    <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll"><div id="pianoSpacer"></div><canvas id="pianoCanvas" aria-label="All Notes piano roll. Click to add or select; drag either edge to resize."></canvas></div>
+        <output id="cursorPosition" aria-label="Editing cursor position"></output>
+        <button id="shortcutsButton" type="button" aria-haspopup="dialog">Shortcuts</button>
+        <details id="workspaceOptions" class="popup-menu workspace-options">
+            <summary>Workspace options</summary>
+            <div class="popup-content options-content">
+                <h2>Timeline &amp; pitch range</h2>
+                <div class="control-group wrap-controls">
+                    <label>Pattern steps <input id="patternSteps" type="number" min="1" max="65536" value="16"></label>
+                    <button id="addBar" type="button">+ Measure</button>
+                    <button id="removeBar" type="button">− Measure</button>
+                    <label>Lowest MIDI <input id="pitchLow" type="number" min="0" max="127" value="36"></label>
+                    <label>Highest MIDI <input id="pitchHigh" type="number" min="0" max="127" value="83"></label>
+                </div>
+                <h2>Composition</h2>
+                <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
+                <button id="newSequence" type="button">New Sequence</button>
+                <button id="nextOverlap" type="button" disabled>Next overlapping note</button>
+                <h2>Note details</h2>
+                <p id="noteInfo" class="hint"></p>
+                <p id="lengthHelp" class="hint">Length accepts fractional steps and sets all selected notes to that length. Mixed means durations differ. ±1 step (or Arrow Up/Down in Length) changes each selected duration relatively. The minimum is one MIDI tick; edits crossing pattern boundaries are rejected.</p>
+                <p id="tempoInfo" class="hint"></p>
+                <p class="hint">One step is a sixteenth note. Loop endpoints are inclusive. Stop before changing pattern length, loop markers, or MIDI imports. Export excludes sample audio and unsupported MIDI events.</p>
     <section class="sample-panel" aria-label="Sample compatibility track">
         <h2>Sample track</h2>
         <label>Upload audio <input id="audioFile" type="file" accept="audio/*"></label>
@@ -58,6 +90,29 @@
         <button id="samplePreviousPage" type="button" disabled>Previous triggers</button>
         <button id="sampleNextPage" type="button" disabled>Next triggers</button>
     </section>
+            </div>
+        </details>
+    </section>
+    <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll">
+        <div id="pianoSpacer"></div>
+        <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
+    </div>
+    <footer class="statusbar">
+        <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
+        <p id="compositionInfo">0 notes · 1 musical track</p>
+        <span class="cursor-legend"><i></i> Edit cursor <i class="playback-key"></i> Playback</span>
+    </footer>
+    <dialog id="shortcutsDialog" aria-labelledby="shortcutsTitle">
+        <div class="dialog-heading">
+            <h2 id="shortcutsTitle">Keyboard Shortcuts &amp; Mouse Controls</h2>
+            <button id="closeShortcuts" type="button" autofocus>Close</button>
+        </div>
+        <p>Use Cmd on macOS or Ctrl on Windows/Linux. Editor shortcuts leave typing fields and open dialogs alone. Space also leaves focused buttons and menus alone.</p>
+        <h3>Transport &amp; editing</h3>
+        <dl id="keyboardGuide" class="controls-guide"></dl>
+        <h3>Mouse &amp; navigation</h3>
+        <dl id="mouseGuide" class="controls-guide"></dl>
+    </dialog>
 </main>
 <script src="/js/vendor/tonejs-midi-2.0.28.js"></script>
 <script src="/js/NoteSequence.js"></script>

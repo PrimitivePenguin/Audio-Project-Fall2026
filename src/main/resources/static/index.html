@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/favicon.ico?v=2" type="image/x-icon">
     <title>JukeBox — Piano roll</title>
     <link rel="stylesheet" href="/css/sequencer.css">
 </head>
@@ -12,6 +13,7 @@
     <section class="transport" aria-label="Playback controls">
         <button id="playButton" type="button">▶ Play</button>
         <button id="stopButton" type="button">■ Stop</button>
+        <button id="saveProject" type="button" disabled>Save Project</button>
         <label>BPM <input id="bpm" type="number" min="40" max="240" value="120"></label>
         <label>Loop start <input id="loopStart" type="number" min="1" max="16" value="1"></label>
         <label>Loop end <input id="loopEnd" type="number" min="1" max="16" value="16"></label>

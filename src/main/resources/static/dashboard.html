@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/favicon.ico?v=2" type="image/x-icon">
     <title>JukeBox — Project Dashboard</title>
     <link rel="stylesheet" href="/css/sequencer.css">
 </head>
@@ -37,6 +38,16 @@
         <label>Upload MIDI <input id="importFile" type="file" accept=".mid,.midi,audio/midi"></label>
     </section>
 
+    <section class="transport" style="margin-bottom: 20px; padding: 16px; background: #ecfdf5; border-radius: 8px;">
+        <h2>Database Projects</h2>
+        <p>Use this panel to test project sharing independently from the local editor library.</p>
+        <label>Name <input id="databaseProjectName" type="text" placeholder="Shared Song"></label>
+        <button id="createDatabaseProjectBtn" type="button">Save New Project to DB</button>
+        <button id="refreshDatabaseProjectsBtn" type="button">Refresh Database Projects</button>
+        <p id="databaseProjectStatus" role="status" class="hint">Not loaded.</p>
+        <ul id="databaseProjectList" style="list-style: none; padding: 0;"></ul>
+    </section>
+
     <h2>Saved Projects Library</h2>
     <p id="status" role="status" class="hint">Ready.</p>
     <ul id="projectList" style="list-style: none; padding: 0;"></ul>
@@ -48,5 +59,6 @@
 <script src="/js/midi-io.js"></script>
 <script src="/js/dashboardmanager.js"></script>
 <script src="/js/dashboard_ui.js"></script>
+<script src="/js/project-collaboration-test.js"></script>
 </body>
 </html>

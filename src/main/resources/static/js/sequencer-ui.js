@@ -1,4 +1,4 @@
-(() => {
+ (async () => {
     const engine = new SequencerEngine();
     const getElement = (id) => document.getElementById(id);
     const statusElement = getElement('status');
@@ -35,12 +35,60 @@
     let sampleTriggerPage = 0;
     let loadedSampleName = '';
     let isSampleLoading = false;
+    let databaseProject = null;
+    let databaseSaveInFlight = false;
     const SAMPLE_PAGE_SIZE = 50;
     const EMPTY_SAMPLE_STATUS = 'Upload an audio sample, then add trigger steps.';
 
     // Controls and selected-note details.
     function showStatus(text) {
         statusElement.textContent = text;
+    }
+
+    async function saveDatabaseProject() {
+        if (!databaseProject || databaseProject.role === 'VIEWER' || databaseSaveInFlight) {
+            return;
+        }
+        databaseSaveInFlight = true;
+        try {
+            const response = await fetch(`/api/projects/${databaseProject.id}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: engine.sequence.name,
+                    projectData: JSON.stringify(engine.sequence.toJSON())
+                })
+            });
+            const body = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(body?.error || `Save failed (${response.status})`);
+            }
+            showStatus(`Saved "${engine.sequence.name}" to the database.`);
+        } catch (error) {
+            showStatus(`Save failed: ${error.message}`);
+        } finally {
+            databaseSaveInFlight = false;
+        }
+    }
+
+    function applyDatabasePermissions() {
+        if (databaseProject?.role !== 'VIEWER') {
+            return;
+        }
+        pianoCanvas.style.pointerEvents = 'none';
+        [
+            'saveProject', 'bpm', 'loopStart', 'loopEnd', 'patternSteps', 'addBar',
+            'removeBar', 'midiFile', 'newSequence', 'noteLength', 'lengthDecrease',
+            'lengthIncrease', 'velocity', 'deleteNote', 'nextOverlap', 'pitchLow',
+            'pitchHigh', 'audioFile', 'removeSample', 'sampleTriggerStep',
+            'addSampleTrigger', 'samplePreviousPage', 'sampleNextPage',
+            'removeImportedMidi'
+        ].forEach((id) => {
+            const element = getElement(id);
+            if (element) element.disabled = true;
+        });
+        showStatus('Viewer access is read-only.');
     }
 
     function updateTransportControls() {
@@ -626,6 +674,8 @@
             showStatus(error.message);
         }
         releasePointer(gesture.pointerId);
+        if (gesture.moved && gesture.preview) {
+        }
         refreshNoteControls();
         renderPianoRoll();
     }
@@ -668,6 +718,7 @@
     });
     getElement('nextOverlap').onclick = cycleOverlap;
     getElement('deleteNote').onclick = deleteSelectedNote;
+    getElement('saveProject').onclick = saveDatabaseProject;
     getElement('noteLength').onchange = changeLength;
     getElement('noteLength').onkeydown = (event) => {
         if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
@@ -1027,6 +1078,69 @@
         showStatus('New sequence. Add notes, then press Play.');
     }
 
+    async function loadPendingDatabaseProject() {
+        const pending = localStorage.getItem('jukebox_pending_database_project');
+        const routeMatch = window.location.pathname.match(/^\/project\/([0-9a-f-]+)$/i);
+        let saved = pending ? JSON.parse(pending) : null;
+        if (routeMatch) {
+            try {
+                const response = await fetch(`/api/projects/${routeMatch[1]}`, {
+                    credentials: 'same-origin'
+                });
+                const project = await response.json().catch(() => null);
+                if (!response.ok) {
+                    throw new Error(project?.error || `Project load failed (${response.status})`);
+                }
+                saved = {
+                    id: project.id,
+                    name: project.name,
+                    role: project.role,
+                    data: typeof project.projectData === 'string'
+                        ? JSON.parse(project.projectData)
+                        : project.projectData
+                };
+            } catch (error) {
+                showStatus(`Could not load project: ${error.message}`);
+                return;
+            }
+        }
+        if (!saved) {
+            return;
+        }
+        localStorage.removeItem('jukebox_pending_database_project');
+        try {
+            const data = saved.data;
+            if (!data || typeof data !== 'object') {
+                throw new Error('Saved project data is incomplete.');
+            }
+            const sequence = new NoteSequence(
+                Number.isInteger(data.stepCount) ? data.stepCount : 16,
+                Number.isInteger(data.ppq) ? data.ppq : 480
+            );
+            databaseProject = {
+                id: saved.id,
+                name: saved.name,
+                role: saved.role
+            };
+            getElement('saveProject').disabled = databaseProject.role === 'VIEWER';
+            sequence.name = saved.name || data.name || 'JukeBox';
+            sequence.tracks = Array.isArray(data.tracks) && data.tracks.length
+                ? data.tracks
+                : sequence.tracks;
+            sequence.tempos = data.tempos || sequence.tempos;
+            sequence.timeSignatures = data.timeSignatures || sequence.timeSignatures;
+            sequence.importInfo = data.importInfo || null;
+            (data.notes || []).forEach((note) => sequence.addNote(note));
+            engine.replaceSequence(sequence);
+            resetEditorSelection();
+            resetPitchViewport();
+            showStatus(`Loaded "${sequence.name}" from the database.`);
+            applyDatabasePermissions();
+        } catch (error) {
+            showStatus(`Could not load database project: ${error.message}`);
+        }
+    }
+
     getElement('removeImportedMidi').onclick = removeImportedMidi;
     getElement('newSequence').onclick = startNewSequence;
 
@@ -1065,6 +1179,7 @@
         requestAnimationFrame(updatePlayhead);
     }
 
+    await loadPendingDatabaseProject();
     selectNote(null);
     syncEditorState();
     pianoViewport.scrollTop = Math.max(0, RULER_HEIGHT + (highestPitch - 60) * ROW_HEIGHT - 288);

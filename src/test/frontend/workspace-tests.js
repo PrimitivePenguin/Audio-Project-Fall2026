@@ -821,8 +821,7 @@ async function spaceWithNativeDefault(h) {
         assert.equal(h.engine.isPlaying, true);
         const stop = h.elements.stopButton;
         stop.tagName = 'BUTTON';
-        stop.focus();
-        stop.onclick();
+        await h.activateControl('stopButton');
         assert.equal(h.activeElement, h.elements.pianoViewport);
         assert.equal(h.elements.pianoViewport.focusOptions.preventScroll, true);
         assert.equal(h.engine.isPaused, false);
@@ -837,7 +836,7 @@ async function spaceWithNativeDefault(h) {
     });
 
     for (const activation of ['Enter', 'Space']) {
-        await test(`native ${activation} activates focused Stop once; the following Space plays without a second Stop`, async () => {
+        await test(`native ${activation} keeps Stop keyboard-focused; subsequent Space retains native activation`, async () => {
             const h = createEditorHarness();
             setCursor(h, 3.375);
             await h.elements.playButton.onclick();
@@ -855,11 +854,13 @@ async function spaceWithNativeDefault(h) {
             }
             assert.equal(stops, 1);
             assert.equal(h.engine.isPlaying, false);
-            assert.equal(h.activeElement, h.elements.pianoViewport);
+            assert.equal(h.activeElement, stop);
+            assert.equal(await spaceWithNativeDefault(h), false);
+            assert.equal(stops, 2);
+            assert.equal(h.intervals.size, 0);
+            h.elements.pianoViewport.focus();
             assert.equal(await spaceWithNativeDefault(h), true);
-            assert.equal(stops, 1);
             near(h.engine.playbackAnchorTick, 405);
-            assert.equal(h.intervals.size, 1);
             h.engine.stop();
         });
     }
@@ -884,8 +885,7 @@ async function spaceWithNativeDefault(h) {
             near(h.engine.playbackAnchorTick, tick);
             const stop = h.elements.stopButton;
             stop.tagName = 'BUTTON';
-            stop.focus();
-            stop.onclick();
+            await h.activateControl('stopButton');
             assert.equal(h.engine.pausedTick, null);
             assert.equal(h.intervals.size, 0);
             await spaceWithNativeDefault(h);

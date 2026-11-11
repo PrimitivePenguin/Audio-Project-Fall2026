@@ -9,6 +9,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     const windowListeners = {};
     const documentListeners = {};
     const readyEvents = [];
+    const deferredActions = [];
     let engine;
     let activeElement = null;
     let animationCallback = null;
@@ -29,7 +30,8 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                     method: property,
                     args,
                     fillStyle: target.fillStyle,
-                    strokeStyle: target.strokeStyle
+                    strokeStyle: target.strokeStyle,
+                    globalAlpha: target.globalAlpha ?? 1
                 });
         }
     });
@@ -141,7 +143,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 return activeElement;
             },
             querySelector() {
-                return modalOpen ? {} : null;
+                return modalOpen || elements.deleteTrackDialog?.open ? {} : null;
             },
             getElementById(id) {
                 elements[id] ??= new Element();
@@ -185,7 +187,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         clearInterval(id) {
             intervals.delete(id);
         },
-        setTimeout() {},
+        setTimeout(callback, delay) {
+            if (delay === 0) deferredActions.push(callback);
+        },
         requestAnimationFrame(callback) {
             animationRequests++;
             animationCallback = callback;
@@ -203,12 +207,13 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         'NoteSequence.js',
         'SequencerEngine.js',
         'midi-io.js',
-        'PianoRollEditor.js'
+        'PianoRollEditor.js',
+        'TrackOverview.js'
     ]) {
         vm.runInContext(fs.readFileSync(path.join(directory, file), 'utf8'), scope);
     }
     const api = vm.runInContext(
-        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow })',
+        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
         scope
     );
     scope.CapturedEngine = class extends api.SequencerEngine {
@@ -243,8 +248,8 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         windowListeners,
         documentListeners,
         pointer,
-        animate() {
-            animationCallback();
+        animate(timestamp) {
+            animationCallback(timestamp);
         },
         get animationRequests() {
             return animationRequests;
@@ -279,6 +284,27 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         paint() {
             canvasCalls.length = 0;
             elements.pianoViewport.listeners.scroll();
+        },
+        flushDeferredActions() {
+            deferredActions.splice(0).forEach((callback) => callback());
+        },
+        async activateControl(id, detail = 1) {
+            const control = elements[id];
+            control.tagName ??= 'BUTTON';
+            control.type ??= 'button';
+            control.closest ??= (selector) => {
+                if (selector === 'button, summary' || selector === '[data-daw-controls]') {
+                    return control;
+                }
+                return null;
+            };
+            control.focus();
+            const event = { target: control, detail };
+            documentListeners.click?.(event);
+            const result = control.onclick?.(event);
+            deferredActions.splice(0).forEach((callback) => callback());
+            await Promise.resolve();
+            return result;
         },
         clickAt(x, y) {
             const event = pointer(x, y);

@@ -1,8 +1,8 @@
-# JukeBox sequencer and MIDI API — Iteration 2, Milestone 1
+# JukeBox sequencer and MIDI API — Iteration 2, final milestone
 
 The browser editor uses plain JavaScript, one Web Audio lookahead scheduler, a temporary sine voice, and locally bundled `@tonejs/midi` **2.0.28**. Spring Boot serves the existing `static/index.html`. No frontend framework, CDN, database changes or second transport are involved.
 
-Load classic scripts in this order: `vendor/tonejs-midi-2.0.28.js`, `NoteSequence.js`, `SequencerEngine.js`, `midi-io.js`, `PianoRollEditor.js`, `sequencer-ui.js`. Vendor source, version, checksum and licenses are under `static/js/vendor/`.
+Load classic scripts in this order: `vendor/tonejs-midi-2.0.28.js`, `NoteSequence.js`, `SequencerEngine.js`, `midi-io.js`, `PianoRollEditor.js`, `TrackOverview.js`, `sequencer-ui.js`. Vendor source, version, checksum and licenses are under `static/js/vendor/`.
 
 ## Musical data (version 2)
 
@@ -115,7 +115,7 @@ manager.dispose();                                 // Optional: release manager-
 
 `prepare` runs after context initialization/resumption and **before scheduling starts**. Load buffers and AudioWorklet modules here, never in `createVoice`. Successful preparation is cached until registration or composition/track replacement. Stop aborts an in-flight preparation signal and releases pending Play; late completion cannot restart the transport. A manager must still honor/check the signal and dispose its own cancelled setup work. JavaScript cannot forcibly cancel arbitrary plugin work. Preparation failures reject Play without starting a scheduling interval; retry can prepare again.
 
-`syncTracks` receives copied musical track metadata on registration and composition replacement/import/removal/New Sequence. Reconcile removed track IDs, channel/program changes and manager-owned per-track resources. It receives metadata, not sample buffers, and may run before context creation. Direct mutation of the public track array is not automatically watched; make such configuration changes through your integration's explicit lifecycle. Lifecycle hooks should be synchronous and non-throwing; accidental returned Promise rejections are observed, but asynchronous Stop is not an immediate-silence guarantee.
+`syncTracks` receives copied musical track metadata on registration, composition replacement/import/removal/New Sequence, and the new stopped/paused engine Add/Rename MIDI-track operations. Reconcile removed track IDs, channel/program changes and manager-owned per-track resources. It receives metadata, not sample buffers, and may run before context creation. Direct mutation of the public track array is not automatically watched; make such configuration changes through your integration's explicit lifecycle. Lifecycle hooks should be synchronous and non-throwing; accidental returned Promise rejections are observed, but asynchronous Stop is not an immediate-silence guarantee.
 
 The low-level factory is:
 
@@ -197,7 +197,7 @@ Controllers (including sustain), pitch bend, aftertouch, SysEx, key signatures, 
 
 ## Unified All Notes editor
 
-The piano roll displays **all musical tracks together**. The track dropdown is removed; tracks are not merged in the model or export. Stable track-based colors distinguish blocks. Selection shows the exact note ID, track name, channel, provenance, start/duration ticks and PPQ. New notes always use the default Piano track.
+The piano roll defaults to **All Notes**, displaying eligible musical tracks together without merging them in the model or export. The Active track selector now also opens a focused track view; the separate **Tracks** overview is described below. Stable track-ID colors distinguish blocks in all perspectives. Selection shows the exact note ID, track name, channel, provenance, start/duration ticks and PPQ. All Notes creation uses Piano; focused creation uses the active track.
 
 The canvas is only viewport-sized, scaled by device pixel ratio; a CSS spacer supplies the long scrollable timeline. Hit testing uses CSS coordinates relative to the canvas plus viewport scroll offsets. `PianoRollEditor` contains pure rectangle, hit/edge, navigation, duration and resize calculations; it has no audio clock or scheduler. Imported integer ticks are mapped to fractional step positions without snapping during display.
 
@@ -243,7 +243,7 @@ All editor shortcuts route through one document handler. They accept Cmd on macO
 | Undo | Cmd/Ctrl+Z | Restore the preceding note edit. |
 | Redo | Cmd/Ctrl+Shift+Z | Reapply an undone note edit. |
 
-Toolbar buttons provide clipboard/history operations without shortcuts. Paste and duplicate select their new records. Copies retain duration, velocity, note-off velocity, track identity, channel/program through that track, and pitch. They receive fresh IDs and `importId: null`, so Remove Imported MIDI keeps them (migrating them to Piano if their imported track is removed, as before). Copying does not modify source provenance. The clipboard is session-local and cleared when the sequence object is replaced; there is no system clipboard dependency.
+Toolbar buttons provide clipboard/history operations without shortcuts. Paste and duplicate select their new records. Copies retain duration, velocity, note-off velocity and pitch. In All Notes, Paste retains source track identities and their channel/program metadata. In a focused track, Paste maps every copied note to the active destination track and uses that track's existing channel/program; Duplicate always retains the selected records' original tracks. They receive fresh IDs and `importId: null`, so Remove Imported MIDI keeps them (migrating them to Piano if their imported track is removed, as before). Copying does not modify source provenance. The clipboard is session-local and cleared when the sequence object is replaced; there is no system clipboard dependency.
 
 Paste/duplicate safely extend the pattern to fit, up to 65536 steps, through the existing engine API. Expansion while playback/preparation is active is rejected before adding notes; stop first. Operations fitting the current pattern retain existing live-edit behavior. Undo removes pasted notes but **retains the expanded pattern length**, sample trigger arrays and current loop bounds. No collision resolution overwrites unrelated notes. MIDI export uses the same edited model and original musical track identities.
 
@@ -257,7 +257,7 @@ Import/replacement, Remove Imported MIDI and New Sequence establish a new sequen
 
 ### Milestone 1 verification
 
-Run all six frontend suites listed below, the JavaScript syntax checks, and Spring Boot tests. The Iteration 2 suite adds selection/Shift/marquee, overlapping tracks, move previews and cancellation, pitch/tick boundaries, clipboard/provenance, export, group resizing, focus safety, history and a 100000-note movement calculation. Existing suites retain MIDI, sample, audio-clock and instrument integration coverage. These are automated fake-DOM/Web Audio tests, not manual browser verification.
+Run all nine frontend suites listed below, the JavaScript syntax checks, and Spring Boot tests. The Iteration 2 suite adds selection/Shift/marquee, overlapping tracks, move previews and cancellation, pitch/tick boundaries, clipboard/provenance, export, group resizing, focus safety, history and a 100000-note movement calculation. Existing suites retain MIDI, sample, audio-clock and instrument integration coverage. These are automated fake-DOM/Web Audio tests, not manual browser verification.
 
 Manual browser checklist after `sh mvnw spring-boot:run` at `http://localhost:8080/`:
 
@@ -274,7 +274,7 @@ Native pointer capture, appearance, platform keyboard behavior and audible outpu
 
 The vanilla HTML/CSS workspace fills `100dvh`: a compact transport/project toolbar, a piano-roll editing toolbar, a flexible scrollable canvas viewport, and a status footer. **Workspace options** is a keyboard-accessible disclosure panel containing pattern length, pitch range, import removal/reset, overlapping-note navigation, detailed note information, and all existing sample controls. **Account** retains current-user fetch, Login/Register navigation and the POST Logout form; **Project Dashboard** links to the existing `/dashboard.html`. No dashboard, authentication, project storage, backend, or database APIs are changed. A ResizeObserver handles changes to the actual viewport in addition to window resize and scroll; pointer conversion remains relative to the current canvas bounding rectangle in CSS pixels.
 
-The **Shortcuts** button opens a native modal dialog with an accessible name, Close button, native focus containment, Escape handling, and focus restoration to the opener. Bindings, button tooltips and keyboard guide entries derive from the same shortcut metadata. The guide also describes actual mouse gestures, scrolling and overlap navigation. While any native open dialog or active ARIA modal is present, global editor shortcuts do not run. Space additionally leaves focused buttons, links, disclosure summaries and menus to their normal keyboard behavior. Repeated Space keydown events are consumed without repeatedly toggling transport.
+The **Shortcuts** button opens a native modal dialog with an accessible name, Close button, native focus containment, Escape handling, and focus restoration to the keyboard opener or visible workspace after pointer activation. Bindings, button tooltips and keyboard guide entries derive from the same shortcut metadata. The guide also describes actual mouse gestures, scrolling and overlap navigation. While any native open dialog or active ARIA modal is present, global editor shortcuts do not run. Space additionally leaves focused buttons, links, disclosure summaries and menus to their normal keyboard behavior. Repeated Space keydown events are consumed without repeatedly toggling transport.
 
 ### True Pause/Resume
 
@@ -319,7 +319,7 @@ Pause saves the currently audible musical tick, whether in the initial pass or a
 
 `workspace-tests.js` covers three/four-note absolute length assignment, relative/fractional changes, Mixed/common display, atomic boundary rejection, single-entry history, mouse-resize synchronization, Space transport, queued voice/sample cancellation, rapid startup races, tempo-map/custom-loop position, cursor scrolling/paste/export/lifecycle, unsnapped captured dragging/cancellation, precise PPQ conversion, initial playback passes before/inside/after loops, paused cursor seeking, empty-click deselection without history, help focus and keyboard guards, viewport resize callbacks and preserved markup/control IDs. The fake DOM/Web Audio tests do not verify native layout, focus trapping, real browser audio, authentication server behavior, or instrument envelope quality.
 
-Verification results for this follow-up: **161 frontend tests passed** (25 sequencer, 32 editor, 16 Iteration 2, 15 voice integration, 41 workspace, 32 navigation/follow); **14 Spring Boot tests passed**, with no failures/errors/skips; `node --check` passed for **15 JavaScript files** and `git diff --check` passed. These automated runs are separate from manual checks. No manual browser/audio verification was performed in this follow-up. The prior browser attempt was blocked by unavailable browser access and missing Computer Use permission; the existing local server was left untouched.
+Verification results for this follow-up: **223 frontend tests passed** (25 sequencer, 32 editor, 16 Iteration 2, 15 voice integration, 41 workspace, 32 navigation/follow, 26 multitrack, 21 track-management, 15 focus-policy); **14 Spring Boot tests passed**, with no failures/errors/skips; `node --check` passed for **19 JavaScript files** and `git diff --check` passed. These automated runs are separate from manual checks. No manual browser/audio verification was performed in this follow-up. The prior browser attempt was blocked by unavailable browser access and missing Computer Use permission; the existing local server was left untouched.
 
 Manual follow-up at the running app (or `sh mvnw spring-boot:run` when port 8080 is free):
 
@@ -357,19 +357,28 @@ This equals (sixteenth-step center distance + semitone distance) × 2 × PPQ and
 
 Final ties use the stable note ID's lexical **code-unit** ordering, independent of insertion order and locale. Diagonal candidates are valid; identical centers and pitches are not directional candidates for each other, and retain normal mouse overlap cycling. Notes with identical starts but unequal durations can be horizontal candidates; different starts with identical centers cannot.
 
-`PianoRollEditor.eligibleNotes(sequence, view)` centralizes eligibility. The current UI is All Notes and has no per-track filter control. The helper accepts an optional `trackId` (null means all) and `hiddenTrackIds` Set for filtered callers; tracks with `hidden: true` or `visible: false` are excluded. These optional flags affect the editor view, not playback or MIDI export. UI navigation, rendering and hit testing also respect configured low/high pitch limits. Offscreen rows inside that range remain candidates. Ctrl/Cmd+A still includes pitches outside the current pitch range on eligible tracks; Find Notes can expand the range as before. No new track/filter UI is introduced.
+`PianoRollEditor.eligibleNotes(sequence, view)` centralizes eligibility. The Active track selector supplies its focused `trackId` (null means All Notes). The helper also accepts a `hiddenTrackIds` Set for filtered callers; tracks with `hidden: true` or `visible: false` are excluded. These optional flags affect the editor view, not playback or MIDI export. UI navigation, rendering and hit testing also respect configured low/high pitch limits. Offscreen rows inside that range remain candidates. Ctrl/Cmd+A still includes pitches outside the current pitch range on eligible tracks; Find Notes can expand the range as before. The same eligibility path controls rendering, hit testing, marquee selection, inspector edits, clipboard selection and arrow navigation; ghosts never enter it.
 
 `revealNote()` computes the smallest horizontal/vertical change that exposes the chosen note within the musical grid, accounting for the fixed 100px keyboard and 32px ruler. A block that fits is fully revealed; an oversized block reveals its head rather than chasing its distant tail. Reveal geometry remains unchanged: ranking uses duration through the musical center, while revealing a long block still exposes its head without chasing its tail. Navigation that changes horizontal scroll releases playback following through the same manual-navigation path as Find Notes; vertical-only or already-visible navigation does not cancel horizontal follow.
 
-### Stop button and immediate Space restart
+### Pointer activation, keyboard focus and Space transport
 
-The previous Stop/Space failure came from retained button focus: the centralized handler deliberately ignores Space on focused buttons, so a subsequent Space would perform the button's native Stop action again instead of invoking Play. Only the explicit Stop-button click handler now calls `stopPlayback()` and then focuses the existing piano-roll viewport with `preventScroll: true`. Mouse clicks and native Enter/Space activations share this handler. The next Space therefore targets the editor and starts a fresh pass from its editing cursor.
+The retained-focus bug affected every pointer-clicked button/disclosure: native focus stayed on the control, so the centralized shortcut guard correctly deferred Space to its native action. This policy replaces the Stop-only workaround.
 
-Stop remains a normal focusable button with native Enter/Space activation. Its initial native Space activation is not intercepted or combined with Play; focus moves after the Stop action, so only a subsequent Space starts playback. Unrelated buttons, inputs, selects, editable content and dialogs keep their existing global shortcut protections. Background Stop paths (errors, lifecycle and sequence operations) do not use this focus handoff. No scheduler, transport state machine or playback-follow behavior changes are made for this fix.
+Only local DAW regions marked `data-daw-controls` participate (transport, Undo/Redo, Export, editing toolbar and Workspace Options contents). One capture-phase click listener recognizes native pointer activation by positive `MouseEvent.detail`; keyboard, programmatic and assistive activation with zero detail retains normal native focus/Space/Enter behavior. Account/authentication, navigation links, form submission, inputs/selects/sliders/editables and dialogs are excluded. No hover state is used.
 
-`workspace-tests.js` includes six focused regression cases for mouse Stop then immediate Space, native Enter/Space Stop activation without a second Stop, Start/Pause/Resume/Stop/Start during an initial partial pass and a repeated custom loop, editing-cursor start position, cancellation of old voices, one scheduler, and unchanged input/dialog/button guards. Native button keyup behavior is modeled in the fake DOM tests; it still needs real-browser verification.
+After the native click handlers/default action finish, a deferred task returns focus to the **same visible shared viewport** used by either Tracks or Piano Roll using `focus({preventScroll: true})`. The task yields to intervening keyboard/click interaction, newly focused editing controls and open native/ARIA modals. Workspace Options stays open after a pointer toggle; its inputs/buttons still work, while subsequent Space controls transport without toggling the summary. Pointer Add Track leaves focus on the workspace; keyboard Add Track deliberately enters the rename input. Clicking the name field always retains typing focus. Pointer Rename completion releases focus normally. Shortcuts opened by pointer returns to the workspace on close; keyboard invocation returns to its opener.
 
-Manual checks: click Stop during playback, immediately press Space, and confirm one fresh playback start at the unchanged editing cursor. Repeat by tabbing to Stop and activating it with Enter and Space. Confirm Stop remains reachable by Tab and that focus returns to the piano roll without changing scroll position. Repeat with custom loops, while following, and while starting after the custom loop; typing fields, Shortcuts and unrelated focused buttons must retain their normal Space behavior.
+Stop now uses the ordinary stop handler and the same pointer policy as other buttons. Mouse Stop → Space starts a fresh pass from the unchanged cursor. **Tab-focused Stop stays focused after Enter/Space**, so another Space operates Stop natively; Tab/click into the workspace to use transport shortcuts. This intentional accessibility behavior supersedes the previous unconditional Stop focus handoff. Inputs, native/custom interactive controls and modals retain shortcut protection. Handled Space keydown prevents page scroll/native activation; auto-repeat is consumed without another toggle. No audio scheduler, playback position or musical/history data is changed by focus restoration.
+
+`focus-policy-tests.js` adds 15 regression cases for both workspace modes, pointer reorder/summary/Stop/Add/Rename/editing controls, native keyboard activation, deferred focus races, dialogs, typing protection, disabled controls, no scroll and no extra history. Existing workspace transport tests now distinguish pointer Stop from keyboard Stop. These tests model DOM/native activation; the browser access host was unavailable and native Firefox input was refused as inactive, so actual native focus/default-action/audio verification remains pending.
+
+Manual checks:
+
+1. Click Track Up/Down, Workspace Options and ordinary DAW buttons; press Space repeatedly. Confirm Play/Pause/Resume without another reorder/toggle, including both workspace modes and a scrolled viewport.
+2. Click Add Track then Space; Stop, click the name field, type/rename, then Space. Check Stop → immediate Space starts at the cursor.
+3. Tab to buttons/summary; use Space/Enter and verify native activation and retained focus. Try inputs, dropdowns, sliders, editable text, account controls, Shortcuts and deletion confirmation; none should accidentally start transport.
+4. Hold Space: only the first keydown toggles. Verify no keyup double action, page scrolling, unexpected focus movement or changes to notes/history. Confirm cursor/loops/samples/instrument playback and arrow navigation remain correct.
 
 ### Midpoint follow state machine
 
@@ -414,7 +423,114 @@ No real-browser or audible verification is claimed for this change. After starti
 4. Navigate with arrows during playback: an offscreen horizontal reveal must release follow without affecting audio or the teal cursor; onscreen/vertical-only selection should not fight tracking.
 5. Test custom loops, initial passes outside the loop, tempo maps, Pause/Resume, paused cursor seeking, Stop/restart, viewport resizing and the timeline end. A wrap must never snap the viewport back merely to center the playhead. Verify sample/instrument audio and exported MIDI remain unchanged.
 
-Remaining limits: no drag-edge autoscroll, no added track-filter control, and no active-playback seeking feature. Dense files still require linear scans for navigation/rendering; no spatial index is introduced. Native trackpad/scrollbar momentum, browser subpixel rounding and visual smoothness require the manual checks above. Audio sample-tail seeking and instrument rearticulation limits remain as previously documented.
+Remaining limits: no drag-edge autoscroll or active-playback seeking feature. Dense files still require linear scans for navigation/rendering; no spatial index is introduced. Native trackpad/scrollbar momentum, browser subpixel rounding and visual smoothness require the manual checks above. Audio sample-tail seeking and instrument rearticulation limits remain as previously documented.
+
+## Final Iteration 2: track overview and focused piano roll
+
+### Workspace and timeline
+
+**Tracks** switches the existing viewport/canvas into an overview with one 84px lane for every `sequence.tracks` record, including empty tracks. Each header shows a stable track-ID color, a name (full name also in the selector/hover title), note count and active-lane highlight. Notes use exact start/duration tick conversions horizontally and the lane's relative pitch range vertically; singleton-pitch tracks are centered. Tiny notes have a two-pixel display minimum only; canonical data is untouched. There are no movable pattern clips or waveform/audio arrangement lanes.
+
+`TrackOverview.lanes(sequence)` builds temporary buckets of **references to the original notes**, in one pass over notes/tracks. `rectangle()` calculates miniature geometry from canonical ticks and PPQ. The canvas stays viewport-sized at device pixel ratio, paints only visible lanes and intersecting note previews, and uses the same 38px-per-sixteenth timeline, frozen 100px label column, meter grid, ruler, loop shading, teal editing cursor and orange audio-clock playhead as the piano roll. No note objects or musical data are duplicated into another composition.
+
+Single-click a lane/header to select its track. Double-click a lane to open its focused piano roll, or use **Active track → Piano Roll / Edit Track** with native keyboard controls. **Tracks** returns to the overview; **All Notes** in the selector restores fully interactive multitrack piano editing. Hidden tracks remain listed in the overview but cannot be opened for editing while hidden. Startup remains Piano Roll / All Notes for compatibility.
+
+The modes share one horizontal viewport position, cursor, engine, scheduler, sample map and `PianoRollFollow` instance. Vertical offsets are remembered separately for overview and piano; selecting a far lane reveals it minimally, and opening a focused roll expands the pitch range and vertically reveals relevant notes without changing the shared horizontal position. Find Notes uses lane coordinates in Tracks and pitch coordinates in Piano Roll. Mode/track switches reseed follow readiness without recentering; subsequent midpoint crossings can lock again. They do not stop/pause playback, change loop markers, reimport MIDI, seek audio, or change the editing cursor. Ruler click/drag, Space and Stop work in both modes.
+
+### Focus, ghosts, selection and history
+
+- **All Notes:** all eligible tracks are editable, colored by stable track ID; new grid notes go to Piano.
+- **Specific track:** only notes with that exact ID are editable; new grid notes go to it, including imported tracks. Editing existing notes preserves their IDs, source track, provenance and supported metadata.
+- **Ghost Notes:** optional in focused piano mode. Other eligible tracks render first with their existing colors at 22% opacity and precise musical geometry. They are references to the same canonical records, never hit-test targets or members of selection, marquee, arrow navigation, resizing, deletion or Copy/Cut/Duplicate. All Notes renders every eligible track normally, regardless of the remembered ghost preference. The disabled checkbox is unchecked outside a focused piano view.
+- A view/track change cancels active gestures and clears selection/overlap context. Ghost toggling alone keeps the active selection. `refresh()` prunes deleted/hidden/noneditable IDs; no invisible other-track selection is retained.
+- Note Undo/Redo remains **composition-wide** across track switches. It restores the original record IDs/tracks and reports affected track names in status. Only changed notes eligible in the current piano context become selected; overview retains zero selected notes. This allows Undo of a Bass edit while viewing Strings without leaving Bass notes invisibly selected. Note-edit controls and shortcuts are disabled in Tracks; Undo/Redo, transport and ruler cursor operations remain available there.
+- Successful import/replacement, Remove Imported MIDI and New Sequence retain the current workspace perspective but reset the active filter to All Notes and clear selection. The existing cursor reset, playback-stop, provenance, sample preservation and history-boundary policies still apply. Invalid/cancelled loads leave the current context intact.
+
+### Clipboard target policy
+
+| Operation | All Notes | Focused track |
+| --- | --- | --- |
+| Copy / Cut | Selected source records and track IDs | Selected active-track records only |
+| Paste | Preserve source track IDs | Map **all copied records** to the active destination track |
+| Duplicate | Preserve each selected source track | Preserve the selected active track |
+
+Every Paste/Duplicate keeps relative tick/pitch differences, durations, note-on/off velocity, receives fresh IDs and `importId: null`, selects the new editable notes, and records one note-history action. Paste remains anchored to the precise editing cursor; Duplicate still follows the selected span. Mapping onto a destination track means its channel/program applies; it never overwrites track metadata or unrelated notes. Clipboard contents survive ordinary track/view changes, and retain the previous sequence-replacement clearing policy. Remove Imported MIDI keeps manual pastes/duplicates, migrating them to Piano if present, otherwise the first surviving manual track, if their destination imported track disappears. An empty remaining track list receives a fresh default Piano.
+
+### Basic MIDI-track management
+
+Workspace options contains **Add MIDI Track**, **Track name**, and **Rename Track**. Add creates an empty manual track with a generated `track-N` ID, a default display name, channel 0 and program 0, then selects it; keyboard activation also focuses its rename field, while mouse activation returns focus to the workspace. Names are trimmed, nonempty and at most 128 characters. Duplicate display names are allowed; IDs remain unique. Renaming changes **only** `track.name`, retaining ID, channel, program, import provenance, source IDs and color/routing identity. Reorder and Delete controls are described below; mixer, instrument-picker and effects-routing UI remain outside scope.
+
+Model APIs:
+
+- `NoteSequence.validateTrackName(name)` validates/normalizes a name.
+- `sequence.addMusicalTrack({name = 'MIDI Track', channel = 0, program = 0})` validates channel 0–15/program 0–127 and returns an appended track with a collision-checked stable ID. New additions are capped at 255 total track records to stay within the existing MIDI envelope. Runtime `nextTrackId` is not a persistence-format change: copies/loaders can regenerate the next free ID by scanning existing IDs.
+- `sequence.renameMusicalTrack(id, name)` validates first and changes only that existing record's name; unknown IDs or invalid input leave it unchanged.
+- `engine.addMidiTrack(name)` and `engine.renameMidiTrack(id, name)` are the UI/integration wrappers. They reject while playing or preparing playback, allow stopped/paused operations, and reuse `syncTracks` plus preparation-cache invalidation. A paused musical position is retained. Use these wrappers when an instrument manager is attached; direct model mutation is not an automatic lifecycle notification.
+
+Track Add/Rename are intentionally **outside note Undo/Redo** and labeled accordingly in tooltips. They preserve existing note history/Redo rather than copying the whole application or altering the format of note commands. A new manual track survives Remove Imported MIDI; New Sequence clears it. Existing MIDI import/export includes named empty musical tracks and keeps channel/program identity; the preexisting unused-Piano omission during an import session is unchanged.
+
+### Track reordering and deletion
+
+In **Tracks**, drag the six-dot grip at the left of a header up/down to the blue insertion line. The source lane is shaded during the gesture. Release in the viewport to reorder; Escape, pointer cancellation, lost capture or dropping outside cancels without model/history changes. Holding near the upper/lower edge scrolls a long list using the existing animation loop; ordinary vertical scrolling also updates the drop target. Header/lane opening and Add/Rename are suppressed during the drag. The native Active Track options remain ordinary options.
+
+Select a track and use the **↑ Track / ↓ Track** buttons as the keyboard-accessible alternative. Reordering moves existing objects in `NoteSequence.tracks`, preserving IDs, channels, programs, provenance, colors and note references. Lanes and selector order synchronize immediately; the focused track stays identified by ID. Reordering is safe during playback and intentionally does **not** call instrument synchronization or change scheduling. JSON tracks and MIDI musical-track export retain this order, subject to the existing unused-import-session-Piano omission and conductor track.
+
+**Delete [track name]** operates on the selected stable ID. Empty tracks delete immediately. A nonempty track opens a native modal naming the track and note count; Cancel/Escape leave data/history untouched, and Delete Track commits one atomic action. The request is revalidated against the current sequence, track name and note IDs before confirmation. The last MIDI track cannot be deleted. Deletion, Undo restoration and Redo deletion require transport fully **stopped**, including no paused/preparing playback; the disabled button tooltip and track metadata explain this restriction. Press Stop first.
+
+Deletion removes only that MIDI track and its notes. Invalid selections clear, and an active deleted track switches to All Notes; ghosts, selectors, counts and export refresh. Cursor, loop/tempo/meter maps, audio samples/triggers and project/account data stay intact. Imported track deletion preserves the remaining import session/provenance; Remove Imported MIDI still removes surviving imported content and retains manual content. Deleting Piano does not recreate it on subsequent creation/import: All Notes uses the first surviving track instead. Remove Imported MIDI creates default Piano only when no tracks remain, remapping surviving manual notes safely.
+
+Completed reorders and deletions share the existing bounded **100-action / 200000-record** history with note edits (one oversized action may remain, matching existing behavior). Reorder entries hold ID order, deletion entries hold only the removed track, original index and removed note records/indices. Undo restores original IDs, exact ticks/durations/velocities and supported metadata; Redo deletes that stable track again. Other tracks and out-of-history additions survive. A blocked deletion Undo/Redo retains its stack entry until Stop. A new action clears Redo. Add/Rename remain outside history; history is session-only and follows the existing sequence replacement/pattern-resize clearing rules.
+
+Additional integration APIs:
+
+- `sequence.moveMusicalTrack(id, toIndex)` returns false for a same-position no-op; `setMusicalTrackOrder(ids)` validates an exact permutation. Neither mutates notes or routing metadata.
+- `sequence.deleteMusicalTrack(id)` returns `{track, index, notes: [{note, index}]}`; `restoreMusicalTrack(record)` validates the complete record before restoration. These model methods do not notify audio integrations.
+- Use `engine.reorderMidiTrack(id, toIndex)` / `setMidiTrackOrder(ids)` for order changes; `engine.deleteMidiTrack(id)` / `restoreMidiTrack(record)` enforce Stop and call the existing guarded `syncTracks` hook with surviving/restored metadata. They do not dispose teammate-owned buses, effects or managers. Integration code owns its supported cleanup in `syncTracks`; there is no new routing/persistence service. Engine calls alone do not create UI history; toolbar actions do. Call `editor.refresh()` after external changes.
+
+`track-management-tests.js` covers drag/drop order/preview/cancellation/edge scrolling, accessible reorder controls, focused-ID/selector synchronization, no-op history, stable references/metadata, imported/default/last-track deletion, modal cancellation and stale confirmation, exact Undo/Redo interleaved with note edits, Stop restrictions, routing notifications, samples, Remove Imported MIDI, JSON ordering and MIDI export. Real scrollbar, touch, focus-trap and audio behavior require browser verification.
+
+Manual track-management checklist:
+
+1. Import multitrack MIDI; drag first→last, last→first and middle→middle. Check insertion feedback, lane/selector order, colors, active focused roll and unchanged audio. Try Escape, pointer cancellation, outside drops and a long vertically scrolling list.
+2. Tab to Active Track and ↑/↓ Track; reorder using Enter/Space. Undo/Redo once per move. Navigate between Tracks/Piano Roll/All Notes and verify order persists.
+3. Delete an empty track; delete a nonempty imported track using Cancel, Escape and Confirm. Verify name/count, note/selection cleanup, ghost rendering and survivors. Undo/Redo exact notes/metadata/order, then export/reimport and save/load project data.
+4. Delete default Piano while another track exists, create a note in All Notes, then Remove Imported MIDI; check valid surviving note tracks. Verify last-track protection and New Sequence.
+5. Try deletion and deletion Undo/Redo while playing/paused/preparing: require Stop, retain history, and leave music/samples unchanged. After Stop, verify restoration and instrument-manager synchronization. Check authentication/dashboard integration independently.
+
+### Teammate integration
+
+The existing ordered `jukebox:ready` document event still supplies the same `event.detail.engine`. It now also supplies a frozen, view-only **`event.detail.editor`** API:
+
+```js
+document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
+    // One shared engine; IDs, not names/colors, identify instrument routing.
+    const state = editor.getState();
+    // { mode: 'piano' | 'tracks', activeTrackId: string | null,
+    //   ghostNotes: boolean preference, editingCursorTick: integer }
+    editor.setWorkspace('tracks');
+    editor.setWorkspace('piano', 'piano'); // use an existing, visible track ID
+    editor.setWorkspace('piano', null);    // All Notes
+    editor.setGhostNotes(true);           // preference; only rendered in focused piano
+    editor.refresh();                     // after an external composition/track update
+});
+```
+
+Load `TrackOverview.js` after `PianoRollEditor.js` and before `sequencer-ui.js`; load event listeners before UI initialization as before. Invalid mode/track/toggle arguments throw before changing view state. The view API does not register instruments, alter programs, mute/solo tracks, start new playback or persist project data. Names/colors never change voice routing. Dashboard, account fetch/navigation, POST Logout, database code and project-storage APIs remain untouched.
+
+### Final-milestone verification
+
+`multitrack-tests.js` adds 26 tests: exact overview lane/preview/color geometry and note-reference identity, empty/overlapping tracks, arbitrary PPQ, a 4000-note/40-track long import, viewport scrolling/resizing, click/double-click/selector transitions, All Notes restoration, focused creation/group edits, ghost isolation, clipboard policies/export, Undo across contexts, shared cursor/loops/follow/voices/samples, one scheduler, safe metadata synchronization, IDs/names/limits/invalid input, external refresh, and cancellation/load lifecycle. Automated fake DOM/audio coverage does not establish real-browser appearance or audible synthesis.
+
+Concise manual handback checklist:
+
+1. Import a long multitrack MIDI file. Select **Tracks**; check empty lanes, recognizable melodic/chord previews, track colors, scrolling both axes and window resize. Click a lane, double-click it, then return with Tracks.
+2. Use the Active track selector and Piano Roll button by keyboard, including All Notes. Confirm the track name, cleared selection, preserved timeline/cursor, and active-track-only arrow/marquee/group edits.
+3. Enable Ghost Notes. Verify other-track notes are faded, cannot be selected/resized/deleted, and are excluded by Select All and Copy. Switch to All Notes and verify all notes become interactive again.
+4. Copy a passage across tracks in All Notes, paste into a focused Bass roll and inspect destination IDs/channel/program; paste in All Notes to verify source routing preservation. Check Duplicate, Cut and composition-wide Undo/Redo across track changes, then export/reimport.
+5. Add/rename empty tracks in Workspace options while stopped/paused. Verify unique IDs, unchanged imported instrument metadata, visible empty lanes and exported track names. During playback/preparation those management actions must be unavailable.
+6. Play from a precise cursor with a custom loop and tempo map. Switch views/tracks while playing; check continuous voices, samples, one transport, midpoint lock/manual interruption/rearm, Pause/Resume and immediate Space after Stop. Check Account/Login/Logout and Project Dashboard navigation.
+
+Known limits: no clip arrangement/dragging, mute/solo, mixer/effect routing, per-track automation, note-drag-edge autoscroll or new project persistence. Add/Rename remain outside history. Miniatures use per-lane relative pitch scales, with a display minimum for tiny notes; they are navigation previews, not independently editable clips. Rendering scans canonical notes to build temporary lane buckets and virtualizes drawing; extremely dense projects still need real-browser performance review. View/ghost/filter preferences are session-only. Native rendering, keyboard focus, scrollbar momentum and audible instrument/DSP behavior remain manual integration checks.
 
 ## Sample-trigger editor
 
@@ -450,7 +566,10 @@ node src/test/frontend/sequencer-tests.js
 node src/test/frontend/editor-tests.js
 node src/test/frontend/iteration2-tests.js
 node src/test/frontend/workspace-tests.js
+node src/test/frontend/focus-policy-tests.js
 node src/test/frontend/navigation-follow-tests.js
+node src/test/frontend/multitrack-tests.js
+node src/test/frontend/track-management-tests.js
 node src/test/frontend/voice-integration-tests.js
 sh mvnw test
 sh mvnw spring-boot:run

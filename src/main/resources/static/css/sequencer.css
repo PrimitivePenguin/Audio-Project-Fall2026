@@ -96,3 +96,12 @@ dialog p { color: #53677e; line-height: 1.5; }
     .cursor-legend { display: none; }
     .options-content { max-height: 60dvh; }
 }
+
+#activeTrack { max-width: 180px; padding: 5px; border: 1px solid #acbacd; border-radius: 4px; }
+#activeTrackName { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#trackName { width: 180px; margin: 8px 0; }
+[aria-pressed="true"] { background: #d2e6ed; border-color: #087e8b; }
+.ghost-control { color: #53677e; }
+.ghost-control input { accent-color: #087e8b; }
+
+#deleteMidiTrack { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }

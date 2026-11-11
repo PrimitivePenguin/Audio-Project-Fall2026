@@ -10,21 +10,21 @@
 <main class="daw-workspace">
     <header class="toolbar primary-toolbar" aria-label="Transport and project controls">
         <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
-        <div class="control-group" aria-label="Playback controls">
+        <div class="control-group" aria-label="Playback controls" data-daw-controls>
             <button id="playButton" type="button" title="Space">▶ Play</button>
             <button id="stopButton" type="button">■ Stop</button>
             <label>BPM <input id="bpm" type="number" min="40" max="240" value="120"></label>
         </div>
-        <div class="control-group" aria-label="Loop controls">
+        <div class="control-group" aria-label="Loop controls" data-daw-controls>
             <label>Loop <input id="loopStart" type="number" min="1" max="16" value="1" aria-label="Loop start"></label>
             <label>to <input id="loopEnd" type="number" min="1" max="16" value="16" aria-label="Loop end"></label>
         </div>
-        <div class="control-group">
+        <div class="control-group" data-daw-controls>
             <button id="undoNotes" type="button">Undo</button>
             <button id="redoNotes" type="button">Redo</button>
         </div>
         <label class="file-control">Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" aria-label="Import MIDI"></label>
-        <button id="exportMidi" type="button">Export MIDI</button>
+        <button data-daw-controls id="exportMidi" type="button">Export MIDI</button>
         <a class="button-link" href="/dashboard.html">Project Dashboard</a>
         <details class="account-menu popup-menu">
             <summary>Account</summary>
@@ -36,8 +36,19 @@
             </nav>
         </details>
     </header>
-    <section class="toolbar editing-toolbar" aria-label="Piano-roll editing">
-        <strong>All Notes</strong>
+    <section data-daw-controls class="toolbar editing-toolbar" aria-label="Piano-roll editing">
+        <div class="control-group" aria-label="Workspace mode">
+            <button id="tracksView" type="button" aria-pressed="false" title="Back to Tracks">Tracks</button>
+            <button id="pianoRollView" type="button" aria-pressed="true" title="Edit selected track or All Notes">Piano Roll / Edit Track</button>
+        </div>
+        <label>Active track <select id="activeTrack" aria-label="Active musical track"><option value="">All Notes</option></select></label>
+        <div class="control-group" aria-label="Track order and deletion">
+            <button id="moveTrackUp" type="button" disabled aria-label="Move selected MIDI track up" title="Move selected MIDI track up">↑ Track</button>
+            <button id="moveTrackDown" type="button" disabled aria-label="Move selected MIDI track down" title="Move selected MIDI track down">↓ Track</button>
+            <button id="deleteMidiTrack" type="button" disabled>Delete Track</button>
+        </div>
+        <strong id="activeTrackName">All Notes</strong>
+        <label class="ghost-control"><input id="ghostNotes" type="checkbox" disabled> Ghost Notes</label>
         <div class="control-group">
             <label>Length (steps) <input id="noteLength" type="text" inputmode="decimal" value="1" aria-describedby="lengthHelp"></label>
             <button id="lengthDecrease" type="button" aria-label="Shorten selected notes by one step">−1 step</button>
@@ -66,6 +77,11 @@
                     <label>Lowest MIDI <input id="pitchLow" type="number" min="0" max="127" value="36"></label>
                     <label>Highest MIDI <input id="pitchHigh" type="number" min="0" max="127" value="83"></label>
                 </div>
+                <h2>MIDI tracks</h2>
+                <button id="addMidiTrack" type="button" title="Add an empty MIDI track; track management is outside note Undo history">Add MIDI Track</button>
+                <label>Track name <input id="trackName" type="text" maxlength="128" aria-describedby="trackMetadata"></label>
+                <button id="renameMidiTrack" type="button" title="Rename without changing MIDI routing; outside note Undo history" disabled>Rename Track</button>
+                <p id="trackMetadata" class="hint">Select a track to inspect its MIDI identity.</p>
                 <h2>Composition</h2>
                 <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
                 <button id="newSequence" type="button">New Sequence</button>
@@ -102,6 +118,14 @@
         <p id="compositionInfo">0 notes · 1 musical track</p>
         <span class="cursor-legend"><i></i> Edit cursor <i class="playback-key"></i> Playback</span>
     </footer>
+    <dialog id="deleteTrackDialog" aria-labelledby="deleteTrackTitle" aria-describedby="deleteTrackMessage">
+        <h2 id="deleteTrackTitle">Delete MIDI Track</h2>
+        <p id="deleteTrackMessage"></p>
+        <div class="control-group">
+            <button id="cancelDeleteTrack" type="button" autofocus>Cancel</button>
+            <button id="confirmDeleteTrack" type="button">Delete Track</button>
+        </div>
+    </dialog>
     <dialog id="shortcutsDialog" aria-labelledby="shortcutsTitle">
         <div class="dialog-heading">
             <h2 id="shortcutsTitle">Keyboard Shortcuts &amp; Mouse Controls</h2>
@@ -119,6 +143,7 @@
 <script src="/js/SequencerEngine.js"></script>
 <script src="/js/midi-io.js"></script>
 <script src="/js/PianoRollEditor.js"></script>
+<script src="/js/TrackOverview.js"></script>
 <script src="/js/sequencer-ui.js"></script>
 <script>
     fetch('/api/current-user')

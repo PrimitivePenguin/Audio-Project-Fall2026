@@ -395,6 +395,53 @@ class SequencerEngine {
         }
     }
 
+    addMidiTrack(name) {
+        if (this.isPlaying || this.startPromise) {
+            throw new Error('Pause or stop playback before adding a MIDI track.');
+        }
+        const track = this.sequence.addMusicalTrack({ name });
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
+    renameMidiTrack(id, name) {
+        if (this.isPlaying || this.startPromise) {
+            throw new Error('Pause or stop playback before renaming a MIDI track.');
+        }
+        const track = this.sequence.renameMusicalTrack(id, name);
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
+    reorderMidiTrack(id, toIndex) {
+        // Ordering is visual/serialization state; routing still uses unchanged stable IDs.
+        return this.sequence.moveMusicalTrack(id, toIndex);
+    }
+
+    setMidiTrackOrder(ids) {
+        this.sequence.setMusicalTrackOrder(ids);
+    }
+
+    assertTrackDeletionStopped() {
+        if (this.isPlaying || this.isPaused || this.startPromise) {
+            throw new Error('Press Stop before deleting or restoring MIDI tracks.');
+        }
+    }
+
+    deleteMidiTrack(id) {
+        this.assertTrackDeletionStopped();
+        const record = this.sequence.deleteMusicalTrack(id);
+        this.#syncInstrumentTracks();
+        return record;
+    }
+
+    restoreMidiTrack(record) {
+        this.assertTrackDeletionStopped();
+        const track = this.sequence.restoreMusicalTrack(record);
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
     registerInstrumentManager(manager) {
         if (this.isPlaying || this.startPromise) {
             throw new Error('Stop playback before changing the instrument manager.');

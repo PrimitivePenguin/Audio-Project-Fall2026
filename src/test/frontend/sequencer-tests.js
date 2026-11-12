@@ -63,7 +63,8 @@ for (const file of [
     'NoteSequence.js',
     'SequencerEngine.js',
     'midi-io.js',
-    'PianoRollEditor.js'
+    'PianoRollEditor.js',
+    'TrackOverview.js'
 ]) {
     vm.runInContext(
         fs.readFileSync(path.resolve(__dirname, '../../main/resources/static/js', file), 'utf8'),

@@ -9,7 +9,13 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     const windowListeners = {};
     const documentListeners = {};
     const readyEvents = [];
+    const deferredActions = [];
     let engine;
+    let activeElement = null;
+    let animationCallback = null;
+    let animationRequests = 0;
+    let modalOpen = false;
+    const resizeObservers = [];
     let nextTimer = 0;
     let confirmResult = true;
     let confirmCount = 0;
@@ -24,7 +30,8 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                     method: property,
                     args,
                     fillStyle: target.fillStyle,
-                    strokeStyle: target.strokeStyle
+                    strokeStyle: target.strokeStyle,
+                    globalAlpha: target.globalAlpha ?? 1
                 });
         }
     });
@@ -35,6 +42,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.style = {};
             this.children = [];
             this.listeners = {};
+            this.listenerCounts = {};
             this.attributes = {};
             this.dataset = {};
             this.clientWidth = 900;
@@ -43,6 +51,11 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.scrollTop = 0;
             this.capturedPointers = new Set();
             this.classList = { toggle() {} };
+        }
+        focus(options) {
+            this.focusOptions = options;
+            this.focused = true;
+            activeElement = this;
         }
         getContext() {
             return drawingContext;
@@ -53,14 +66,22 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         setAttribute(name, value) {
             this.attributes[name] = value;
         }
-        append(child) {
-            this.children.push(child);
+        append(...children) {
+            this.children.push(...children);
+        }
+        showModal() {
+            this.open = true;
+        }
+        close() {
+            this.open = false;
+            this.listeners.close?.();
         }
         replaceChildren() {
             this.children = [];
         }
         addEventListener(name, callback) {
             this.listeners[name] = callback;
+            this.listenerCounts[name] = (this.listenerCounts[name] ?? 0) + 1;
         }
         setPointerCapture(pointerId) {
             this.capturedPointers.add(pointerId);
@@ -118,6 +139,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
 
     const scope = vm.createContext({
         document: {
+            get activeElement() {
+                return activeElement;
+            },
+            querySelector() {
+                return modalOpen || elements.deleteTrackDialog?.open ? {} : null;
+            },
             getElementById(id) {
                 elements[id] ??= new Element();
                 return elements[id];
@@ -160,8 +187,19 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         clearInterval(id) {
             intervals.delete(id);
         },
-        setTimeout() {},
-        requestAnimationFrame() {}
+        setTimeout(callback, delay) {
+            if (delay === 0) deferredActions.push(callback);
+        },
+        requestAnimationFrame(callback) {
+            animationRequests++;
+            animationCallback = callback;
+        },
+        ResizeObserver: class {
+            constructor(callback) {
+                resizeObservers.push(callback);
+            }
+            observe() {}
+        }
     });
     const directory = path.resolve(__dirname, '../../main/resources/static/js');
     for (const file of [
@@ -169,12 +207,13 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         'NoteSequence.js',
         'SequencerEngine.js',
         'midi-io.js',
-        'PianoRollEditor.js'
+        'PianoRollEditor.js',
+        'TrackOverview.js'
     ]) {
         vm.runInContext(fs.readFileSync(path.join(directory, file), 'utf8'), scope);
     }
     const api = vm.runInContext(
-        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor })',
+        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
         scope
     );
     scope.CapturedEngine = class extends api.SequencerEngine {
@@ -209,6 +248,24 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         windowListeners,
         documentListeners,
         pointer,
+        animate(timestamp) {
+            animationCallback(timestamp);
+        },
+        get animationRequests() {
+            return animationRequests;
+        },
+        get resizeObserverCount() {
+            return resizeObservers.length;
+        },
+        resize() {
+            resizeObservers.forEach((callback) => callback());
+        },
+        setModalOpen(value) {
+            modalOpen = value;
+        },
+        get activeElement() {
+            return activeElement;
+        },
         setConfirmation(value) {
             confirmResult = value;
         },
@@ -227,6 +284,27 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         paint() {
             canvasCalls.length = 0;
             elements.pianoViewport.listeners.scroll();
+        },
+        flushDeferredActions() {
+            deferredActions.splice(0).forEach((callback) => callback());
+        },
+        async activateControl(id, detail = 1) {
+            const control = elements[id];
+            control.tagName ??= 'BUTTON';
+            control.type ??= 'button';
+            control.closest ??= (selector) => {
+                if (selector === 'button, summary' || selector === '[data-daw-controls]') {
+                    return control;
+                }
+                return null;
+            };
+            control.focus();
+            const event = { target: control, detail };
+            documentListeners.click?.(event);
+            const result = control.onclick?.(event);
+            deferredActions.splice(0).forEach((callback) => callback());
+            await Promise.resolve();
+            return result;
         },
         clickAt(x, y) {
             const event = pointer(x, y);

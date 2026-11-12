@@ -22,6 +22,13 @@ class SequencerEngine {
         // Transport & timing state
         this.bpm = DEFAULT_BPM;
         this.isPlaying = false;
+        this.isPaused = false;
+        this.pausedTick = null;
+        this.playbackAnchorTick = 0;
+        this.playbackAnchorTime = 0;
+        this.playbackInitialEndStep = TOTAL_STEPS;
+        this.schedulingEndStep = TOTAL_STEPS;
+        this.pendingStartTick = null;
         this.currentStep = 0;
         this.totalSteps = TOTAL_STEPS;
         this.loopStart = 0;
@@ -65,10 +72,17 @@ class SequencerEngine {
     }
 
     // --- Transport Controls ---
-    play() {
+    play(cursorTick = undefined) {
         if (this.isPlaying || this.startPromise) {
             return this.startPromise || Promise.resolve();
         }
+        const resuming = this.isPaused;
+        const requestedTick = resuming ? this.pausedTick : cursorTick ?? this.sequence.stepToTick(this.loopStart);
+        this.#validatePlaybackTick(requestedTick);
+        const compositionEnd = this.sequence.stepToTick(this.totalSteps);
+        const atCompositionEnd = requestedTick === compositionEnd || requestedTick === Math.floor(compositionEnd);
+        this.pendingStartTick = !resuming && atCompositionEnd
+            ? this.sequence.stepToTick(this.loopStart) : requestedTick;
         const token = ++this.runId;
         const start = async () => {
             this.initContext();
@@ -91,9 +105,40 @@ class SequencerEngine {
             if (token !== this.runId) {
                 return;
             }
+            const startTick = this.pendingStartTick;
+            this.pendingStartTick = null;
             this.isPlaying = true;
-            this.currentStep = this.loopStart;
-            this.nextNoteTime = this.audioContext.currentTime + START_DELAY_SEC;
+            this.isPaused = false;
+            this.pausedTick = null;
+            this.playbackAnchorTick = startTick;
+            this.playbackInitialEndStep = startTick < this.sequence.stepToTick(this.loopEnd)
+                ? this.loopEnd : this.totalSteps;
+            this.schedulingEndStep = this.playbackInitialEndStep;
+            this.playbackAnchorTime = this.audioContext.currentTime + START_DELAY_SEC;
+            const startStep = this.sequence.tickToStep(startTick);
+            this.currentStep = Math.floor(startStep);
+            this.nextNoteTime = this.playbackAnchorTime -
+                (this.sequence.ticksToSeconds(startTick) - this.stepSeconds(this.currentStep));
+            if (resuming || cursorTick !== undefined) {
+                // Audition held notes once at the chosen start, then schedule only future onsets.
+                for (const note of this.sequence.notes) {
+                    if (note.ticks < startTick && note.ticks + note.durationTicks > startTick) {
+                        this.#scheduleNote(note, this.playbackAnchorTime, startTick);
+                    }
+                    if (token !== this.runId) {
+                        return;
+                    }
+                }
+            }
+            if (startStep > this.currentStep) {
+                // The first partial step starts in the past, so schedule its remaining events
+                // before the ordinary late-callback skip logic advances to the next full step.
+                this.scheduleStep(this.currentStep, this.nextNoteTime, startTick);
+                if (token !== this.runId) {
+                    return;
+                }
+                this.advanceStep();
+            }
             this.scheduler();
             if (!this.isPlaying || token !== this.runId) {
                 return;
@@ -124,16 +169,85 @@ class SequencerEngine {
         return pending;
     }
 
+    #validatePlaybackTick(tick) {
+        if (!Number.isFinite(tick) || tick < 0 || tick > this.sequence.stepToTick(this.totalSteps)) {
+            throw new RangeError('Keep the playback position inside the composition.');
+        }
+    }
+
+    seekPaused(tick) {
+        if (!this.isPaused) {
+            return;
+        }
+        this.#validatePlaybackTick(tick);
+        this.pausedTick = tick === this.sequence.stepToTick(this.totalSteps)
+            ? this.sequence.stepToTick(this.loopStart) : tick;
+        if (this.startPromise) {
+            this.pendingStartTick = this.pausedTick;
+        }
+        this.currentStep = this.sequence.tickToStep(this.pausedTick);
+        this.visibleStep = Math.floor(this.currentStep);
+    }
+
+    pause() {
+        if (!this.isPlaying && !this.startPromise) {
+            return;
+        }
+        const tick = this.getPlaybackTick();
+        // Reuse the complete cancellation path, including preparation, samples and manager hooks.
+        this.stop();
+        this.isPaused = true;
+        this.pausedTick = tick;
+        this.currentStep = this.sequence.tickToStep(tick);
+        this.visibleStep = Math.floor(this.currentStep);
+    }
+
+    getPlaybackTick() {
+        return this.getPlaybackPosition().ticks;
+    }
+
+    getPlaybackPosition() {
+        if (this.isPaused) {
+            return { ticks: this.pausedTick, pass: null };
+        }
+        if (!this.isPlaying) {
+            return { ticks: this.pendingStartTick ?? this.sequence.stepToTick(this.loopStart), pass: null };
+        }
+        const sequence = this.sequence;
+        const loopStartSeconds = this.stepSeconds(this.loopStart);
+        const loopDuration = this.stepSeconds(this.loopEnd) - loopStartSeconds;
+        const elapsed = Math.max(0, this.audioContext.currentTime - this.playbackAnchorTime);
+        const initialStartSeconds = sequence.ticksToSeconds(this.playbackAnchorTick);
+        const initialDuration = this.stepSeconds(this.playbackInitialEndStep) - initialStartSeconds;
+        // Normalize sub-nanosecond clock rounding at exact wraps so view consumers do not
+        // mistake a new loop for one last forward-moving frame at the old loop end.
+        const remaining = elapsed - initialDuration;
+        const tolerance = 1e-9;
+        if (remaining < -tolerance) {
+            return { ticks: sequence.secondsToTicks(initialStartSeconds + elapsed), pass: 0 };
+        }
+        const loopTime = Math.max(0, remaining);
+        const cycles = Math.floor((loopTime + tolerance) / loopDuration);
+        const loopElapsed = Math.max(0, loopTime - cycles * loopDuration);
+        return {
+            ticks: sequence.secondsToTicks(loopStartSeconds + loopElapsed),
+            pass: 1 + cycles
+        };
+    }
+
     stop() {
         if (this.isStopping) {
             return;
         }
         this.isStopping = true;
         this.isPlaying = false;
+        this.isPaused = false;
+        this.pausedTick = null;
         this.runId++; // invalidates any pending UI timeouts
         clearInterval(this.lookaheadTimer);
         this.currentStep = this.loopStart;
         this.startPromise = null;
+        this.pendingStartTick = null;
         this.stepEvents = [];
         this.visibleStep = null;
         const voices = [...this.pitchedVoices];
@@ -281,6 +395,53 @@ class SequencerEngine {
         }
     }
 
+    addMidiTrack(name) {
+        if (this.isPlaying || this.startPromise) {
+            throw new Error('Pause or stop playback before adding a MIDI track.');
+        }
+        const track = this.sequence.addMusicalTrack({ name });
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
+    renameMidiTrack(id, name) {
+        if (this.isPlaying || this.startPromise) {
+            throw new Error('Pause or stop playback before renaming a MIDI track.');
+        }
+        const track = this.sequence.renameMusicalTrack(id, name);
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
+    reorderMidiTrack(id, toIndex) {
+        // Ordering is visual/serialization state; routing still uses unchanged stable IDs.
+        return this.sequence.moveMusicalTrack(id, toIndex);
+    }
+
+    setMidiTrackOrder(ids) {
+        this.sequence.setMusicalTrackOrder(ids);
+    }
+
+    assertTrackDeletionStopped() {
+        if (this.isPlaying || this.isPaused || this.startPromise) {
+            throw new Error('Press Stop before deleting or restoring MIDI tracks.');
+        }
+    }
+
+    deleteMidiTrack(id) {
+        this.assertTrackDeletionStopped();
+        const record = this.sequence.deleteMusicalTrack(id);
+        this.#syncInstrumentTracks();
+        return record;
+    }
+
+    restoreMidiTrack(record) {
+        this.assertTrackDeletionStopped();
+        const track = this.sequence.restoreMusicalTrack(record);
+        this.#syncInstrumentTracks();
+        return track;
+    }
+
     registerInstrumentManager(manager) {
         if (this.isPlaying || this.startPromise) {
             throw new Error('Stop playback before changing the instrument manager.');
@@ -381,8 +542,15 @@ class SequencerEngine {
         if (this.sequence.tempos.length > 1) {
             throw new Error('Imported tempo map is active; BPM editing is disabled.');
         }
+        const tick = this.getPlaybackTick();
         this.bpm = Math.max(MIN_BPM, Math.min(MAX_BPM, newBpm));
         this.sequence.tempos = [{ ticks: 0, bpm: this.bpm }];
+        if (this.isPlaying) {
+            this.playbackAnchorTick = tick;
+            this.playbackInitialEndStep = tick < this.sequence.stepToTick(this.loopEnd)
+                ? this.loopEnd : this.totalSteps;
+            this.playbackAnchorTime = this.audioContext.currentTime;
+        }
     }
 
     // Timeline changes are stopped-only and retain all notes and sample triggers.
@@ -418,6 +586,8 @@ class SequencerEngine {
             this.loopStart = Math.min(this.loopStart, this.loopEnd - 1);
         }
         this.currentStep = this.loopStart;
+        this.isPaused = false;
+        this.pausedTick = null;
     }
 
     replaceSequence(sequence) {
@@ -443,6 +613,8 @@ class SequencerEngine {
         this.loopStart = 0;
         this.loopEnd = this.totalSteps;
         this.currentStep = 0;
+        this.isPaused = false;
+        this.pausedTick = null;
         this.bpm = sequence.tempos.find((tempo) => tempo.ticks === 0)?.bpm ?? 120;
         this.#syncInstrumentTracks();
     }
@@ -495,6 +667,8 @@ class SequencerEngine {
         this.loopStart = start;
         this.loopEnd = end;
         this.currentStep = start;
+        this.isPaused = false;
+        this.pausedTick = null;
     }
 
     // UI reads the same audio clock; no second playback scheduler.
@@ -503,7 +677,7 @@ class SequencerEngine {
         while (this.stepEvents.length && this.stepEvents[0].time <= this.audioContext.currentTime) {
             step = this.stepEvents.shift().step;
         }
-        this.visibleStep = this.isPlaying ? step : null;
+        this.visibleStep = this.isPlaying ? step : this.isPaused ? Math.floor(this.sequence.tickToStep(this.pausedTick)) : null;
         return this.visibleStep;
     }
 
@@ -570,8 +744,15 @@ class SequencerEngine {
         const now = this.audioContext.currentTime;
         const loopSeconds = this.stepSeconds(this.loopEnd) - this.stepSeconds(this.loopStart);
         if (this.nextNoteTime < now) {
-            const cycles = Math.floor((now - this.nextNoteTime) / loopSeconds);
-            this.nextNoteTime += cycles * loopSeconds;
+            // Finish a potentially non-loop initial pass before skipping repeated full loops.
+            const untilWrap = this.stepSeconds(this.schedulingEndStep) - this.stepSeconds(this.currentStep);
+            if (this.nextNoteTime + untilWrap <= now) {
+                this.nextNoteTime += untilWrap;
+                this.currentStep = this.loopStart;
+                this.schedulingEndStep = this.loopEnd;
+                const cycles = Math.floor((now - this.nextNoteTime) / loopSeconds);
+                this.nextNoteTime += cycles * loopSeconds;
+            }
             while (this.nextNoteTime < now - 1e-9) {
                 this.advanceStep();
             }
@@ -595,61 +776,75 @@ class SequencerEngine {
             this.stepSeconds(this.currentStep + 1) - this.stepSeconds(this.currentStep);
 
         this.nextNoteTime += stepDuration;
-        this.currentStep =
-            this.currentStep + 1 >= this.loopEnd ? this.loopStart : this.currentStep + 1;
+        if (this.currentStep + 1 >= this.schedulingEndStep) {
+            this.currentStep = this.loopStart;
+            this.schedulingEndStep = this.loopEnd;
+        } else {
+            this.currentStep++;
+        }
     }
 
-    scheduleStep(stepIndex, time) {
+    scheduleStep(stepIndex, time, fromTick = null) {
         const runId = this.runId;
         // Bound history even for legacy consumers that only use onStepTick().
         this.stepEvents = this.stepEvents.filter(
             (event) => event.time >= this.audioContext.currentTime - 1
         );
-        this.stepEvents.push({ step: stepIndex, time });
-        this.#schedulePitchedNotes(stepIndex, time);
+        const visibleTime = fromTick === null ? time : this.playbackAnchorTime;
+        this.stepEvents.push({ step: stepIndex, time: visibleTime });
+        this.#schedulePitchedNotes(stepIndex, time, fromTick);
         if (runId !== this.runId) {
             return;
         }
-        this.#notifyStepTick(stepIndex, time);
-        this.#scheduleSampleTracks(stepIndex, time);
+        this.#notifyStepTick(stepIndex, visibleTime);
+        if (fromTick === null || fromTick <= this.sequence.stepToTick(stepIndex)) {
+            this.#scheduleSampleTracks(stepIndex, time);
+        }
     }
 
-    #schedulePitchedNotes(stepIndex, time) {
+    #schedulePitchedNotes(stepIndex, time, fromTick = null) {
         const runId = this.runId;
-        // Convert each endpoint separately: a sustained note may cross tempo changes.
-        this.sequence.notesAt(stepIndex).forEach((note) => {
+        for (const note of this.sequence.notesAt(stepIndex)) {
             if (runId !== this.runId) {
                 return;
             }
-            const track = this.sequence.tracks.find((track) => track.id === note.trackId);
-            const event = {
-                ...note,
-                channel: track?.channel,
-                program: track?.program,
-                startStep: note.startStep,
-                durationSteps: note.durationSteps,
-                when: time + this.sequence.ticksToSeconds(note.ticks) - this.stepSeconds(stepIndex),
-                duration:
-                    this.sequence.ticksToSeconds(note.ticks + note.durationTicks) -
-                    this.sequence.ticksToSeconds(note.ticks)
-            };
-            try {
-                const voice = this.voiceFactory
-                    ? this.voiceFactory(event, this.audioContext, this.masterGain)
-                    : this.createPitchedVoice(event);
-                if (runId !== this.runId) {
-                    this.#discardVoice(voice);
-                    return;
-                }
-                this.#registerVoice(voice, event);
-            } catch (error) {
-                this.#reportAudioError(error, {
-                    phase: 'voice-factory',
-                    noteId: note.id,
-                    trackId: note.trackId
-                });
+            if (fromTick !== null && note.ticks < fromTick) {
+                continue;
             }
-        });
+            const when = time + this.sequence.ticksToSeconds(note.ticks) - this.stepSeconds(stepIndex);
+            this.#scheduleNote(note, when);
+        }
+    }
+
+    #scheduleNote(note, when, soundingFromTick = note.ticks) {
+        const runId = this.runId;
+        const track = this.sequence.tracks.find((track) => track.id === note.trackId);
+        const event = {
+            ...note,
+            channel: track?.channel,
+            program: track?.program,
+            startStep: note.startStep,
+            durationSteps: note.durationSteps,
+            when,
+            duration: this.sequence.ticksToSeconds(note.ticks + note.durationTicks) -
+                this.sequence.ticksToSeconds(soundingFromTick)
+        };
+        try {
+            const voice = this.voiceFactory
+                ? this.voiceFactory(event, this.audioContext, this.masterGain)
+                : this.createPitchedVoice(event);
+            if (runId !== this.runId) {
+                this.#discardVoice(voice);
+                return;
+            }
+            this.#registerVoice(voice, event);
+        } catch (error) {
+            this.#reportAudioError(error, {
+                phase: 'voice-factory',
+                noteId: note.id,
+                trackId: note.trackId
+            });
+        }
     }
 
     #notifyStepTick(stepIndex, time) {

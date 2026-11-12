@@ -18,6 +18,7 @@ class NoteSequence {
         this.tempos = [{ ticks: 0, bpm: 120 }];
         this.timeSignatures = [{ ticks: 0, timeSignature: [4, 4] }];
         this.nextId = 1;
+        this.nextTrackId = 1;
         this.importInfo = null;
     }
     // Pitch labels and grid conversions do not depend on the current viewport.
@@ -113,10 +114,137 @@ class NoteSequence {
         return note;
     }
 
-    ensurePianoTrack() {
-        if (!this.tracks.some((track) => track.id === 'piano')) {
-            this.tracks.unshift({ id: 'piano', name: 'Piano', channel: 0, program: 0 });
+    static validateTrackName(name) {
+        if (typeof name !== 'string' || !name.trim() || name.trim().length > 128) {
+            throw new RangeError('Use a MIDI track name with 1–128 characters.');
         }
+        return name.trim();
+    }
+
+    addMusicalTrack({ name = 'MIDI Track', channel = 0, program = 0 } = {}) {
+        const validName = NoteSequence.validateTrackName(name);
+        if (!Number.isInteger(channel) || channel < 0 || channel > 15 ||
+            !Number.isInteger(program) || program < 0 || program > 127 || this.tracks.length >= 255) {
+            throw new RangeError('Use a valid MIDI channel/program and at most 255 musical tracks.');
+        }
+        const ids = new Set(this.tracks.map((track) => track.id));
+        while (ids.has(`track-${this.nextTrackId}`)) {
+            this.nextTrackId++;
+        }
+        const track = { id: `track-${this.nextTrackId++}`, name: validName, channel, program };
+        this.tracks.push(track);
+        return track;
+    }
+
+    renameMusicalTrack(id, name) {
+        const validName = NoteSequence.validateTrackName(name);
+        const track = this.tracks.find((candidate) => candidate.id === id);
+        if (!track) {
+            throw new RangeError('Choose an existing musical track.');
+        }
+        track.name = validName;
+        return track;
+    }
+
+    moveMusicalTrack(id, toIndex) {
+        const fromIndex = this.tracks.findIndex((track) => track.id === id);
+        if (fromIndex < 0 || !Number.isInteger(toIndex) || toIndex < 0 || toIndex >= this.tracks.length) {
+            throw new RangeError('Choose an existing MIDI track and valid destination.');
+        }
+        if (fromIndex === toIndex) {
+            return false;
+        }
+        const [track] = this.tracks.splice(fromIndex, 1);
+        this.tracks.splice(toIndex, 0, track);
+        return true;
+    }
+
+    setMusicalTrackOrder(ids) {
+        const byId = new Map(this.tracks.map((track) => [track.id, track]));
+        if (!Array.isArray(ids) || ids.length !== this.tracks.length ||
+            new Set(ids).size !== ids.length || ids.some((id) => !byId.has(id))) {
+            throw new RangeError('Track order must contain every current MIDI track ID exactly once.');
+        }
+        this.tracks.splice(0, this.tracks.length, ...ids.map((id) => byId.get(id)));
+    }
+
+    deleteMusicalTrack(id) {
+        const index = this.tracks.findIndex((track) => track.id === id);
+        if (index < 0 || this.tracks.length <= 1) {
+            throw new RangeError('Choose an existing MIDI track; the last MIDI track cannot be deleted.');
+        }
+        const record = {
+            track: { ...this.tracks[index] },
+            index,
+            notes: []
+        };
+        this.notes.forEach((note, noteIndex) => {
+            if (note.trackId === id) {
+                record.notes.push({ note: { ...note }, index: noteIndex });
+            }
+        });
+        this.tracks.splice(index, 1);
+        this.notes = this.notes.filter((note) => note.trackId !== id);
+        return record;
+    }
+
+    restoreMusicalTrack(record) {
+        if (!record?.track || typeof record.track.id !== 'string' || !record.track.id ||
+            typeof record.track.name !== 'string' || !Number.isInteger(record.track.channel) ||
+            record.track.channel < 0 || record.track.channel > 15 || !Number.isInteger(record.track.program) ||
+            record.track.program < 0 || record.track.program > 127 || !Number.isInteger(record.index) || record.index < 0 ||
+            record.index > this.tracks.length || this.tracks.some((track) => track.id === record.track.id) ||
+            !Array.isArray(record.notes)) {
+            throw new RangeError('Cannot restore this MIDI track in the current composition.');
+        }
+        const ids = new Set(this.notes.map((note) => note.id));
+        const indices = new Set();
+        // Validate every restored record off-model before making any structural change.
+        const staged = new NoteSequence(this.stepCount, this.ppq);
+        staged.tracks = [record.track];
+        for (const entry of record.notes) {
+            if (!entry.note?.id || ids.has(entry.note.id) || entry.note.trackId !== record.track.id ||
+                !Number.isInteger(entry.index) || entry.index < 0 || indices.has(entry.index)) {
+                throw new RangeError('Restored MIDI notes must have unique original IDs and positions.');
+            }
+            indices.add(entry.index);
+            staged.addNote(entry.note);
+        }
+        const pianoHasNotes = this.notes.some((note) => note.trackId === 'piano') ||
+            record.notes.some((entry) => entry.note.trackId === 'piano');
+        const exportedCount = [...this.tracks, record.track].filter((track) =>
+            !this.importInfo || track.id !== 'piano' || pianoHasNotes).length;
+        if (exportedCount > 255) {
+            throw new RangeError('Restoring this track would exceed the MIDI track limit.');
+        }
+        const survivors = [...this.notes];
+        this.tracks.splice(record.index, 0, { ...record.track });
+        const restored = record.notes.map((entry) => ({ index: entry.index, note: this.addNote(entry.note) }))
+            .sort((a, b) => a.index - b.index);
+        const merged = [];
+        let survivingIndex = 0;
+        let restoredIndex = 0;
+        while (survivingIndex < survivors.length || restoredIndex < restored.length) {
+            if (restoredIndex < restored.length &&
+                (merged.length >= restored[restoredIndex].index || survivingIndex >= survivors.length)) {
+                merged.push(restored[restoredIndex++].note);
+            } else {
+                merged.push(survivors[survivingIndex++]);
+            }
+        }
+        this.notes = merged;
+        return this.tracks[record.index];
+    }
+
+    ensurePianoTrack() {
+        if (this.tracks.some((track) => track.id === 'piano')) {
+            return 'piano';
+        }
+        // Deleting Piano is intentional. Use a survivor instead of resurrecting it on creation/import.
+        if (this.tracks.length) {
+            return this.tracks[0].id;
+        }
+        this.tracks.push({ id: 'piano', name: 'Piano', channel: 0, program: 0 });
         return 'piano';
     }
 
@@ -180,7 +308,7 @@ class NoteSequence {
         remaining.tracks = this.tracks
             .filter((track) => track.importId !== info.id)
             .map((track) => ({ ...track }));
-        remaining.ensurePianoTrack();
+        const fallbackTrackId = remaining.ensurePianoTrack();
         remaining.tempos = info.previousTempos.map((tempo) => ({ ...tempo }));
         remaining.timeSignatures = info.previousTimeSignatures.map((event) => ({
             ticks: event.ticks,
@@ -190,7 +318,7 @@ class NoteSequence {
             .filter((note) => note.importId !== info.id)
             .forEach((note) => {
                 const trackExists = remaining.tracks.some((track) => track.id === note.trackId);
-                remaining.addNote({ ...note, trackId: trackExists ? note.trackId : 'piano' });
+                remaining.addNote({ ...note, trackId: trackExists ? note.trackId : fallbackTrackId });
             });
         const lastNoteEnd = remaining.notes.reduce(
             (end, note) => Math.max(end, note.ticks + note.durationTicks),

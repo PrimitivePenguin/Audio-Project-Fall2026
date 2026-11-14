@@ -34,7 +34,22 @@ Password: adminadmin
 
 ### 3.1 Setup
 
+**Option A: Local H2 database (easiest, no Postgres or `.env` needed)**
+
 Terminal 1. Localhost:8080
+```
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local"
+```
+- Data is saved in `./data/` (gitignored). Delete that folder to reset.
+- The local DB starts empty: sign up at http://localhost:8080/signup.
+- To make yourself admin, open http://localhost:8080/h2-console (JDBC URL `jdbc:h2:file:./data/localdb;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE`, user `sa`, no password) and run:
+  ```
+  UPDATE users SET role_type = 'ADMIN' WHERE username = 'yourname';
+  ```
+
+**Option B: Real Postgres (same DB as Render)**
+
+Put `DB_URL`, `DB_USER`, `DB_PASSWORD` in a `.env` file in the project root, then:
 ```
 .\mvnw.cmd spring-boot:run
 ```

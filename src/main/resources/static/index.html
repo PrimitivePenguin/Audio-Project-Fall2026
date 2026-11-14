@@ -8,7 +8,8 @@
 </head>
 <body>
 <main class="daw-workspace">
-    <header class="toolbar primary-toolbar" aria-label="Transport and project controls">
+    <header class="toolbar primary-toolbar" aria-label="Transport and project controls" id="meshContainer1">
+        <svg id="background_contour" aria-hidden="true"></svg>
         <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
         <div class="control-group" aria-label="Playback controls" data-daw-controls>
             <button id="playButton" type="button" title="Space">▶ Play</button>
@@ -147,6 +148,8 @@
 <script src="/js/TrackOverview.js"></script>
 <script src="/js/sequencer-ui.js"></script>
 <script>
+
+    
     fetch('/api/current-user')
         .then(response => response.json())
         .then(user => {
@@ -160,6 +163,37 @@
         .catch(() => {
             document.getElementById('currentUser').textContent = 'Unable to load account';
         });
+</script>
+<script type="module">
+    import { startAnimation, renderFrame } from "./contour/contour_animation.js"
+    import { setup } from "./contour/perlin_gen.js"
+
+    let res = 5;
+    let levels = 5;
+    const field = setup(res, "meshContainer1");
+    // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
+    // const colorlist = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
+    // const colorlist = [[0,0,0],[255,255,0],[0,0,255], [255,255,255]]
+    // const colorlist = [[125, 125, 125]] // single colors
+    // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
+    const colorlist = [[255,255,255], [0,0,0]]
+    let dampening = 0.25;
+    let scale = 0.5;
+
+    // Curve settings:
+    const settings = {
+        curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
+        tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
+        points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
+        height: 1          // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+    };
+
+    // Single still frame: (field, levels, colorlist, dampening, scale, time, settings)
+    renderFrame(field, levels, colorlist, dampening, scale, 0, settings);
+    // Animated: (field, levels, colorlist, increment, dampening, scale, settings)
+    // startAnimation(field, levels, colorlist, 0.1, dampening, scale, settings);
+
+
 </script>
 </body>
 </html>

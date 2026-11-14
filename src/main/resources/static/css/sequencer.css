@@ -4,7 +4,7 @@
     background: #182333;
     font-size: 13px;
     --border: #c6d0dd;
-    --accent: #087e8b;
+    --accent: #000000;
 }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; }
@@ -16,7 +16,9 @@ body { margin: 0; overflow: hidden; }
     min-width: 0;
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
-.primary-toolbar { background: #182333; color: #edf3fb; border-bottom: 1px solid #354357; }
+.primary-toolbar { position: relative; background: #000000; color: #edf3fb; border-bottom: 1px solid #354357; }
+#background_contour { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.primary-toolbar > :not(#background_contour) { position: relative; z-index: 1; }
 .editing-toolbar { background: #e7edf5; border-bottom: 1px solid #a5b3c4; }
 .brand { font-size: 21px; margin: 0 12px 0 0; letter-spacing: -.5px; }
 .brand span { display: block; font-size: 9px; letter-spacing: 2px; color: #a9b9ce; }

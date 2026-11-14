@@ -17,8 +17,8 @@ body { margin: 0; overflow: hidden; }
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
 .primary-toolbar { position: relative; background: #000000; color: #edf3fb; border-bottom: 1px solid #354357; }
-#background_contour { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
-.primary-toolbar > :not(#background_contour) { position: relative; z-index: 1; }
+#toolbarMeshContainer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.primary-toolbar > :not(#toolbarMeshContainer) { position: relative; z-index: 1; }
 .editing-toolbar { background: #e7edf5; border-bottom: 1px solid #a5b3c4; }
 .brand { font-size: 21px; margin: 0 12px 0 0; letter-spacing: -.5px; }
 .brand span { display: block; font-size: 9px; letter-spacing: 2px; color: #a9b9ce; }
@@ -107,3 +107,13 @@ dialog p { color: #53677e; line-height: 1.5; }
 .ghost-control input { accent-color: #087e8b; }
 
 #deleteMidiTrack { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+#pianoViewport, #canvasMeshContainer { grid-area: 3 / 1; }
+
+#canvasMeshContainer {
+    z-index: 20;
+    width: 100%;
+    height: 100%;
+    opacity: 0.8;
+    pointer-events: none;
+}

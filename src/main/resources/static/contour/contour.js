@@ -10,7 +10,7 @@ import { gridRes } from "./perlin_gen.js";
 // curve: "segments" | "linear" | "catmullRom" | "bspline" | "natural"
 // points: "interpolate" (smooth placement) | "midpoint" (classic blocky marching squares)
 // res is left out on purpose: gridRes is only set once setup() runs, so it is read at draw time.
-export const DEFAULT_SETTINGS = { curve: "catmullRom", tension: 1, points: "interpolate" };
+export const DEFAULT_SETTINGS = { curve: "catmullRom", tension: 1, points: "interpolate", lineWidth: 1 };
 
 
 // ===================== 1. FIELD =====================
@@ -395,12 +395,12 @@ function drawLevel(segs, th, field, res, settings, pen) {
 // INPUT:  svg: SVG element, pathString: string, color: string
 // OUTPUT: none
 // ACTION: adds one <path> element (SVG output only)
-function drawPath(svg, pathString, color = "black") {
+function drawPath(svg, pathString, color = "black", lineWidth = 1) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", pathString);
     path.setAttribute("stroke", color);
     path.setAttribute("fill", "none");
-    path.setAttribute("stroke-width", 1);
+    path.setAttribute("stroke-width", lineWidth);
     svg.appendChild(path);
 }
 
@@ -420,7 +420,7 @@ export function draw(field, num_color, colorStops = [[0, 0, 0], [255, 255, 255]]
         if (segsByLevel[k].length === 0) continue;
         const pen = new SvgPen();
         drawLevel(segsByLevel[k], levels[k], field, s.res, s, pen);
-        drawPath(svg, pen.toString(), colors[k]);
+        drawPath(svg, pen.toString(), colors[k], s.lineWidth);
     }
 }
 
@@ -435,7 +435,7 @@ export function drawCanvas(ctx, field, num_color, colorStops = [[0, 0, 0], [255,
 
     s.res = settings.res ?? field.res ?? gridRes;
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.lineWidth = 1;
+    ctx.lineWidth = s.lineWidth;
     for (let k = 0; k < levels.length; k++) {
         if (segsByLevel[k].length === 0) continue;
         ctx.beginPath();

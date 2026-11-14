@@ -12,7 +12,7 @@ const interval = 1000 / targetFPS;
 const animations = new Map();
 
 // Removes the previous frame's paths and draws a new one into the given SVG
-function drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings) {
+function drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings = {}) {
     const svg = document.getElementById(elementId);
     if (!svg) {
         console.warn(`contour: no element with id "${elementId}"`);

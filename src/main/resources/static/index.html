@@ -9,7 +9,7 @@
 <body>
 <main class="daw-workspace">
     <header class="toolbar primary-toolbar" aria-label="Transport and project controls" id="meshContainer1">
-        <svg id="background_contour" aria-hidden="true"></svg>
+        <svg id="toolbarMeshContainer" aria-hidden="true"></svg>
         <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
         <div class="control-group" aria-label="Playback controls" data-daw-controls>
             <button id="playButton" type="button" title="Space">▶ Play</button>
@@ -111,6 +111,7 @@
             </div>
         </details>
     </section>
+    <svg id="canvasMeshContainer" aria-hidden="true"></svg>
     <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll">
         <div id="pianoSpacer"></div>
         <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
@@ -169,31 +170,54 @@
     import { setup } from "./contour/perlin_gen.js"
 
     let res = 5;
-    let levels = 5;
-    const field = setup(res, "meshContainer1");
+    let toolbarLevels = 5;
+    const toolbarMesh = "toolbarMeshContainer";
+    const toolbarField = setup(res, toolbarMesh);
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
     // const colorlist = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
     // const colorlist = [[0,0,0],[255,255,0],[0,0,255], [255,255,255]]
     // const colorlist = [[125, 125, 125]] // single colors
     // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
-    const colorlist = [[255,255,255], [0,0,0]]
-    let dampening = 0.25;
-    let scale = 0.5;
+    const toolbarColorList = [[255,255,255], [0,0,0]]
+    let toolbarDampening = 0.25;
+    let toolbarScale = 0.5;
 
     // Curve settings:
-    const settings = {
+    const toolbarSettings = {
         curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
         tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
         points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
-        height: 1          // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+        height: 1,         // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+        lineWidth: 1       // stroke width in px (default 1)
     };
 
-    // Single still frame: (field, levels, colorlist, dampening, scale, time, settings)
-    renderFrame(field, levels, colorlist, dampening, scale, 0, settings);
-    // Animated: (field, levels, colorlist, increment, dampening, scale, settings)
-    // startAnimation(field, levels, colorlist, 0.1, dampening, scale, settings);
+    // Single still frame: (toolbarField, levels, colorlist, dampening, scale, time, settings)
+    // renderFrame(toolbarField, toolbarLevels, toolbarColorList, dampening, scale, 0, toolbarSettings, toolbarMesh);
+    // Animated: (toolbarField, levels, toolbarColorList, increment, dampening, scale, settings)
+    startAnimation(toolbarField, toolbarLevels, toolbarColorList, 0.1, toolbarDampening, toolbarScale, toolbarSettings, toolbarMesh);
 
 
+    const canvasMesh = "canvasMeshContainer";
+    const canvasLevels = 20;
+    // const canvasColorList = [[255,255,255], [0,0,0]]
+    const canvasColorList = [[255,255,255], [100,100,255], [0,0,0]]
+
+    // const canvasColorList = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
+    let canvasDampening = 0.25;
+    let canvasScale = 0.25;
+
+    const canvasField = setup(res, canvasMesh)
+    // Curve settings:
+    const canvasSettings = {
+        curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
+        tension: 1,         // catmullRom only: 0 = straight lines, 1 = standard
+        points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
+        height: 1.5,         // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+        lineWidth: 1         // stroke width in px (default 1)
+    };
+
+    // only renderFrame, animated doesn't work for this
+    renderFrame(canvasField, canvasLevels, canvasColorList, canvasDampening, canvasScale, 0, canvasSettings, canvasMesh)
 </script>
 </body>
 </html>

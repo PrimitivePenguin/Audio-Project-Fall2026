@@ -177,11 +177,11 @@
     // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
     const colorlist = [[255,255,255], [0,0,0]]
     let dampening = 0.25;
-    let scale = 0.15;
+    let scale = 0.5;
 
     // Curve settings:
     const settings = {
-        curve: "natural",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
+        curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
         tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
         points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
         height: 1          // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter

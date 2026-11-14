@@ -63,7 +63,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (name && name.trim()) {
                     await request(`/api/projects/${project.id}`, {
                         method: 'PUT',
-                        body: JSON.stringify({ name: name.trim() })
+                        body: JSON.stringify({
+                            name: name.trim(),
+                            version: project.version
+                        })
                     });
                 }
             });

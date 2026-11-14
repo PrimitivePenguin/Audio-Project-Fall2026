@@ -3,6 +3,7 @@ package com.cmpt276group18.audio_project.service;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.Objects;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -58,9 +59,12 @@ public class ProjectService {
     }
 
     @Transactional
-    public Project update(UUID projectId, Integer userId, String name, String projectData) {
+    public Project update(UUID projectId, Integer userId, String name, String projectData, Long version) {
         Project project = requireProject(projectId);
         requireEditor(projectId, userId);
+        if (version == null || !Objects.equals(version, project.getVersion())) {
+            throw new ProjectVersionConflictException("Project is stale; reload it before saving");
+        }
         if (name != null) project.setName(name);
         if (projectData != null) project.setProjectData(projectData);
         return projectRepository.save(project);
@@ -105,6 +109,9 @@ public class ProjectService {
         ProjectCollaborator collaborator = collaboratorRepository
                 .findByProjectIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ProjectNotFoundException("Collaborator not found"));
+        if (collaborator.getRole() == ProjectRole.OWNER) {
+            throw new ProjectAccessException("Transfer ownership before changing the owner's role");
+        }
         collaborator.setRole(role);
         return collaboratorRepository.save(collaborator);
     }
@@ -134,6 +141,8 @@ public class ProjectService {
 
     @Transactional
     public void transferOwnership(UUID projectId, Integer ownerId, String newOwnerIdentifier) {
+        Project project = projectRepository.findByIdForUpdate(projectId)
+                .orElseThrow(() -> new ProjectNotFoundException("Project not found"));
         requireOwner(projectId, ownerId);
         Integer newOwnerId = findUser(newOwnerIdentifier).getId();
         if (ownerId.equals(newOwnerId)) return;
@@ -148,7 +157,6 @@ public class ProjectService {
         newOwner.setRole(ProjectRole.OWNER);
         collaboratorRepository.save(currentOwner);
         collaboratorRepository.save(newOwner);
-        Project project = requireProject(projectId);
         project.setOwnerId(newOwnerId);
         projectRepository.save(project);
     }
@@ -195,9 +203,10 @@ public class ProjectService {
             throw new ProjectNotFoundException("Username or email is required");
         }
         String value = identifier.trim();
-        Optional<UserInfo> user = value.contains("@")
-                ? userRepository.findByEmail(value.toLowerCase())
-                : userRepository.findByUsername(value);
+        Optional<UserInfo> user = userRepository.findByUsername(value);
+        if (user.isEmpty() && value.contains("@")) {
+            user = userRepository.findByEmail(value.toLowerCase());
+        }
         return user.orElseThrow(() -> new ProjectNotFoundException("No user found with that username or email"));
     }
 
@@ -207,5 +216,9 @@ public class ProjectService {
 
     public static class ProjectNotFoundException extends RuntimeException {
         public ProjectNotFoundException(String message) { super(message); }
+    }
+
+    public static class ProjectVersionConflictException extends RuntimeException {
+        public ProjectVersionConflictException(String message) { super(message); }
     }
 }

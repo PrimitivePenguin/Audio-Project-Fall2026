@@ -496,6 +496,19 @@
         statusElement.textContent = text;
     }
 
+    function databaseSnapshot() {
+        const sample = engine.tracks.get('uploaded');
+        return {
+            ...engine.sequence.toJSON(),
+            loopStart: engine.loopStart,
+            loopEnd: engine.loopEnd,
+            sample: sample ? {
+                name: loadedSampleName,
+                steps: sample.steps.map((active) => Boolean(active))
+            } : null
+        };
+    }
+
     async function saveDatabaseProject() {
         if (!databaseProject || databaseProject.role === 'VIEWER' || databaseSaveInFlight) {
             return;
@@ -508,13 +521,15 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: engine.sequence.name,
-                    projectData: JSON.stringify(engine.sequence.toJSON())
+                    projectData: JSON.stringify(databaseSnapshot()),
+                    version: databaseProject.version
                 })
             });
             const body = await response.json().catch(() => null);
             if (!response.ok) {
                 throw new Error(body?.error || `Save failed (${response.status})`);
             }
+            databaseProject.version = body.version;
             showStatus(`Saved "${engine.sequence.name}" to the database.`);
         } catch (error) {
             showStatus(`Save failed: ${error.message}`);
@@ -2445,6 +2460,8 @@
         sampleTriggerPage = 0;
         stopPlayback();
         engine.newSequence();
+        databaseProject = null;
+        getElement('saveProject').disabled = false;
         newNoteLengthSteps = 1;
         newNoteVelocity = 89;
         getElement('midiFile').value = '';
@@ -2473,6 +2490,7 @@
                     id: project.id,
                     name: project.name,
                     role: project.role,
+                    version: project.version,
                     data: typeof project.projectData === 'string'
                         ? JSON.parse(project.projectData)
                         : project.projectData
@@ -2498,7 +2516,8 @@
             databaseProject = {
                 id: saved.id,
                 name: saved.name,
-                role: saved.role
+                role: saved.role,
+                version: saved.version
             };
             getElement('saveProject').disabled = databaseProject.role === 'VIEWER';
             sequence.name = saved.name || data.name || 'JukeBox';
@@ -2510,6 +2529,15 @@
             sequence.importInfo = data.importInfo || null;
             (data.notes || []).forEach((note) => sequence.addNote(note));
             engine.replaceSequence(sequence);
+            engine.setLoopRange(
+                Number.isInteger(data.loopStart) ? data.loopStart : 0,
+                Number.isInteger(data.loopEnd) ? data.loopEnd : sequence.stepCount
+            );
+            if (data.sample && Array.isArray(data.sample.steps)) {
+                engine.addTrack('uploaded', null);
+                data.sample.steps.forEach((active, step) => engine.setStep('uploaded', step, active));
+                loadedSampleName = data.sample.name || '';
+            }
             resetEditorSelection();
             resetPitchViewport();
             showStatus(`Loaded "${sequence.name}" from the database.`);

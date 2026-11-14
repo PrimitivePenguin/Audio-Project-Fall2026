@@ -42,9 +42,10 @@ public class ProjectController {
                 .map(project -> Map.of(
                         "id", project.getId(),
                         "name", project.getName(),
-                        "projectData", project.getProjectData(),
+                        // "projectData", project.getProjectData(),
                         "createdAt", project.getCreatedAt(),
                         "updatedAt", project.getUpdatedAt(),
+                        "version", project.getVersion(),
                         "role", projectService.roleForUser(project.getId(), userId)))
                 .toList());
     }
@@ -71,6 +72,7 @@ public class ProjectController {
                         "projectData", project.getProjectData(),
                         "createdAt", project.getCreatedAt(),
                         "updatedAt", project.getUpdatedAt(),
+                        "version", project.getVersion(),
                         "role", projectService.roleForUser(projectId, userId))))
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body(Map.of("error", "Project not found")));
@@ -82,7 +84,8 @@ public class ProjectController {
                                     HttpSession session) {
         Integer userId = currentUser(session);
         if (userId == null) return unauthorized();
-        return ResponseEntity.ok(projectService.update(projectId, userId, request.name(), request.projectData()));
+        return ResponseEntity.ok(projectService.update(projectId, userId, request.name(),
+                request.projectData(), request.version()));
     }
 
     @DeleteMapping("/{projectId}")
@@ -167,7 +170,13 @@ public class ProjectController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", exception.getMessage()));
     }
 
-    public record ProjectRequest(String name, String projectData) {}
+    @org.springframework.web.bind.annotation.ExceptionHandler(ProjectService.ProjectVersionConflictException.class)
+    public ResponseEntity<Map<String, String>> versionConflict(
+            ProjectService.ProjectVersionConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", exception.getMessage()));
+    }
+
+    public record ProjectRequest(String name, String projectData, Long version) {}
     public record CollaboratorRequest(String usernameOrEmail, ProjectRole role) {}
     public record RoleRequest(ProjectRole role) {}
     public record TransferRequest(String usernameOrEmail) {}

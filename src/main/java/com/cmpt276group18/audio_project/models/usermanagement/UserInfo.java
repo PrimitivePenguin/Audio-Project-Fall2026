@@ -6,6 +6,7 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Pattern;
 
 @Entity // Save as datbase
 @Table(name = "users")
@@ -22,6 +23,7 @@ public class UserInfo {
     @Column(unique = true, nullable = false)
     @NotBlank(message = "Username is required")
     @Size(max = 50, message = "Username must be at most 50 characters")
+    @Pattern(regexp = "^[^@]+$", message = "Username cannot contain @")
     private String username;
 
     @NotBlank(message = "Password is required")

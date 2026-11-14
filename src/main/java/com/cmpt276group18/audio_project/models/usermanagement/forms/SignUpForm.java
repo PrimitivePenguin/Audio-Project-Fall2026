@@ -4,6 +4,7 @@ import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Pattern;
 
 // What the signup page sends. Kept separate from UserInfo so a user can't
 // set fields like id or roleType by adding them to the form.
@@ -11,6 +12,7 @@ public class SignUpForm {
 
     @NotBlank(message = "Username is required")
     @Size(max = 50, message = "Username must be at most 50 characters")
+    @Pattern(regexp = "^[^@]+$", message = "Username cannot contain @")
     private String username;
 
     // Optional, same as UserInfo

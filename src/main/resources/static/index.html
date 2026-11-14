@@ -168,7 +168,7 @@
     import { setup } from "./contour/perlin_gen.js"
 
     let res = 5;
-    let colors = 30;
+    let levels = 5;
     const field = setup(res, "meshContainer1");
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
     // const colorlist = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
@@ -177,20 +177,20 @@
     // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
     const colorlist = [[255,255,255], [0,0,0]]
     let dampening = 0.25;
-    let scale = 0.05;
+    let scale = 0.15;
 
     // Curve settings:
     const settings = {
-        curve: "segments",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
+        curve: "natural",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
         tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
         points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
         height: 1          // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
     };
 
-    // Single still frame: (field, colors, colorlist, dampening, scale, time, settings)
-    renderFrame(field, colors, colorlist, dampening, scale, 0, settings);
-    // Animated: (field, colors, colorlist, increment, dampening, scale, settings)
-    // startAnimation(field, colors, colorlist, 0.1, dampening, scale, settings);
+    // Single still frame: (field, levels, colorlist, dampening, scale, time, settings)
+    renderFrame(field, levels, colorlist, dampening, scale, 0, settings);
+    // Animated: (field, levels, colorlist, increment, dampening, scale, settings)
+    // startAnimation(field, levels, colorlist, 0.1, dampening, scale, settings);
 
 
 </script>

@@ -1,116 +1,105 @@
 // from https://github.com/PrimitivePenguin/contour
-import { draw　} from "./contour.js"
+import { draw } from "./contour.js"
 import { generatePerlin } from "./perlin_gen.js"
 
-let animationID;
-let isAnimating = false;
-let stopped = false;
-let lastUpdate = 0;
-const targetFPS = 5; // ~50ms per frame
+const DEFAULT_ID = "background_contour";
+const targetFPS = 5;
 const interval = 1000 / targetFPS;
-let t = 0; // tracks calculation
-let curtime = new Date();
-let pasttime = new Date();
 
-// Animation tracker
-let currentField = null;
-let num_colors = null;
-let colorlist = null;
-let incrementFactor = null;
-let dampeningFactor = null;
-let scaleFactor = null;
-let drawSettings = {}; // passed to draw(): { curve, tension, res }
+// One state object per SVG element id, so several contours can run at once.
+// { field, num_color, colorlist, increment, dampening, scale, settings,
+//   t, lastUpdate, animationID, isAnimating, stopped }
+const animations = new Map();
 
-// Animation
-function animateLoop(timestamp, field, num_color, colorlist, increment, dampening, scale) {
-    if (!isAnimating) {
-        stopAnimation();
-        return;
+// Removes the previous frame's paths and draws a new one into the given SVG
+function drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings) {
+    const svg = document.getElementById(elementId);
+    if (!svg) {
+        console.warn(`contour: no element with id "${elementId}"`);
+        return false;
     }
-    if (!lastUpdate) lastUpdate = timestamp;
-    const elapsed = timestamp - lastUpdate;
-
-    if (elapsed >= interval) {
-        lastUpdate = timestamp - (elapsed % interval); // reset for next frame
-        animate(field, num_color, colorlist, increment, dampening, scale);
-    }
-
-    animationID = requestAnimationFrame((ts) => {
-        animateLoop(ts, field, num_color, colorlist, increment, dampening, scale);
-    });
-}
-
-function animate(field, num_color, colorlist, increment, dampening, scale) {
-    const svg = document.getElementById("background_contour");
-    const paths = svg.querySelectorAll('path');
-    paths.forEach(p => p.remove());
-
-
-    // All changes to the initial base is applied here
-    let modulatedField =  generatePerlin(field, scale, dampening, t, drawSettings.height ?? 1);
-    // Redraw marching squares with updated values
-    draw(modulatedField, num_color, colorlist, drawSettings);
-    // Increment time
-    t  += increment;
-    t = Math.round(t * 10) /10;
-
-    // Loop
-}
-
-export function startAnimation(field, colors, colorlistArg, increment, dampening, scale, settings = {}) {
-    drawSettings = settings;
-    // Remember the settings so resumeAnimation() can restart with them.
-    // Saved even if already running, so restarting with new settings works.
-    currentField = field;
-    num_colors = colors;
-    colorlist = colorlistArg;
-    incrementFactor = increment;
-    dampeningFactor = dampening;
-    scaleFactor = scale;
-
-    stopAnimation();
-    stopped = false;
-    resumeAnimation();
-}
-
-export function stopAnimation() {
-    isAnimating = false;
-    if (animationID) {
-        cancelAnimationFrame(animationID);
-        animationID = null;
-    }
-}
-
-// Safe to call on any page: does nothing if startAnimation() was never
-// called (static renderFrame pages) or if it's already running.
-export function resumeAnimation() {
-    if (isAnimating || !currentField) return;
-    isAnimating = true;
-    lastUpdate = 0;
-    animationID = requestAnimationFrame((ts) => {
-        animateLoop(ts, currentField, num_colors, colorlist, incrementFactor, dampeningFactor, scaleFactor);
-    });
-}
-
-
-export function renderFrame(field, num_color, colorlist, dampening, scale, time = t, settings = {}) {
-    const svg = document.getElementById("background_contour");
     svg.querySelectorAll('path').forEach(p => p.remove());
     const modulatedField = generatePerlin(field, scale, dampening, time, settings.height ?? 1);
-    draw(modulatedField, num_color, colorlist, settings);
+    draw(modulatedField, num_color, colorlist, settings, elementId);
+    return true;
 }
 
+function animateLoop(timestamp, elementId) {
+    const a = animations.get(elementId);
+    if (!a || !a.isAnimating) return;
 
-document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-        // Page is not visible → stop animation
-        stopAnimation();
-        console.log("Animation paused (page hidden)");
-    } else if (stopped == false){
-        // Page is visible → resume animation
-        resumeAnimation();
-        console.log("Animation resumed (page visible)");
+    if (!a.lastUpdate) a.lastUpdate = timestamp;
+    const elapsed = timestamp - a.lastUpdate;
+
+    if (elapsed >= interval) {
+        a.lastUpdate = timestamp - (elapsed % interval); // reset for next frame
+        if (!drawInto(elementId, a.field, a.num_color, a.colorlist, a.dampening, a.scale, a.t, a.settings)) {
+            stopAnimation(elementId);
+            return;
+        }
+        a.t = Math.round((a.t + a.increment) * 10) / 10;
     }
-    // if button pressed and viewer look away -> stop animation
-    // if button not pressed and viewer looks away -> resume animation
+
+    a.animationID = requestAnimationFrame(ts => animateLoop(ts, elementId));
+}
+
+// Starts (or restarts with new settings) the animation in the SVG with this id.
+// Note: field must come from its own setup() call; generatePerlin overwrites it every frame.
+export function startAnimation(field, colors, colorlist, increment, dampening, scale, settings = {}, elementId = DEFAULT_ID) {
+    const prev = animations.get(elementId);
+    stopAnimation(elementId);
+    animations.set(elementId, {
+        field, num_color: colors, colorlist, increment, dampening, scale, settings,
+        t: prev ? prev.t : 0,     // keep time on restart so it doesn't jump
+        lastUpdate: 0, animationID: null, isAnimating: false, stopped: false,
+    });
+    resumeAnimation(elementId);
+}
+
+// Stops one animation by id. stopAnimation() with no id stops every animation.
+export function stopAnimation(elementId) {
+    const ids = elementId === undefined ? [...animations.keys()] : [elementId];
+    for (const id of ids) {
+        const a = animations.get(id);
+        if (!a) continue;
+        a.isAnimating = false;
+        a.stopped = true;
+        if (a.animationID) cancelAnimationFrame(a.animationID);
+        a.animationID = null;
+    }
+}
+
+// Resumes one animation by id, or every animation when called with no id.
+// Does nothing for ids that were never started, or that are already running.
+export function resumeAnimation(elementId) {
+    const ids = elementId === undefined ? [...animations.keys()] : [elementId];
+    for (const id of ids) {
+        const a = animations.get(id);
+        if (!a || a.isAnimating) continue;
+        a.isAnimating = true;
+        a.stopped = false;
+        a.lastUpdate = 0;
+        a.animationID = requestAnimationFrame(ts => animateLoop(ts, id));
+    }
+}
+
+// Draws a single still frame into the SVG with this id.
+export function renderFrame(field, num_color, colorlist, dampening, scale, time = 0, settings = {}, elementId = DEFAULT_ID) {
+    drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings);
+}
+
+// Pause everything while the tab is hidden; on return, resume only the
+// animations that were running (not ones the page stopped on purpose).
+document.addEventListener("visibilitychange", () => {
+    for (const [id, a] of animations) {
+        if (document.hidden) {
+            if (a.isAnimating) {
+                a.isAnimating = false;
+                if (a.animationID) cancelAnimationFrame(a.animationID);
+                a.animationID = null;
+            }
+        } else if (!a.stopped) {
+            resumeAnimation(id);
+        }
+    }
 });

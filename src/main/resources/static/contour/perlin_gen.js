@@ -146,5 +146,6 @@ export function setup(res, containerID) {
             // // }
         }
     }
+    field.res = res; // remembered per field so meshes with different res can coexist
     return field;
 }

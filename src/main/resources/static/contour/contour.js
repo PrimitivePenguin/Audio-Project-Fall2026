@@ -408,10 +408,11 @@ function drawPath(svg, pathString, color = "black") {
 //         settings: { curve, tension, res } (optional, merged over DEFAULT_SETTINGS)
 // OUTPUT: none
 // ACTION: SVG output. Builds every level's segments in one pass, then adds
-//         one <path> per level to #heroMesh
-export function draw(field, num_color, colorStops = [[0, 0, 0], [255, 255, 255]], settings = {}) {
-    const svg = document.getElementById("background_contour");
-    const s = { ...DEFAULT_SETTINGS, res: gridRes, ...settings };
+//         one <path> per level to the SVG with id elementId
+export function draw(field, num_color, colorStops = [[0, 0, 0], [255, 255, 255]], settings = {}, elementId = "background_contour") {
+    const svg = document.getElementById(elementId);
+    if (!svg) throw new Error(`contour: no element with id "${elementId}"`);
+    const s = { ...DEFAULT_SETTINGS, res: field.res ?? gridRes, ...settings };
     const { levels, colors, step, minVal } = levelColors(num_color, colorStops);
     const segsByLevel = buildAllSegments(field, levels.length, minVal, step);
 
@@ -432,6 +433,7 @@ export function drawCanvas(ctx, field, num_color, colorStops = [[0, 0, 0], [255,
     const { levels, colors, step, minVal } = levelColors(num_color, colorStops);
     const segsByLevel = buildAllSegments(field, levels.length, minVal, step);
 
+    s.res = settings.res ?? field.res ?? gridRes;
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.lineWidth = 1;
     for (let k = 0; k < levels.length; k++) {

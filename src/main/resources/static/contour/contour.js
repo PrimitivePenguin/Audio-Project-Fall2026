@@ -97,7 +97,7 @@ function edgeId(side, i, j) {
 function buildAllSegments(field, nLevels, minVal, step) {
     const segsByLevel = Array.from({ length: nLevels }, () => []);
     const cols = field.length;
-    const rows = field[0].length;
+    const rows = cols ? field[0].length : 0;   // 0-size element: no cells, no segments
 
     for (let i = 0; i < cols - 1; i++) {
         for (let j = 0; j < rows - 1; j++) {

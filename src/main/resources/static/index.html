@@ -169,7 +169,7 @@
         });
 </script>
 <script type="module">
-    import { startAnimation, renderFrame } from "/contour/contour_animation.js"
+    import { startAnimation, renderFrame, setAnimationField } from "/contour/contour_animation.js"
     import { setup } from "/contour/perlin_gen.js"
     import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
     import { press, release } from "/contour/press_state.js"
@@ -218,10 +218,15 @@
             if (id) { release(id); byPointer.delete(e.pointerId); }
         });
     }
+    // A pointerup outside the window (e.g. after alt-tab mid-press) never arrives,
+    // which left buttons stuck pressed: release everything when the window loses focus.
+    window.addEventListener("blur", () => {
+        for (const id of byPointer.values()) release(id);
+        byPointer.clear();
+    });
     let res = 5;
     let toolbarLevels = 5;
     const toolbarMesh = "toolbarMeshContainer";
-    const toolbarField = setup(res, toolbarMesh);
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
     // const colorlist = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
     // const colorlist = [[0,0,0],[255,255,0],[0,0,255], [255,255,255]]
@@ -240,10 +245,27 @@
         lineWidth: 1       // stroke width in px (default 1)
     };
 
-    // Single still frame: (toolbarField, levels, colorlist, dampening, scale, time, settings)
-    // renderFrame(toolbarField, toolbarLevels, toolbarColorList, dampening, scale, 0, toolbarSettings, toolbarMesh);
-    // Animated: (toolbarField, levels, toolbarColorList, increment, dampening, scale, settings)
-    startAnimation(toolbarField, toolbarLevels, toolbarColorList, 0.1, toolbarDampening, toolbarScale, toolbarSettings, toolbarMesh);
+    // Single still frame: renderFrame(elementId, field, levels, colorlist, offcolorlist, dampening, scale, time, settings)
+    //   renderFrame(toolbarMesh, setup(res, toolbarMesh), toolbarLevels, toolbarColorList, null, toolbarDampening, toolbarScale, 0, toolbarSettings);
+    // Animated: startAnimation(field, levels, colorlist, increment, dampening, scale, settings, elementId)
+    // The field is sized to the SVG, so it is rebuilt whenever the toolbar changes size
+    // (window resize, toolbar wrapping onto more lines); the animation keeps running from where it was.
+    const toolbarSvg = document.getElementById(toolbarMesh);
+    let toolbarSize = "";
+    function sizeToolbarContour() {
+        const w = toolbarSvg.clientWidth, h = toolbarSvg.clientHeight;
+        if (!w || !h || `${w}x${h}` === toolbarSize) return;
+        const first = !toolbarSize;
+        toolbarSize = `${w}x${h}`;
+        const toolbarField = setup(res, toolbarMesh);
+        if (first) {
+            startAnimation(toolbarField, toolbarLevels, toolbarColorList, 0.1, toolbarDampening, toolbarScale, toolbarSettings, toolbarMesh);
+        } else {
+            setAnimationField(toolbarMesh, toolbarField);   // keeps it stopped if it was stopped
+        }
+    }
+    new ResizeObserver(sizeToolbarContour).observe(toolbarSvg);
+    sizeToolbarContour();
 
 
     const canvasMesh = "canvasMeshContainer";

@@ -5,7 +5,12 @@
     // so the piano roll matches the rest of the site. Read once on load.
     const ROLL = (() => {
         const css = getComputedStyle(document.documentElement);
-        const v = (name) => css.getPropertyValue(`--roll-${name}`).trim();
+        const v = (name) => {
+            const value = css.getPropertyValue(`--roll-${name}`).trim();
+            // An empty value is ignored by the canvas, which would silently reuse the previous colour.
+            if (!value) console.warn(`sequencer-ui: CSS variable --roll-${name} is not set in css/sequencer.css`);
+            return value;
+        };
         return {
             bg: v('bg'), rowSharp: v('row-sharp'), rowLine: v('row-line'), beatLine: v('beat-line'),
             loopShade: v('loop-shade'), keyWhite: v('key-white'), keyBlack: v('key-black'),
@@ -913,14 +918,15 @@
                 : selected
                   ? ROLL.noteSelected
                   : noteColor(note.trackId);
-            // changed y + 3 -> y, ROW_HEIGHT -6 -> ROW_HEIGHT to remove the padding
+            // Note rectangle: 1px gap inside the row (was y + 3 / ROW_HEIGHT - 6).
+            // The fill, outline, grips and the contour highlight all follow it.
             const block = { x: x + 1, y: y + 1, width: Math.max(6, displayWidth - 2), height: ROW_HEIGHT - 2 };
             drawingContext.fillRect(block.x, block.y, block.width, block.height);
             drawingContext.strokeStyle = ROLL.noteOutline;
             // outline and selection grips follow `block`, so resizing the block above resizes them too
             drawingContext.strokeRect(block.x, block.y, block.width, block.height);
             if (selected) {
-                const gripInset = 1   // gap between the grips and the top/bottom of the block
+                const gripInset = 1;   // gap between the grips and the top/bottom of the block
                 drawingContext.fillStyle = ROLL.grip;
                 drawingContext.fillRect(block.x + 1, block.y + gripInset, 3, block.height - 2 * gripInset);
                 drawingContext.fillRect(block.x + block.width - 4, block.y + gripInset, 3, block.height - 2 * gripInset);

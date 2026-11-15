@@ -62,6 +62,15 @@ export function startAnimation(field, colors, colorlist, increment, dampening, s
     resumeAnimation(elementId);
 }
 
+// Swaps in a new field (e.g. after the SVG was resized) without changing whether
+// the animation is running; the next frame uses it. Returns false if the id was never started.
+export function setAnimationField(elementId, field) {
+    const a = animations.get(elementId);
+    if (!a) return false;
+    a.field = field;
+    return true;
+}
+
 // Stops one animation by id. stopAnimation() with no id stops every animation.
 export function stopAnimation(elementId) {
     const ids = elementId === undefined ? [...animations.keys()] : [elementId];

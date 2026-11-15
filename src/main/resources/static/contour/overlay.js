@@ -4,9 +4,10 @@ let overlayCount = 0;
 
 // INPUT:  container: Element the overlay should cover, OR an existing <svg>
 //         that is already positioned over the area (it is filled in place)
-// OUTPUT: { svg, base, hi, clip }
-// ACTION: sets up an SVG with a normal layer, a highlight layer, and its
-//         own clipPath. The highlight layer only shows inside the clip rects.
+// OUTPUT: { svg, base, hi, clip, mask }
+// ACTION: sets up an SVG with a normal layer (base), a highlight layer (hi),
+//         a clipPath (hi only shows inside its rects) and a mask (base is
+//         hidden inside the areas set by setClipRects).
 export function createContourOverlay(container) {
   const NS = "http://www.w3.org/2000/svg";
   const n = ++overlayCount;
@@ -82,13 +83,6 @@ export function setClipRects(overlay, rects) {
   }
 }
 
-// INPUT:  root: Element that owns it, rect: () => DOMRect (screen coordinates)
-// OUTPUT: a stand-in "element" for things drawn on a canvas (e.g. piano keys)
-//         that can be passed to press() like a real element
-export function virtualTarget(root, rect) {
-  return { virtualRoot: root, getBoundingClientRect: rect };
-}
-
 // INPUT:  root: Element (piano or toolbar), options { mode, overlay }
 //         mode: "plain" | "contour" | "both"; overlay: from createContourOverlay, or null
 // OUTPUT: function that detaches the surface
@@ -98,8 +92,7 @@ export function attachSurface(root, { mode = "plain", overlay = null } = {}) {
   const useContour = overlay && (mode === "contour" || mode === "both");
   const usePlain = !useContour || mode === "both";
 
-  // real elements: inside root; virtual targets: created for this root
-  const owns = el => el instanceof Node ? root.contains(el) : el?.virtualRoot === root;
+  const owns = el => el instanceof Node && root.contains(el);
 
   function addRect(id, el) {
     const k = el.getBoundingClientRect(), s = overlay.svg.getBoundingClientRect();
@@ -114,7 +107,7 @@ export function attachSurface(root, { mode = "plain", overlay = null } = {}) {
 
   const off = onChange((type, id, el) => {
     if (!owns(el)) return;  // pressed somewhere else
-    if (usePlain && el instanceof Element) el.classList.toggle("is-pressed", type === "press");
+    if (usePlain) el.classList.toggle("is-pressed", type === "press");
     if (useContour) {
       if (type === "press") addRect(id, el);
       else overlay.clip.querySelector(`[data-id="${CSS.escape(id)}"]`)?.remove();

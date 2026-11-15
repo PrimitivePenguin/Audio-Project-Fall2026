@@ -1,50 +1,67 @@
 class DashboardManager {
-    constructor() {
-        this.STORAGE_KEY = 'jukebox_dashboard_projects_v1';
+    async getProjects() {
+        try {
+            const response = await fetch('/api/projects', {
+                credentials: 'same-origin'
+            });
+            if (!response.ok) throw new Error('Failed to fetch projects');
+            return await response.json();
+        } catch (error) {
+            console.error('Error fetching projects:', error);
+            return [];
+        }
     }
 
-    getProjects() {
-        const data = localStorage.getItem(this.STORAGE_KEY);
-        return data ? JSON.parse(data) : {};
+    async createProject(name, sequenceJson) {
+        try {
+            const response = await fetch('/api/projects', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: name || 'Untitled Project',
+                    projectData: typeof sequenceJson === 'string' ? sequenceJson : JSON.stringify(sequenceJson)
+                })
+            });
+            if (!response.ok) throw new Error('Failed to create project');
+            const project = await response.json();
+            return project.id;
+        } catch (error) {
+            console.error('Error creating project:', error);
+            throw error;
+        }
     }
 
-    saveProject(name, sequenceJson) {
-        const projects = this.getProjects();
-        const id = `proj_${Date.now()}`;
-        projects[id] = {
-            id,
-            name: name || 'Untitled Project',
-            updatedAt: new Date().toISOString(),
-            data: sequenceJson
-        };
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(projects));
-        return id;
+    async renameProject(id, newName, currentVersion) {
+        try {
+            const response = await fetch(`/api/projects/${id}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: newName,
+                    version: currentVersion
+                })
+            });
+            if (!response.ok) throw new Error('Failed to rename project');
+            return await response.json();
+        } catch (error) {
+            console.error('Error renaming project:', error);
+            throw error;
+        }
     }
 
-
-    updateProject(id, sequenceJson) {
-        const projects = this.getProjects();
-        if (projects[id]) {
-            projects[id].data = sequenceJson;
-            projects[id].updatedAt = new Date().toISOString();
-            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(projects));
+    async deleteProject(id) {
+        try {
+            const response = await fetch(`/api/projects/${id}`, {
+                method: 'DELETE',
+                credentials: 'same-origin'
+            });
+            if (!response.ok) throw new Error('Failed to delete project');
             return true;
+        } catch (error) {
+            console.error('Error deleting project:', error);
+            return false;
         }
-        return false;
-    }
-
-    renameProject(id, newName) {
-        const projects = this.getProjects();
-        if (projects[id]) {
-            projects[id].name = newName;
-            projects[id].updatedAt = new Date().toISOString();
-            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(projects));
-        }
-    }
-
-    deleteProject(id) {
-        const projects = this.getProjects();
-        delete projects[id];
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(projects));
     }
 }

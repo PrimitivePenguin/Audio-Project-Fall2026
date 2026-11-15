@@ -1,4 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const manager = new DashboardManager();
     const projectList = document.getElementById('projectList');
     const importFileInput = document.getElementById('importFile');
@@ -10,15 +10,18 @@ document.addEventListener('DOMContentLoaded', () => {
         statusEl.textContent = msg;
     }
 
-    function renderList() {
+    async function renderList() {
         projectList.replaceChildren();
-        const projects = manager.getProjects();
-        const items = Object.values(projects);
+        showStatus('Loading projects from database...');
+        
+        const projects = await manager.getProjects();
+        const items = Array.isArray(projects) ? projects : Object.values(projects);
 
         if (items.length === 0) {
             const li = document.createElement('li');
             li.textContent = 'No saved projects found. Import a MIDI file or create a new project above.';
             projectList.appendChild(li);
+            showStatus('Ready.');
             return;
         }
 
@@ -27,33 +30,35 @@ document.addEventListener('DOMContentLoaded', () => {
             li.style.cssText = 'margin: 10px 0; padding: 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;';
 
             const info = document.createElement('span');
-            info.textContent = `${proj.name} (Updated: ${new Date(proj.updatedAt).toLocaleString()})`;
+            const updatedAt = proj.updatedAt || proj.updated_at || new Date().toISOString();
+            info.textContent = `${proj.name} (Updated: ${new Date(updatedAt).toLocaleString()})`;
 
             const buttonGroup = document.createElement('div');
 
-            //Open button
+            // Open button -> routes to the backend project view
             const openBtn = document.createElement('button');
             openBtn.textContent = 'Open';
             openBtn.type = 'button';
             openBtn.style.marginRight = '8px';
             openBtn.onclick = () => {
-                localStorage.setItem('activeProjectId', proj.id);
-                window.location.href = '/index.html';
+                window.location.href = `/project/${proj.id}`;
             };
 
-            //Download button
+            // Download MIDI button (client-side export helper)
             const exportBtn = document.createElement('button');
             exportBtn.textContent = 'Download MIDI';
             exportBtn.type = 'button';
+            exportBtn.style.marginRight = '8px';
             exportBtn.onclick = () => {
                 try {
-                    const seq = new NoteSequence(proj.data.stepCount, proj.data.ppq);
+                    const rawData = typeof proj.projectData === 'string' ? JSON.parse(proj.projectData) : proj.projectData;
+                    const seq = new NoteSequence(rawData.stepCount || 16, rawData.ppq || 480);
                     seq.name = proj.name;
-                    seq.tracks = proj.data.tracks;
-                    seq.tempos = proj.data.tempos;
-                    seq.timeSignatures = proj.data.timeSignatures;
-                    seq.importInfo = proj.data.importInfo;
-                    proj.data.notes.forEach(n => seq.addNote(n));
+                    seq.tracks = rawData.tracks;
+                    seq.tempos = rawData.tempos;
+                    seq.timeSignatures = rawData.timeSignatures;
+                    seq.importInfo = rawData.importInfo;
+                    (rawData.notes || []).forEach(n => seq.addNote(n));
 
                     const { bytes } = MidiIO.encode(seq);
                     const blob = new Blob([bytes], { type: 'audio/midi' });
@@ -71,30 +76,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            //Rename button
+            // Rename button
             const renameBtn = document.createElement('button');
             renameBtn.textContent = 'Rename';
             renameBtn.type = 'button';
-            renameBtn.style.marginLeft = '8px';
-            renameBtn.onclick = () => {
+            renameBtn.style.marginRight = '8px';
+            renameBtn.onclick = async () => {
                 const newName = prompt('Enter new project name:', proj.name);
-                if (newName) {
-                    manager.renameProject(proj.id, newName);
-                    renderList();
-                    showStatus('Project renamed successfully.');
+                if (newName && newName.trim()) {
+                    try {
+                        await manager.renameProject(proj.id, newName.trim(), proj.version);
+                        await renderList();
+                        showStatus('Project renamed successfully.');
+                    } catch (err) {
+                        showStatus(`Rename failed: ${err.message}`);
+                    }
                 }
             };
 
-            //Delete button
+            // Delete button
             const deleteBtn = document.createElement('button');
             deleteBtn.textContent = 'Delete';
             deleteBtn.type = 'button';
-            deleteBtn.style.marginLeft = '8px';
-            deleteBtn.onclick = () => {
+            deleteBtn.onclick = async () => {
                 if (confirm(`Delete project "${proj.name}"?`)) {
-                    manager.deleteProject(proj.id);
-                    renderList();
-                    showStatus('Project deleted.');
+                    const success = await manager.deleteProject(proj.id);
+                    if (success) {
+                        await renderList();
+                        showStatus('Project deleted.');
+                    } else {
+                        showStatus('Failed to delete project.');
+                    }
                 }
             };
 
@@ -102,16 +114,21 @@ document.addEventListener('DOMContentLoaded', () => {
             li.append(info, buttonGroup);
             projectList.appendChild(li);
         });
+        showStatus('Ready.');
     }
 
-    createBtn.onclick = () => {
+    createBtn.onclick = async () => {
         const name = newProjectNameInput.value.trim() || 'Untitled Project';
         const defaultSeq = new NoteSequence(16, 480);
         defaultSeq.name = name;
-        manager.saveProject(name, defaultSeq.toJSON());
-        newProjectNameInput.value = '';
-        renderList();
-        showStatus(`Created blank project "${name}".`);
+        
+        try {
+            const newId = await manager.createProject(name, defaultSeq.toJSON());
+            newProjectNameInput.value = '';
+            window.location.href = `/project/${newId}`;
+        } catch (err) {
+            showStatus(`Creation failed: ${err.message}`);
+        }
     };
 
     importFileInput.onchange = async (e) => {
@@ -121,14 +138,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const buffer = await file.arrayBuffer();
             const bytes = new Uint8Array(buffer);
             const { sequence } = MidiIO.parse(bytes);
-            manager.saveProject(file.name.replace(/\.[^/.]+$/, ''), sequence.toJSON());
+            const projectName = file.name.replace(/\.[^/.]+$/, '');
+            
+            const newId = await manager.createProject(projectName, sequence.toJSON());
             importFileInput.value = '';
-            renderList();
-            showStatus(`Successfully imported and saved "${file.name}" to dashboard library.`);
+            window.location.href = `/project/${newId}`;
         } catch (err) {
             showStatus(`Import failed: ${err.message}`);
         }
     };
 
-    renderList();
+    await renderList();
 });

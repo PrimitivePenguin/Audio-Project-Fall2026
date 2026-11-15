@@ -1,6 +1,21 @@
  (async () => {
     const engine = new SequencerEngine();
     const getElement = (id) => document.getElementById(id);
+    // Canvas colours come from the --roll-* variables in css/sequencer.css,
+    // so the piano roll matches the rest of the site. Read once on load.
+    const ROLL = (() => {
+        const css = getComputedStyle(document.documentElement);
+        const v = (name) => css.getPropertyValue(`--roll-${name}`).trim();
+        return {
+            bg: v('bg'), rowSharp: v('row-sharp'), rowLine: v('row-line'), beatLine: v('beat-line'),
+            loopShade: v('loop-shade'), keyWhite: v('key-white'), keyBlack: v('key-black'),
+            keyLabel: v('key-label'), keyLabelOnBlack: v('key-label-on-black'), rulerBg: v('ruler-bg'),
+            text: v('text'), noteOutline: v('note-outline'), noteSelected: v('note-selected'),
+            noteDelete: v('note-delete'), grip: v('grip'), cursor: v('cursor'), playback: v('playback'),
+            marquee: v('marquee'), marqueeFill: v('marquee-fill'), laneActive: v('lane-active'),
+            laneAlt: v('lane-alt'), laneHeader: v('lane-header'), laneHeaderActive: v('lane-header-active')
+        };
+    })();
     const statusElement = getElement('status');
     const bpmInput = getElement('bpm');
     const loopStartInput = getElement('loopStart');
@@ -748,6 +763,7 @@
         const scrollLeft = pianoViewport.scrollLeft;
         const scrollTop = pianoViewport.scrollTop;
         prepareCanvas(width, height, scrollLeft, scrollTop);
+        let noteRects = [];
         const first = Math.max(0, Math.floor(scrollLeft / STEP_WIDTH));
         const last = Math.min(engine.totalSteps, Math.ceil((scrollLeft + width) / STEP_WIDTH));
 
@@ -757,13 +773,13 @@
             drawPitchRows(width, height, scrollTop);
             drawTimingGrid(first, last, height, scrollLeft);
             drawLoopRegion(width, height, scrollLeft);
-            drawNoteBlocks(width, height, scrollLeft, scrollTop);
+            noteRects = drawNoteBlocks(width, height, scrollLeft, scrollTop);
         }
         if (editGesture?.kind === 'marquee' && editGesture.moved) {
             const a = editGesture.start;
             const b = editGesture.point;
-            drawingContext.strokeStyle = '#244eb2';
-            drawingContext.fillStyle = '#244eb230';
+            drawingContext.strokeStyle = ROLL.marquee;
+            drawingContext.fillStyle = ROLL.marqueeFill;
             const x = Math.min(a.x, b.x) - scrollLeft;
             const y = Math.min(a.y, b.y) - scrollTop;
             drawingContext.fillRect(x, y, Math.abs(a.x - b.x), Math.abs(a.y - b.y));
@@ -775,7 +791,7 @@
         drawMeasureRuler(first, last, width, scrollLeft);
         const cursorX = KEYBOARD_WIDTH + engine.sequence.tickToStep(editingCursorTick) * STEP_WIDTH - scrollLeft;
         if (cursorX >= KEYBOARD_WIDTH && cursorX <= width) {
-            drawingContext.fillStyle = '#087e8b';
+            drawingContext.fillStyle = ROLL.cursor;
             drawingContext.fillRect(cursorX, 0, 2, height);
             drawingContext.beginPath();
             drawingContext.moveTo(cursorX - 5, 0);
@@ -783,6 +799,8 @@
             drawingContext.lineTo(cursorX + 1, 8);
             drawingContext.fill();
         }
+        // Lets the contour overlay (index.html) highlight the area under each note.
+        document.dispatchEvent(new CustomEvent('jukebox:notes', { detail: noteRects }));
     }
 
     function prepareCanvas(width, height, scrollLeft, scrollTop) {
@@ -799,7 +817,7 @@
         }
         pianoCanvas.style.left = `${scrollLeft}px`;
         pianoCanvas.style.top = `${scrollTop}px`;
-        drawingContext.fillStyle = '#f8fafc';
+        drawingContext.fillStyle = ROLL.bg;
         drawingContext.fillRect(0, 0, width, height);
     }
 
@@ -813,9 +831,9 @@
             const midi = highestPitch - row;
             const y = RULER_HEIGHT + row * ROW_HEIGHT - scrollTop;
             const isBlackKey = [1, 3, 6, 8, 10].includes(midi % 12);
-            drawingContext.fillStyle = isBlackKey ? '#e6ecf3' : '#f8fafc';
+            drawingContext.fillStyle = isBlackKey ? ROLL.rowSharp : ROLL.bg;
             drawingContext.fillRect(KEYBOARD_WIDTH, y, width - KEYBOARD_WIDTH, ROW_HEIGHT);
-            drawingContext.strokeStyle = '#d2dae5';
+            drawingContext.strokeStyle = ROLL.rowLine;
             drawingContext.beginPath();
             drawingContext.moveTo(KEYBOARD_WIDTH, y + ROW_HEIGHT);
             drawingContext.lineTo(width, y + ROW_HEIGHT);
@@ -830,7 +848,7 @@
                 continue;
             }
             const position = engine.sequence.positionAtTick(engine.sequence.stepToTick(step));
-            drawingContext.strokeStyle = position.onBeat ? '#8d9db1' : '#d2dae5';
+            drawingContext.strokeStyle = position.onBeat ? ROLL.beatLine : ROLL.rowLine;
             drawingContext.lineWidth = position.onBeat && position.beat === 1 ? 2 : 1;
             drawingContext.beginPath();
             drawingContext.moveTo(x, RULER_HEIGHT);
@@ -843,7 +861,7 @@
     function drawLoopRegion(width, height, scrollLeft) {
         const loopX = KEYBOARD_WIDTH + engine.loopStart * STEP_WIDTH - scrollLeft;
         const loopEndX = KEYBOARD_WIDTH + engine.loopEnd * STEP_WIDTH - scrollLeft;
-        drawingContext.fillStyle = '#25364b20';
+        drawingContext.fillStyle = ROLL.loopShade;
         if (loopX > KEYBOARD_WIDTH) {
             drawingContext.fillRect(KEYBOARD_WIDTH, RULER_HEIGHT, loopX - KEYBOARD_WIDTH, height);
         }
@@ -859,6 +877,8 @@
 
     function drawNoteBlocks(width, height, scrollLeft, scrollTop) {
         // Paint ghosts first, then editable notes, with the primary selection last for resize handles.
+        // Returns the editable notes' rectangles in scrolled-content coordinates.
+        const noteRects = [];
         drawingContext.save();
         drawingContext.beginPath();
         drawingContext.rect(
@@ -889,18 +909,23 @@
             }
             const displayWidth = Math.max(8, noteWidth);
             drawingContext.fillStyle = preview?.deleteNote
-                ? '#d44848'
+                ? ROLL.noteDelete
                 : selected
-                  ? '#e3a72f'
+                  ? ROLL.noteSelected
                   : noteColor(note.trackId);
-            drawingContext.fillRect(x + 1, y + 3, Math.max(6, displayWidth - 2), ROW_HEIGHT - 6);
-            drawingContext.strokeStyle = '#1b467f';
-            drawingContext.strokeRect(x + 1, y + 3, Math.max(6, displayWidth - 2), ROW_HEIGHT - 6);
+            // changed y + 3 -> y, ROW_HEIGHT -6 -> ROW_HEIGHT to remove the padding
+            const block = { x: x + 1, y: y + 1, width: Math.max(6, displayWidth - 2), height: ROW_HEIGHT - 2 };
+            drawingContext.fillRect(block.x, block.y, block.width, block.height);
+            drawingContext.strokeStyle = ROLL.noteOutline;
+            // outline and selection grips follow `block`, so resizing the block above resizes them too
+            drawingContext.strokeRect(block.x, block.y, block.width, block.height);
             if (selected) {
-                drawingContext.fillStyle = '#172b46';
-                drawingContext.fillRect(x + 2, y + 6, 3, ROW_HEIGHT - 12);
-                drawingContext.fillRect(x + displayWidth - 5, y + 6, 3, ROW_HEIGHT - 12);
+                const gripInset = 1   // gap between the grips and the top/bottom of the block
+                drawingContext.fillStyle = ROLL.grip;
+                drawingContext.fillRect(block.x + 1, block.y + gripInset, 3, block.height - 2 * gripInset);
+                drawingContext.fillRect(block.x + block.width - 4, block.y + gripInset, 3, block.height - 2 * gripInset);
             }
+            return block;
         };
         if (workspaceMode === 'piano' && activeTrackId !== null && ghostNotesEnabled) {
             drawingContext.globalAlpha = 0.22;
@@ -920,16 +945,29 @@
         for (const note of notes) {
             const preview = editGesture?.previews?.get(note.id) ?? resizeGesture?.previews?.get(note.id) ??
                 (resizeGesture?.noteId === note.id ? resizeGesture.preview : null);
-            drawBlock(note, preview, selectedIds.has(note.id));
+            const block = drawBlock(note, preview, selectedIds.has(note.id));
+            if (!block) {
+                continue;
+            }
+            // Visible part of the block (not under the keyboard or ruler), in
+            // scrolled-content coordinates instead of canvas coordinates.
+            const left = Math.max(block.x, KEYBOARD_WIDTH);
+            const top = Math.max(block.y, RULER_HEIGHT);
+            const right = block.x + block.width;
+            const bottom = block.y + block.height;
+            if (right > left && bottom > top) {
+                noteRects.push({ x: left + scrollLeft, y: top + scrollTop, width: right - left, height: bottom - top });
+            }
         }
         drawPlaybackLine(height, scrollLeft);
         drawingContext.restore();
+        return noteRects;
     }
 
     function drawPlaybackLine(height, scrollLeft) {
         if (displayedStep !== null) {
             const x = KEYBOARD_WIDTH + displayedStep * STEP_WIDTH - scrollLeft;
-            drawingContext.fillStyle = '#df9410';
+            drawingContext.fillStyle = ROLL.playback;
             drawingContext.fillRect(x, RULER_HEIGHT, 2, height);
         }
     }
@@ -942,7 +980,7 @@
         });
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
-            drawingContext.fillStyle = lane.track.id === activeTrackId ? '#dceaf7' : lane.index % 2 ? '#eef2f7' : '#f8fafc';
+            drawingContext.fillStyle = lane.track.id === activeTrackId ? ROLL.laneActive : lane.index % 2 ? ROLL.laneAlt : ROLL.bg;
             drawingContext.fillRect(KEYBOARD_WIDTH, y, width - KEYBOARD_WIDTH, TrackOverview.laneHeight - 1);
         }
         drawTimingGrid(first, last, height, scrollLeft);
@@ -974,11 +1012,11 @@
         drawingContext.textAlign = 'left';
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
-            drawingContext.fillStyle = lane.track.id === activeTrackId ? '#cbdff0' : '#e1e7ef';
+            drawingContext.fillStyle = lane.track.id === activeTrackId ? ROLL.laneHeaderActive : ROLL.laneHeader;
             drawingContext.fillRect(0, y, KEYBOARD_WIDTH, TrackOverview.laneHeight - 1);
             drawingContext.fillStyle = noteColor(lane.track.id);
             drawingContext.fillRect(0, y, 5, TrackOverview.laneHeight - 1);
-            drawingContext.fillStyle = '#213047';
+            drawingContext.fillStyle = ROLL.text;
             const label = lane.track.name.length > 10 ? lane.track.name.slice(0, 9) + '…' : lane.track.name;
             for (const x of [10, 16]) {
                 for (const offset of [24, 30, 36]) {
@@ -991,13 +1029,13 @@
         drawingContext.restore();
         if (trackGesture) {
             const y = RULER_HEIGHT + trackGesture.fromIndex * TrackOverview.laneHeight - scrollTop;
-            drawingContext.fillStyle = '#244eb230';
+            drawingContext.fillStyle = ROLL.marqueeFill;
             drawingContext.fillRect(0, Math.max(RULER_HEIGHT, y), width,
                 Math.max(0, Math.min(height, y + TrackOverview.laneHeight) - Math.max(RULER_HEIGHT, y)));
             if (trackGesture.valid) {
                 const line = RULER_HEIGHT + trackGesture.boundary * TrackOverview.laneHeight - scrollTop;
                 if (line >= RULER_HEIGHT && line <= height) {
-                    drawingContext.fillStyle = '#244eb2';
+                    drawingContext.fillStyle = ROLL.marquee;
                     drawingContext.fillRect(0, line, width, 3);
                 }
             }
@@ -1006,7 +1044,7 @@
 
     function drawPianoKeys(height, scrollTop) {
         // Sticky keyboard and ruler are drawn last.
-        drawingContext.fillStyle = '#fff';
+        drawingContext.fillStyle = ROLL.keyWhite;
         drawingContext.fillRect(0, RULER_HEIGHT, KEYBOARD_WIDTH, height);
         drawingContext.font = '11px system-ui';
         drawingContext.textAlign = 'right';
@@ -1022,18 +1060,18 @@
                 continue;
             }
             const isBlackKey = [1, 3, 6, 8, 10].includes(midi % 12);
-            drawingContext.fillStyle = isBlackKey ? '#273548' : '#fff';
+            drawingContext.fillStyle = isBlackKey ? ROLL.keyBlack : ROLL.keyWhite;
             drawingContext.fillRect(0, y, KEYBOARD_WIDTH, ROW_HEIGHT - 1);
-            drawingContext.fillStyle = isBlackKey ? '#fff' : '#213047';
+            drawingContext.fillStyle = isBlackKey ? ROLL.keyLabelOnBlack : ROLL.keyLabel;
             drawingContext.fillText(NoteSequence.pitchName(midi), KEYBOARD_WIDTH - 8, y + 16);
         }
     }
 
     function drawMeasureRuler(first, last, width, scrollLeft) {
-        drawingContext.fillStyle = '#dfe7f2';
+        drawingContext.fillStyle = ROLL.rulerBg;
         drawingContext.fillRect(0, 0, width, RULER_HEIGHT);
         drawingContext.textAlign = 'left';
-        drawingContext.fillStyle = '#213047';
+        drawingContext.fillStyle = ROLL.text;
         drawingContext.fillText(workspaceMode === 'tracks' ? 'Tracks / Time' : 'Pitch / Measure', 4, 20);
         for (let step = first; step < last; step++) {
             const x = KEYBOARD_WIDTH + step * STEP_WIDTH - scrollLeft;

@@ -404,25 +404,35 @@ function drawPath(svg, pathString, color = "black", lineWidth = 1) {
     svg.appendChild(path);
 }
 
-// INPUT:  field: 2D array, num_color: number, colorStops: array of [r, g, b],
-//         settings: { curve, tension, res } (optional, merged over DEFAULT_SETTINGS)
+// INPUT:  target: { base, hi? } from createContourOverlay, or { base: anySvgOrGroup }
+//         field, num_color, colorStops: colours for the base layer,
+//         settings (plus settings.highlight: one CSS colour for the whole hi layer),
+//         hiColorStops: colours for the hi layer (defaults to colorStops)
 // OUTPUT: none
-// ACTION: SVG output. Builds every level's segments in one pass, then adds
-//         one <path> per level to the SVG with id elementId
-export function draw(field, num_color, colorStops = [[0, 0, 0], [255, 255, 255]], settings = {}, elementId = "background_contour") {
-    const svg = document.getElementById(elementId);
-    if (!svg) throw new Error(`contour: no element with id "${elementId}"`);
-    const s = { ...DEFAULT_SETTINGS, res: field.res ?? gridRes, ...settings };
-    const { levels, colors, step, minVal } = levelColors(num_color, colorStops);
-    const segsByLevel = buildAllSegments(field, levels.length, minVal, step);
+// ACTION: draws each level into target.base; also into target.hi
+//         when a highlight layer exists
+export function draw(target, field, num_color, colorStops = [[0, 0, 0], [255, 255, 255]], settings = {}, hiColorStops = colorStops) {
+  const s = { ...DEFAULT_SETTINGS, ...settings };
+  s.res = settings.res ?? field.res ?? gridRes;
+  const { levels, colors, step, minVal } = levelColors(num_color, colorStops);
+  const hiColors = levelColors(num_color, hiColorStops).colors;
+  const segsByLevel = buildAllSegments(field, levels.length, minVal, step);
 
-    for (let k = 0; k < levels.length; k++) {
-        if (segsByLevel[k].length === 0) continue;
-        const pen = new SvgPen();
-        drawLevel(segsByLevel[k], levels[k], field, s.res, s, pen);
-        drawPath(svg, pen.toString(), colors[k], s.lineWidth);
-    }
+  // only remove our own paths: base may be the <svg> itself, which also holds <defs>
+  const clear = layer => layer?.querySelectorAll(":scope > path").forEach(p => p.remove());
+  clear(target.base);
+  clear(target.hi);
+
+  for (let k = 0; k < levels.length; k++) {
+    if (segsByLevel[k].length === 0) continue;
+    const pen = new SvgPen();
+    drawLevel(segsByLevel[k], levels[k], field, s.res, s, pen);
+    const d = pen.toString();
+    drawPath(target.base, d, colors[k], s.lineWidth);
+    if (target.hi) drawPath(target.hi, d, s.highlight ?? hiColors[k], s.lineWidth);
+  }
 }
+
 
 // INPUT:  ctx: CanvasRenderingContext2D, then the same as draw()
 // OUTPUT: none

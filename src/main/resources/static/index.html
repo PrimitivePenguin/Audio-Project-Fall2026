@@ -111,10 +111,13 @@
             </div>
         </details>
     </section>
-    <svg id="canvasMeshContainer" aria-hidden="true"></svg>
+    
+
     <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll">
         <div id="pianoSpacer"></div>
         <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
+        <!-- scrolls with the piano roll; sized to #pianoSpacer and filled in by createContourOverlay() -->
+        <svg id="canvasMeshContainer" aria-hidden="true"></svg>
     </div>
     <footer class="statusbar">
         <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
@@ -166,9 +169,55 @@
         });
 </script>
 <script type="module">
-    import { startAnimation, renderFrame } from "./contour/contour_animation.js"
-    import { setup } from "./contour/perlin_gen.js"
+    import { startAnimation, renderFrame } from "/contour/contour_animation.js"
+    import { setup } from "/contour/perlin_gen.js"
+    import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
+    import { press, release } from "/contour/press_state.js"
 
+
+    // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
+    // contour scrolls with the notes.
+    const piano = document.getElementById("pianoViewport");
+    const pianoSvg = document.getElementById("canvasMeshContainer");
+    const pianoOverlay = createContourOverlay(pianoSvg);
+
+    // Notes: inside every note only the highlight colours are drawn (the grey base
+    // contour is cut out there). sequencer-ui.js sends the note rectangles after each redraw.
+    document.addEventListener("jukebox:notes", e => setClipRects(pianoOverlay, e.detail));
+
+    // Keep the contour off the sticky keyboard column (left) and measure ruler (top).
+    // They stay put while the content scrolls, so the cut-off follows the scroll position.
+    const { keyboardWidth, rulerHeight } = PianoRollEditor.geometry;
+    function clipToGrid() {
+        pianoSvg.style.clipPath =
+            `inset(${piano.scrollTop + rulerHeight}px 0 0 ${piano.scrollLeft + keyboardWidth}px)`;
+    }
+    piano.addEventListener("scroll", clipToGrid, { passive: true });
+    clipToGrid();
+
+    // Toolbars: plain highlight on the buttons, no contour at all
+    document.querySelectorAll(".toolbar").forEach(tb => attachSurface(tb, { mode: "plain" }));
+    document.querySelectorAll(".toolbar button").forEach((b, i) => {
+        b.dataset.pressId ||= b.id ? `btn-${b.id}` : `toolbar-btn-${i}`;
+    });
+
+    // ACTION: pointer down/up on any [data-press-id] element presses/releases it;
+    //         handles multi-touch and fingers sliding off a key
+    const byPointer = new Map(); // pointerId -> press id
+
+    document.addEventListener("pointerdown", e => {
+        const el = e.target.closest("[data-press-id]");
+        if (!el) return;
+        byPointer.set(e.pointerId, el.dataset.pressId);
+        press(el.dataset.pressId, el);
+    });
+
+    for (const type of ["pointerup", "pointercancel"]) {
+        document.addEventListener(type, e => {
+            const id = byPointer.get(e.pointerId);
+            if (id) { release(id); byPointer.delete(e.pointerId); }
+        });
+    }
     let res = 5;
     let toolbarLevels = 5;
     const toolbarMesh = "toolbarMeshContainer";
@@ -198,15 +247,17 @@
 
 
     const canvasMesh = "canvasMeshContainer";
-    const canvasLevels = 20;
+    const canvasLevels = 15;
     // const canvasColorList = [[255,255,255], [0,0,0]]
-    const canvasColorList = [[255,255,255], [100,100,255], [0,0,0]]
+    // const canvasColorList = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[255,255,255]]; // white, yellow, magenta, cyan, black, 
+    const canvasColorList = [[255,255,255],[255,179,186],[255,214,165],[255,250,180],[186,255,201],[174,198,255],[203,170,240],[255,255,255]]; // pastel: white, red, orange, yellow, green, blue, violet, white
+    const canvasOffColor = [[255,255,255], [0,0,0]]
+
 
     // const canvasColorList = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
     let canvasDampening = 0.25;
-    let canvasScale = 0.25;
+    let canvasScale = 0.15;
 
-    const canvasField = setup(res, canvasMesh)
     // Curve settings:
     const canvasSettings = {
         curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
@@ -216,8 +267,29 @@
         lineWidth: 1         // stroke width in px (default 1)
     };
 
-    // only renderFrame, animated doesn't work for this
-    renderFrame(canvasField, canvasLevels, canvasColorList, canvasDampening, canvasScale, 0, canvasSettings, canvasMesh)
+    // The piano contour covers the whole scrollable area (#pianoSpacer), not just
+    // the visible part, so it scrolls with the notes. Redraw when that size changes
+    // (MIDI import, more steps, switching to Tracks, ...).
+    const canvasSvg = document.getElementById(canvasMesh);
+    const pianoSpacer = document.getElementById("pianoSpacer");
+    let canvasSize = "";
+    function renderPianoContour() {
+        const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
+        if (!w || !h || `${w}x${h}` === canvasSize) return;
+        canvasSize = `${w}x${h}`;
+        canvasSvg.style.width = `${w}px`;
+        canvasSvg.style.height = `${h}px`;
+        const canvasField = setup(res, canvasMesh);
+        // only renderFrame, animated doesn't work for this
+        renderFrame(canvasMesh, canvasField, canvasLevels, canvasColorList, canvasOffColor, canvasDampening, canvasScale, 0, canvasSettings);
+    }
+    let contourQueued = false;
+    new ResizeObserver(() => {
+        if (contourQueued) return;
+        contourQueued = true;
+        requestAnimationFrame(() => { contourQueued = false; renderPianoContour(); });
+    }).observe(pianoSpacer);
+    renderPianoContour();
 </script>
 </body>
 </html>

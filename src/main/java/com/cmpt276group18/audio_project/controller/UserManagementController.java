@@ -85,7 +85,7 @@ public class UserManagementController {
         HttpSession session = request.getSession();
         request.changeSessionId(); // new session ID on login to prevent stale session from being attacked
         session.setAttribute(SESSION_USER_ID, user.get().getId());
-        return "redirect:/login";
+        return "redirect:/dashboard";
     }
 
     @GetMapping("/api/current-user")
@@ -108,5 +108,21 @@ public class UserManagementController {
     public String logout(HttpSession session) {
         session.invalidate(); // Thanos snap the session out of existence
         return "redirect:/login?logout"; // Logout page show logged out
+    }
+
+
+    @GetMapping("/dashboard")
+    public String showDashboard(HttpSession session, Model model) {
+        Integer userId = (Integer) session.getAttribute(SESSION_USER_ID);
+        
+        if (userId == null) {
+            return "redirect:/login";
+        }
+
+        // Fetch user info to display on the dashboard
+        Optional<UserInfo> current = userService.findById(userId);
+        current.ifPresent(user -> model.addAttribute("currentUser", user));
+
+        return "dashboard";
     }
 }

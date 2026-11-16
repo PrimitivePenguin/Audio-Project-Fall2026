@@ -27,6 +27,14 @@
         <label class="file-control">Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" aria-label="Import MIDI"></label>
         <button data-daw-controls id="exportMidi" type="button">Export MIDI</button>
         <button data-daw-controls id="saveProject" type="button" disabled>Save Project</button>
+        <div class="instrument-menus" aria-label="Instruments">
+            <div id="synthMenu" data-daw-controls data-daw-pointer-inputs>
+                <button id="synthToggle" type="button" aria-expanded="false" aria-controls="synthPanel">Synth</button>
+            </div>
+            <div id="drumMenu" data-daw-controls data-daw-pointer-inputs>
+                <button id="drumToggle" type="button" aria-expanded="false" aria-controls="drumPanel">Drums</button>
+            </div>
+        </div>
         <a class="button-link" href="/dashboard">Project Dashboard</a>
         <details class="account-menu popup-menu">
             <summary>Account</summary>
@@ -146,6 +154,11 @@
 <script src="/js/midi-io.js"></script>
 <script src="/js/PianoRollEditor.js"></script>
 <script src="/js/TrackOverview.js"></script>
+<script src="/js/instruments/SynthInstrumentManager.js"></script>
+<script src="/js/InstrumentPanel.js"></script>
+<script src="/js/SynthUI.js"></script>
+<script src="/js/instruments/DrumMachine.js"></script>
+<script src="/js/DrumMachineUI.js"></script>
 <script src="/js/sequencer-ui.js"></script>
 <script>
 
@@ -165,8 +178,8 @@
         });
 </script>
 <script type="module">
-    import { startAnimation, renderFrame } from "./contour/contour_animation.js"
-    import { setup } from "./contour/perlin_gen.js"
+    import { startAnimation, renderFrame } from "/contour/contour_animation.js"
+    import { setup } from "/contour/perlin_gen.js"
 
     let res = 5;
     let levels = 5;

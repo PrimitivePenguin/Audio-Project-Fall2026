@@ -4,6 +4,9 @@ const vm = require('node:vm');
 
 function createEditorHarness(pixelRatio = 1, options = {}) {
     const canvasCalls = [];
+    const nodes = [];
+    const documentHandlers = {};
+    const storage = new Map(Object.entries(options.storage ?? {}));
     const elements = {};
     const intervals = new Map();
     const windowListeners = {};
@@ -37,7 +40,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     });
 
     class Element {
-        constructor() {
+        constructor(tagName) {
+            if (tagName) this.tagName = tagName.toUpperCase();
+            nodes.push(this);
             this.value = '';
             this.style = {};
             this.children = [];
@@ -50,7 +55,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.scrollLeft = 0;
             this.scrollTop = 0;
             this.capturedPointers = new Set();
-            this.classList = { toggle() {} };
+            this.classList = { toggle() {}, add: (...names) => { this.className = [this.className ?? '', ...names].join(' '); } };
         }
         focus(options) {
             this.focusOptions = options;
@@ -67,7 +72,32 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.attributes[name] = value;
         }
         append(...children) {
+            children.forEach((child) => { child.parentElement = this; });
             this.children.push(...children);
+        }
+        appendChild(child) { this.append(child); return child; }
+        prepend(...children) {
+            children.forEach((child) => { child.parentElement = this; });
+            this.children.unshift(...children);
+        }
+        getAttribute(name) { return this.attributes[name] ?? null; }
+        closest(selector) {
+            const matches = (node, part) => {
+                const tag = part.match(/^[a-z]+/i)?.[0];
+                if (tag && node.tagName !== tag.toUpperCase()) return false;
+                const cls = part.match(/^\.([\w-]+)/)?.[1];
+                if (cls && !(node.className ?? '').split(' ').includes(cls)) return false;
+                const attribute = part.match(/\[([^=\]]+)(?:=["']?([^"'\]]+)["']?)?\]/);
+                if (attribute) {
+                    const value = node.attributes[attribute[1]] ?? node[attribute[1]];
+                    if (value === undefined || (attribute[2] !== undefined && String(value) !== attribute[2])) return false;
+                }
+                return Boolean(tag || cls || attribute);
+            };
+            for (let node = this; node; node = node.parentElement) {
+                if (selector.split(',').some((part) => matches(node, part.trim()))) return node;
+            }
+            return null;
         }
         showModal() {
             this.open = true;
@@ -76,8 +106,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.open = false;
             this.listeners.close?.();
         }
-        replaceChildren() {
+        replaceChildren(...children) {
             this.children = [];
+            this.append(...children);
         }
         addEventListener(name, callback) {
             this.listeners[name] = callback;
@@ -98,7 +129,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         constructor() {
             this.frequency = { value: 0 };
         }
-        connect() {}
+        connect() { return this; }
         disconnect() {}
         start(time) {
             this.startTime = time;
@@ -110,6 +141,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
 
     class AudioContext {
         constructor() {
+            this.sampleRate = 48000;
             this.state = 'suspended';
             this.currentTime = 0;
             this.sources = [];
@@ -120,10 +152,14 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         async decodeAudioData(data) {
             return data;
         }
+        createBuffer(channels, length, sampleRate) {
+            return { length, sampleRate, copyToChannel() {} };
+        }
+        createBiquadFilter() { return new AudioSource(); }
         createGain() {
             return {
-                gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {} },
-                connect() {},
+                gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} },
+                connect() { return this; },
                 disconnect() {}
             };
         }
@@ -145,15 +181,22 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             querySelector() {
                 return modalOpen || elements.deleteTrackDialog?.open ? {} : null;
             },
+            head: new Element('head'),
+            body: new Element('body'),
             getElementById(id) {
-                elements[id] ??= new Element();
+                elements[id] ??= nodes.find((node) => node.id === id) ?? new Element();
                 return elements[id];
             },
-            createElement() {
-                return new Element();
+            createElement(tagName) {
+                return new Element(tagName);
             },
-            addEventListener(name, callback) {
-                documentListeners[name] = callback;
+            addEventListener(name, callback, config) {
+                (documentHandlers[name] ??= []).push({ callback, once: config?.once });
+                documentListeners[name] = (event) => {
+                    const handlers = [...documentHandlers[name]];
+                    documentHandlers[name] = handlers.filter((entry) => !entry.once);
+                    handlers.forEach((entry) => entry.callback(event));
+                };
             },
             dispatchEvent(event) {
                 readyEvents.push(event);
@@ -161,7 +204,14 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 documentListeners[event.type]?.(event);
             }
         },
+        localStorage: {
+            getItem: (key) => storage.get(key) ?? null,
+            setItem: (key, value) => storage.set(key, value),
+            removeItem: (key) => storage.delete(key)
+        },
+        fetch: options.fetch,
         window: {
+            location: { pathname: options.pathname ?? '/index.html' },
             AudioContext,
             devicePixelRatio: pixelRatio,
             addEventListener(name, callback) {
@@ -222,13 +272,16 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             engine = this;
         }
     };
+    for (const script of options.scripts ?? []) {
+        vm.runInContext(fs.readFileSync(path.join(directory, script), 'utf8'), scope);
+    }
     if (options.registrationScript) {
         vm.runInContext(options.registrationScript, scope);
     }
     const source = fs
         .readFileSync(path.join(directory, 'sequencer-ui.js'), 'utf8')
         .replace('new SequencerEngine()', 'new CapturedEngine()');
-    vm.runInContext(source, scope);
+    const initialization = vm.runInContext(source, scope);
 
     const pointer = (x, y, options = {}) => ({
         clientX: x + 20,
@@ -241,6 +294,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     const harness = {
         ...api,
         engine,
+        ready: Promise.resolve(initialization),
+        scope,
+        nodes,
         readyEvents,
         elements,
         canvasCalls,
@@ -292,6 +348,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             const control = elements[id];
             control.tagName ??= 'BUTTON';
             control.type ??= 'button';
+            control.setAttribute('data-daw-controls', '');
             control.closest ??= (selector) => {
                 if (selector === 'button, summary' || selector === '[data-daw-controls]') {
                     return control;
@@ -302,6 +359,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             const event = { target: control, detail };
             documentListeners.click?.(event);
             const result = control.onclick?.(event);
+            control.listeners.click?.(event);
             deferredActions.splice(0).forEach((callback) => callback());
             await Promise.resolve();
             return result;

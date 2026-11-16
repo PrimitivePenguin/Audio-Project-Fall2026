@@ -80,6 +80,19 @@ class DashboardManager {
         }
     }
 
+    async leaveProject(id) {
+        try {
+            const response = await fetch(`/api/projects/${id}/leave`, {
+                method: 'POST',
+                credentials: 'same-origin'
+            });
+            if (!response.ok) throw new Error('Failed to leave project');
+        } catch (error) {
+            console.error('Error leaving project:', error);
+            throw error;
+        }
+    }
+
     async deleteProject(id) {
         try {
             const response = await fetch(`/api/projects/${id}`, {

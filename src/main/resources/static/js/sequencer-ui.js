@@ -485,9 +485,11 @@
     let playRequestId = 0;
     let sampleTriggerPage = 0;
     let loadedSampleName = '';
+    let unavailableSample = null;
     let isSampleLoading = false;
     let databaseProject = null;
     let databaseSaveInFlight = false;
+    let loadedInstrumentState = null;
     const SAMPLE_PAGE_SIZE = 50;
     const EMPTY_SAMPLE_STATUS = 'Upload an audio sample, then add trigger steps.';
 
@@ -500,12 +502,18 @@
         const sample = engine.tracks.get('uploaded');
         return {
             ...engine.sequence.toJSON(),
+            instruments: {
+                version: 1,
+                synth: window.jukeboxSynth?.snapshot() ?? null,
+                drums: window.jukeboxDrums?.snapshot() ?? null
+            },
             loopStart: engine.loopStart,
             loopEnd: engine.loopEnd,
             sample: sample ? {
+                audioPersisted: false,
                 name: loadedSampleName,
                 steps: sample.steps.map((active) => Boolean(active))
-            } : null
+            } : unavailableSample
         };
     }
 
@@ -549,12 +557,14 @@
             'lengthIncrease', 'velocity', 'deleteNote', 'nextOverlap', 'pitchLow',
             'pitchHigh', 'audioFile', 'removeSample', 'sampleTriggerStep',
             'addSampleTrigger', 'samplePreviousPage', 'sampleNextPage',
-            'removeImportedMidi'
+            'removeImportedMidi', 'addMidiTrack', 'renameMidiTrack', 'trackName',
+            'moveTrackUp', 'moveTrackDown', 'deleteMidiTrack', 'undoNotes', 'redoNotes',
+            'cutNotes', 'pasteNotes', 'duplicateNotes'
         ].forEach((id) => {
             const element = getElement(id);
             if (element) element.disabled = true;
         });
-        showStatus('Viewer access is read-only.');
+
     }
 
     function updateTransportControls() {
@@ -584,6 +594,7 @@
         getElement('tempoInfo').textContent = bpmInput.disabled
             ? 'Imported tempo map active; BPM editing disabled.'
             : 'BPM edits replace the constant tempo (40–240).';
+        applyDatabasePermissions();
     }
 
     function syncEditingCursor() {
@@ -612,6 +623,7 @@
         updateCompositionSummary();
         renderSampleEditor();
         refreshNoteControls();
+        applyDatabasePermissions();
         renderPianoRoll();
     }
 
@@ -1950,6 +1962,7 @@
         ['Drag note edge', 'Resize the note. A selected group shares a duration change and keeps every start fixed.'],
         ['Cross the opposite edge', 'Single-note resizing previews deletion; release deletes. Group resizing never deletes.'],
         ['Playback follow', 'The orange playhead locks to the musical-grid midpoint only after crossing from the left. Horizontal navigation releases it; scrolling ahead rearms a later crossing. Pause, wraps and resizing reassess readiness without recentering.'],
+        ['Synth / Drums', 'Open instrument menus from the top toolbar; Close or Escape dismisses them. Pointer-operated sliders release focus on completion and native selects after an option change, so Space controls transport. Tab-focused controls retain native keyboard behavior.'],
         ['Toolbar focus', 'Mouse-activated DAW buttons and Workspace Options return focus to the visible workspace so Space controls transport. Tab-focused controls retain native Space/Enter activation. Inputs and dialogs keep their focus.'],
         ['Play button / Space', 'Before or inside the loop, audition from the cursor to loop end; at or beyond loop end, audition to composition end. Then repeat the configured full loop. A cursor at composition end starts at loop start.'],
         ['Click or drag timeline ruler', 'Position the edit/paste cursor to the nearest MIDI tick without grid snapping. Escape or pointer cancellation restores its original position. While paused, moving it also seeks Resume; during playback it does not seek.'],
@@ -1986,6 +1999,7 @@
             showStatus(error.message);
         }
         refreshNoteControls();
+        applyDatabasePermissions();
         renderPianoRoll();
         return result;
     }
@@ -2008,30 +2022,54 @@
     shortcutsDialog.addEventListener('close', () => helpReturnFocus?.focus());
 
     let focusPolicyRevision = 0;
-    // Native pointer clicks have positive detail; keyboard/assistive activation uses zero.
-    // Defer until click handlers and default actions finish, without cancelling those actions.
-    document.addEventListener('click', (event) => {
-        const revision = ++focusPolicyRevision;
-        const control = event.target?.closest?.('button, summary');
-        if (!(event.detail > 0) || !control?.closest?.('[data-daw-controls]') ||
-            control.closest('dialog, [role="dialog"], a, .account-menu') ||
-            (control.tagName === 'BUTTON' && control.type !== 'button')) {
-            return;
-        }
-        const focusBeforeAction = document.activeElement;
-        // A task (not a microtask) runs after native click/default-action dispatch.
+    let pointerInput = null;
+
+    function deferWorkspaceFocus(control, previousFocus) {
+        const revision = focusPolicyRevision;
+        // Use a task so all native click/change handlers finish before the handoff.
         setTimeout(() => {
             if (revision !== focusPolicyRevision || document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) {
                 return;
             }
-            // An action may intentionally focus a text field, menu or other editor.
-            const focusAfterAction = document.activeElement;
-            if (focusAfterAction !== control && focusAfterAction !== document.body &&
-                focusAfterAction !== focusBeforeAction) {
+            const focused = document.activeElement;
+            if (focused !== control && focused !== document.body && focused !== previousFocus) {
                 return;
             }
             pianoViewport.focus({ preventScroll: true });
         }, 0);
+    }
+
+    // Opt-in instrument ranges/selects release pointer focus only after completion.
+    document.addEventListener('pointerdown', (event) => {
+        focusPolicyRevision++;
+        pointerInput = null;
+        const control = event.target?.closest?.('input[type="range"], select');
+        if (event.button !== 0 || !control?.closest?.('[data-daw-pointer-inputs]') ||
+            control.closest('dialog, [role="dialog"]')) return;
+        pointerInput = { control, pointerId: event.pointerId, previousFocus: document.activeElement };
+    }, true);
+    document.addEventListener('pointerup', (event) => {
+        if (!pointerInput || pointerInput.pointerId !== event.pointerId || pointerInput.control.tagName === 'SELECT') return;
+        const interaction = pointerInput;
+        pointerInput = null;
+        deferWorkspaceFocus(interaction.control, interaction.previousFocus);
+    }, true);
+    document.addEventListener('pointercancel', () => { pointerInput = null; }, true);
+    document.addEventListener('change', (event) => {
+        if (!pointerInput || pointerInput.control !== event.target || event.target.tagName !== 'SELECT') return;
+        const interaction = pointerInput;
+        pointerInput = null;
+        deferWorkspaceFocus(interaction.control, interaction.previousFocus);
+    }, true);
+    document.addEventListener('click', (event) => {
+        // Range/select clicks are part of the ongoing pointer interaction, not buttons.
+        const control = event.target?.closest?.('button, summary');
+        if (!control) return;
+        focusPolicyRevision++;
+        if (!(event.detail > 0) || !control.closest?.('[data-daw-controls]') ||
+            control.closest('dialog, [role="dialog"], a, .account-menu') ||
+            (control.tagName === 'BUTTON' && control.type !== 'button')) return;
+        deferWorkspaceFocus(control, document.activeElement);
     }, true);
 
     function matchesShortcut(shortcut, event) {
@@ -2043,6 +2081,7 @@
 
     document.addEventListener('keydown', (event) => {
         focusPolicyRevision++;
+        pointerInput = null;
         if (deleteTrackDialog.open) {
             if (event.key === 'Escape') {
                 event.preventDefault();
@@ -2066,6 +2105,11 @@
             return;
         }
         const target = event.target;
+        const nativeSelect = target?.tagName === 'SELECT' || target?.closest?.('select, [role="combobox"], [role="listbox"]');
+        if (event.key === 'Escape' && !nativeSelect && window.jukeboxInstrumentPanels?.closeActive()) {
+            event.preventDefault();
+            return;
+        }
         if (target?.isContentEditable || target?.closest?.('input, textarea, select, [contenteditable]') ||
             ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName)) {
             return;
@@ -2079,6 +2123,8 @@
             ['BUTTON', 'A', 'SUMMARY'].includes(target?.tagName))) {
             return;
         }
+        if (databaseProject?.role === 'VIEWER' && !shortcut.navigation &&
+            ![' ', 'escape', 'a', 'c'].includes(shortcut.key)) return;
         if (workspaceMode === 'tracks' && ![' ', 'z', 'escape'].includes(shortcut.key)) {
             return;
         }
@@ -2270,12 +2316,13 @@
         getElement('sampleTriggerStep').max = engine.totalSteps;
         getElement('sampleTriggerStep').disabled = !track;
         getElement('addSampleTrigger').disabled = !track;
-        getElement('removeSample').disabled = !track && !isSampleLoading;
+        getElement('removeSample').disabled = !track && !isSampleLoading && !unavailableSample;
         getElement('samplePreviousPage').disabled = sampleTriggerPage === 0;
         getElement('sampleNextPage').disabled = sampleTriggerPage === lastPage;
         getElement('sampleName').textContent = track
             ? `Sample: ${loadedSampleName || 'uploaded audio'}`
-            : 'No sample loaded.';
+            : unavailableSample ? `Audio unavailable: ${unavailableSample.name || 'uploaded sample'} — re-upload to restore triggers.`
+                : 'No sample loaded.';
         getElement('sampleTriggerSummary').textContent = triggers.length
             ? `Active triggers ${first + 1}–${Math.min(first + SAMPLE_PAGE_SIZE, triggers.length)} of ${triggers.length}.`
             : 'No active triggers.';
@@ -2311,6 +2358,7 @@
         isSampleLoading = false;
         engine.removeTrack('uploaded');
         loadedSampleName = '';
+        unavailableSample = null;
         sampleTriggerPage = 0;
         getElement('audioFile').value = '';
         getElement('sampleTriggerStep').value = '1';
@@ -2351,9 +2399,10 @@
             if (token !== latestAudioUploadId) {
                 return;
             }
-            const steps = engine.tracks.get('uploaded')?.steps.slice();
+            const steps = engine.tracks.get('uploaded')?.steps.slice() ?? unavailableSample?.steps;
             engine.addTrack('uploaded', buffer);
             loadedSampleName = file.name || 'uploaded audio';
+            unavailableSample = null;
             steps?.forEach((active, step) => engine.setStep('uploaded', step, active));
             renderSampleEditor();
             getElement('sampleStatus').textContent = `Loaded: ${file.name}`;
@@ -2457,9 +2506,12 @@
         latestAudioUploadId++;
         isSampleLoading = false;
         loadedSampleName = '';
+        unavailableSample = null;
         sampleTriggerPage = 0;
         stopPlayback();
         engine.newSequence();
+        window.jukeboxSynth?.restoreState(null);
+        window.jukeboxDrums?.restoreState(null);
         databaseProject = null;
         getElement('saveProject').disabled = false;
         newNoteLengthSteps = 1;
@@ -2476,7 +2528,16 @@
     async function loadPendingDatabaseProject() {
         const pending = localStorage.getItem('jukebox_pending_database_project');
         const routeMatch = window.location.pathname.match(/^\/project\/([0-9a-f-]+)$/i);
-        let saved = pending ? JSON.parse(pending) : null;
+        let saved = null;
+        if (pending && !routeMatch) {
+            try {
+                saved = JSON.parse(pending);
+            } catch {
+                localStorage.removeItem('jukebox_pending_database_project');
+                showStatus('Could not load database project: invalid pending project data.');
+                return;
+            }
+        }
         if (routeMatch) {
             try {
                 const response = await fetch(`/api/projects/${routeMatch[1]}`, {
@@ -2513,13 +2574,6 @@
                 Number.isInteger(data.stepCount) ? data.stepCount : 16,
                 Number.isInteger(data.ppq) ? data.ppq : 480
             );
-            databaseProject = {
-                id: saved.id,
-                name: saved.name,
-                role: saved.role,
-                version: saved.version
-            };
-            getElement('saveProject').disabled = databaseProject.role === 'VIEWER';
             sequence.name = saved.name || data.name || 'JukeBox';
             sequence.tracks = Array.isArray(data.tracks) && data.tracks.length
                 ? data.tracks
@@ -2533,10 +2587,22 @@
                 Number.isInteger(data.loopStart) ? data.loopStart : 0,
                 Number.isInteger(data.loopEnd) ? data.loopEnd : sequence.stepCount
             );
-            if (data.sample && Array.isArray(data.sample.steps)) {
-                engine.addTrack('uploaded', null);
-                data.sample.steps.forEach((active, step) => engine.setStep('uploaded', step, active));
-                loadedSampleName = data.sample.name || '';
+            databaseProject = {
+                id: saved.id,
+                name: saved.name,
+                role: saved.role,
+                version: saved.version
+            };
+            getElement('saveProject').disabled = databaseProject.role === 'VIEWER';
+            loadedInstrumentState = data.instruments?.version === 1 ? data.instruments : null;
+            // The existing JSON carries metadata only, not a playable AudioBuffer.
+            if (data.sample && typeof data.sample === 'object') {
+                unavailableSample = {
+                    audioPersisted: false,
+                    name: typeof data.sample.name === 'string' ? data.sample.name : '',
+                    steps: Array.from({ length: engine.totalSteps }, (_, step) => data.sample.steps?.[step] === true)
+                };
+                getElement('sampleStatus').textContent = 'Uploaded audio was not stored. Re-upload the original sample to play it.';
             }
             resetEditorSelection();
             resetPitchViewport();
@@ -2618,7 +2684,9 @@
         requestAnimationFrame(updatePlayhead);
     }
 
-    await loadPendingDatabaseProject();
+    if (/^\/project\//.test(window.location.pathname) || localStorage.getItem('jukebox_pending_database_project')) {
+        await loadPendingDatabaseProject();
+    }
     selectNote(null);
     syncEditorState();
     pianoViewport.scrollTop = Math.max(0, RULER_HEIGHT + (highestPitch - 60) * ROW_HEIGHT - 288);
@@ -2626,10 +2694,10 @@
     updatePlayhead();
     // Teammates register against this instance, without adding a global transport.
     const editor = Object.freeze({
-        getState: () => ({ mode: workspaceMode, activeTrackId, ghostNotes: ghostNotesEnabled, editingCursorTick }),
+        getState: () => ({ mode: workspaceMode, activeTrackId, ghostNotes: ghostNotesEnabled, editingCursorTick, readOnly: databaseProject?.role === 'VIEWER' }),
         setWorkspace,
         setGhostNotes,
         refresh: syncEditorState
     });
-    document.dispatchEvent(new CustomEvent('jukebox:ready', { detail: { engine, editor } }));
+    document.dispatchEvent(new CustomEvent('jukebox:ready', { detail: { engine, editor, instrumentState: loadedInstrumentState } }));
 })();

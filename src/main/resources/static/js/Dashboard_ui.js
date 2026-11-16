@@ -141,12 +141,31 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             };
 
+            const leaveBtn = document.createElement('button');
+            leaveBtn.textContent = 'Leave';
+            leaveBtn.type = 'button';
+            leaveBtn.style.marginRight = '8px';
+            leaveBtn.onclick = async () => {
+                if (confirm(`Leave project "${proj.name}"?`)) {
+                    try {
+                        await manager.leaveProject(proj.id);
+                        await renderList();
+                        showStatus('Project left successfully.');
+                    } catch (err) {
+                        showStatus(`Leave failed: ${err.message}`);
+                    }
+                }
+            };
+
             buttonGroup.append(loadBtn, exportBtn);
             if (proj.role === 'OWNER') {
                 buttonGroup.append(shareBtn);
             }
             if (proj.role === 'OWNER' || proj.role === 'EDITOR') {
                 buttonGroup.append(renameBtn);
+            }
+            if (proj.role === 'EDITOR' || proj.role === 'VIEWER') {
+                buttonGroup.append(leaveBtn);
             }
             buttonGroup.append(deleteBtn);
             li.append(info, buttonGroup);

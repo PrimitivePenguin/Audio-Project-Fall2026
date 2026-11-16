@@ -51,6 +51,22 @@ class DashboardManager {
         }
     }
 
+    async shareProject(id, usernameOrEmail, role) {
+        try {
+            const response = await fetch(`/api/projects/${id}/collaborators`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usernameOrEmail, role })
+            });
+            if (!response.ok) throw new Error('Failed to share project');
+            return await response.json();
+        } catch (error) {
+            console.error('Error sharing project:', error);
+            throw error;
+        }
+    }
+
     async deleteProject(id) {
         try {
             const response = await fetch(`/api/projects/${id}`, {

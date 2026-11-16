@@ -31,16 +31,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const info = document.createElement('span');
             const updatedAt = proj.updatedAt || proj.updated_at || new Date().toISOString();
-            info.textContent = `${proj.name} (Updated: ${new Date(updatedAt).toLocaleString()})`;
+            const role = proj.role
+                ? proj.role.charAt(0) + proj.role.slice(1).toLowerCase()
+                : 'Unknown';
+            const sharedBy = proj.role !== 'OWNER' && proj.sharedBy
+                ? ` Shared by: ${proj.sharedBy}.`
+                : '';
+            info.textContent = `${proj.name} (Role: ${role}. Updated: ${new Date(updatedAt).toLocaleString()}).${sharedBy}`;
 
             const buttonGroup = document.createElement('div');
 
-            // Open button -> routes to the backend project view
-            const openBtn = document.createElement('button');
-            openBtn.textContent = 'Open';
-            openBtn.type = 'button';
-            openBtn.style.marginRight = '8px';
-            openBtn.onclick = () => {
+            // Load button -> routes to the backend project view
+            const loadBtn = document.createElement('button');
+            loadBtn.textContent = 'Load in editor';
+            loadBtn.type = 'button';
+            loadBtn.style.marginRight = '8px';
+            loadBtn.onclick = () => {
                 window.location.href = `/project/${proj.id}`;
             };
 
@@ -94,6 +100,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             };
 
+            const shareBtn = document.createElement('button');
+            shareBtn.textContent = 'Share';
+            shareBtn.type = 'button';
+            shareBtn.style.marginRight = '8px';
+            shareBtn.onclick = async () => {
+                const usernameOrEmail = prompt('Username or email to add:');
+                const role = prompt('Role: EDITOR or VIEWER', 'VIEWER');
+                if (!usernameOrEmail || !['EDITOR', 'VIEWER'].includes(role)) {
+                    showStatus('Share failed: enter a username/email and role EDITOR or VIEWER.');
+                    return;
+                }
+                try {
+                    await manager.shareProject(proj.id, usernameOrEmail.trim(), role);
+                    showStatus('Project shared successfully.');
+                } catch (err) {
+                    showStatus(`Share failed: ${err.message}`);
+                }
+            };
+
             // Delete button
             const deleteBtn = document.createElement('button');
             deleteBtn.textContent = 'Delete';
@@ -110,7 +135,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             };
 
-            buttonGroup.append(openBtn, exportBtn, renameBtn, deleteBtn);
+            buttonGroup.append(loadBtn, exportBtn);
+            if (proj.role === 'OWNER') {
+                buttonGroup.append(shareBtn);
+            }
+            if (proj.role === 'OWNER' || proj.role === 'EDITOR') {
+                buttonGroup.append(renameBtn);
+            }
+            buttonGroup.append(deleteBtn);
             li.append(info, buttonGroup);
             projectList.appendChild(li);
         });

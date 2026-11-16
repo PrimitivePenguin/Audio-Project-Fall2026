@@ -103,6 +103,11 @@ public class UserManagementController {
                 "role", user.getRoleType().name());
     }
 
+    @GetMapping("/")
+    public String landingPage() {
+        return "redirect:/dashboard";
+    }
+
     // Logout
     @PostMapping("/logout")
     public String logout(HttpSession session) {
@@ -114,14 +119,11 @@ public class UserManagementController {
     @GetMapping("/dashboard")
     public String showDashboard(HttpSession session, Model model) {
         Integer userId = (Integer) session.getAttribute(SESSION_USER_ID);
-        
-        if (userId == null) {
-            return "redirect:/login";
-        }
 
-        // Fetch user info to display on the dashboard
-        Optional<UserInfo> current = userService.findById(userId);
-        current.ifPresent(user -> model.addAttribute("currentUser", user));
+        if (userId != null) {
+            Optional<UserInfo> current = userService.findById(userId);
+            current.ifPresent(user -> model.addAttribute("currentUser", user));
+        }
 
         return "dashboard";
     }

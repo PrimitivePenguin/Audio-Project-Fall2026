@@ -1,6 +1,6 @@
 // src/main/resources/static/js/instruments/SynthInstrumentManager.js
 // Load AFTER the engine scripts and BEFORE sequencer-ui.js
-document.addEventListener('jukebox:ready', ({ detail: { engine } }) => {
+document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrumentState } }) => {
     const DEFAULTS = {
         waveform: 'sawtooth', attack: 0.01, decay: 0.08,
         sustain: 0.5, release: 0.2, gain: 0.05, filterCutoff: 1200,
@@ -14,20 +14,21 @@ document.addEventListener('jukebox:ready', ({ detail: { engine } }) => {
     const midiToHz = (m) => 440 * 2 ** ((m - 69) / 12);
     const silentHandle = () => ({ stop() {}, finished: Promise.resolve() });
 
-    const settingsByTrackId = {};
+    const settingsByTrackId = Object.create(null);
     const voices = new Set();
 
     // ---- Public settings API ----
 
     // Returns true if the value was accepted (numbers are clamped to LIMITS).
     function setParam(trackId, key, value) {
-        if (typeof trackId !== 'string') return false;
+        if (editor?.getState?.().readOnly || typeof trackId !== 'string' ||
+            !engine.sequence.tracks.some((track) => track.id === trackId)) return false;
         if (key === 'waveform') {
             if (!WAVEFORMS.includes(value)) return false;
             (settingsByTrackId[trackId] ??= {}).waveform = value;
             return true;
         }
-        if (!(key in LIMITS) || typeof value !== 'number' || !Number.isFinite(value)) {
+        if (!Object.hasOwn(LIMITS, key) || typeof value !== 'number' || !Number.isFinite(value)) {
             return false;
         }
         const [lo, hi] = LIMITS[key];
@@ -40,11 +41,41 @@ document.addEventListener('jukebox:ready', ({ detail: { engine } }) => {
         return { ...DEFAULTS, ...settingsByTrackId[trackId] };
     }
 
+    function snapshot() {
+        return { tracks: engine.sequence.tracks.map((track) => ({
+            trackId: track.id,
+            settings: getSettings(track.id)
+        })) };
+    }
+
+    function restoreState(state) {
+        Object.keys(settingsByTrackId).forEach((id) => delete settingsByTrackId[id]);
+        if (!Array.isArray(state?.tracks)) {
+            return;
+        }
+        const ids = new Set(engine.sequence.tracks.map((track) => track.id));
+        for (const entry of state.tracks) {
+            if (!entry || !ids.has(entry.trackId) || !entry.settings || typeof entry.settings !== 'object') {
+                continue;
+            }
+            const restored = {};
+            if (WAVEFORMS.includes(entry.settings.waveform)) {
+                restored.waveform = entry.settings.waveform;
+            }
+            for (const [key, [lo, hi]] of Object.entries(LIMITS)) {
+                const value = entry.settings[key];
+                if (typeof value === 'number' && Number.isFinite(value)) {
+                    restored[key] = Math.min(hi, Math.max(lo, value));
+                }
+            }
+            settingsByTrackId[entry.trackId] = restored;
+        }
+    }
+
     // ---- Instrument manager ----
 
     const manager = {
         syncTracks(tracks) {
-            console.log('syncTracks', tracks.map((t) => t.id), Object.keys(settingsByTrackId));
             const ids = new Set(tracks.map((t) => t.id));
             for (const id of Object.keys(settingsByTrackId)) {
                 if (!ids.has(id)) delete settingsByTrackId[id];
@@ -115,6 +146,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine } }) => {
     };
 
     engine.registerInstrumentManager(manager);
+    restoreState(instrumentState?.synth);
     window.jukeboxSynth = { setParam, getSettings, DEFAULTS, LIMITS, WAVEFORMS,
-        activeVoices: () => voices.size };
+        snapshot, restoreState, activeVoices: () => voices.size };
 }, { once: true });

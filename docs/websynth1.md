@@ -58,15 +58,14 @@ afterwards. Notes already queued or sounding keep their old sound.
 
 ## Behaviour and limits
 
-- Channel 9 (MIDI percussion) is silent in this synth. Drums will be handled in an upcoming `DrumMachine.js`.
+- Channel 9 (MIDI percussion) is silent in this synth. The integrated DrumMachine uses separate sample tracks, not imported percussion notes.
 - Peak level is `gain x velocity`. Large chords at high velocity can still
   clip, because there is no per-manager limiter or voice cap.
 - Pause cancels voices and Resume restarts envelopes. This is an engine
   limitation (voices have no seek).
-- Settings are not persisted and are lost on reload. Settings for removed
-  tracks are dropped on the next track sync; the default Piano track keeps
-  its settings across New Sequence.
-- There is no UI yet. Use the console API above.
+- Settings persist in database projects through the versioned instrument snapshot.
+  Removed-track settings are dropped on sync; New Sequence resets settings.
+- The top-toolbar Synth panel edits settings through the same API.
 
 ## Manual testing
 
@@ -77,3 +76,13 @@ afterwards. Notes already queued or sounding keep their old sound.
    returns to 0.
 4. Deleting a track discards its synth settings. Undoing the delete restores the
      track with default settings.
+
+## Toolbar, database state and focus integration
+
+Load `/js/instruments/SynthInstrumentManager.js`, `/js/InstrumentPanel.js`, and `/js/SynthUI.js` before `/js/sequencer-ui.js`; root-absolute entry URLs support both direct and forwarded database-project routes. Registration is once-only on `jukebox:ready`, after the selected composition loads. The manager restores `event.detail.instrumentState.synth` before the Synth UI mounts its one toolbar panel.
+
+`jukeboxSynth.snapshot()` returns `{tracks: [{trackId, settings}]}` with complete current settings for canonical stable track IDs. `restoreState(state)` clears previous state, skips unknown tracks and invalid waveform/numeric values, clamps finite values to LIMITS and defaults missing parameters. Saving reads the snapshot without resetting it. MIDI programs/channels are unchanged; parameters still apply when a future voice is created. Viewer setters reject writes and settings controls are disabled. New Sequence resets parameters, including reused Piano IDs.
+
+The Synth panel stays open during transport and scrolls internally when needed. Close/Escape or its toolbar toggle dismiss it; opening Drums closes it. The centralized focus policy releases pointer-operated sliders on pointerup and native selects on completed change, leaving Tab/arrow/native chooser interactions intact. No control-specific blur handlers are used. A chooser dismissed without changing a value conservatively retains native select focus.
+
+See [sequencer integration](sequencer-api.md#post-merge-dashboard-and-instrument-integration) and [project collaboration](project-collaboration.md) for the JSON envelope, existing optimistic concurrency behavior and verification checklist.

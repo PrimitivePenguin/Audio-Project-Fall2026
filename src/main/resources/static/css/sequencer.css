@@ -1,10 +1,58 @@
 :root {
     font-family: Inter, system-ui, sans-serif;
-    color: #213047;
-    background: #182333;
+    color: var(--steel-950);
+    background: var(--steel-900);
     font-size: 13px;
-    --border: #c6d0dd;
-    --accent: #000000;
+
+    /* ===== Dark steel-gray theme: change colours here, the whole site follows ===== */
+    --steel-950: #15191d;   /* main text */
+    --steel-900: #1f252b;   /* top toolbar, page background */
+    --steel-800: #2c343c;
+    --steel-700: #3d4751;
+    --steel-600: #4b5661;   /* secondary text */
+    --steel-500: #6b7682;
+    --steel-400: #87919b;   /* input / button borders */
+    --steel-300: #9fa8b1;   /* panel borders */
+    --steel-200: #b4bcc3;   /* hover */
+    --steel-100: #c5ccd2;   /* editing toolbar, status bar */
+    --steel-50:  #d3d9de;   /* buttons, light surfaces */
+    --accent-steel: #3f6680;        /* play button, cursor, pressed buttons */
+    --accent-steel-light: #5f86a0;
+    --accent-steel-soft: #b6c6d3;
+    --warm: #b87a2c;                /* focus ring */
+    --warm-dark: #6b4c1c;
+    --warm-light: #d6c394;
+    --divider: rgba(128, 139, 150, .35);
+    --shadow: rgba(15, 18, 21, .35);
+    --backdrop: rgba(15, 18, 21, .85);
+    --field: #e4e8eb;               /* inputs, popups */
+    --border: var(--steel-300);
+    --accent: var(--steel-700);     /* toolbar button while held */
+
+    /* Piano-roll canvas colours (read by js/sequencer-ui.js on page load) */
+    --roll-bg: var(--steel-50);
+    --roll-row-sharp: #c8cfd5;              /* rows of sharp/flat pitches */
+    --roll-row-line: var(--steel-200);
+    --roll-beat-line: var(--steel-500);
+    --roll-loop-shade: rgba(21, 25, 29, .16);  /* outside the loop */
+    --roll-key-white: #dee3e7;
+    --roll-key-black: var(--steel-800);
+    --roll-key-label: var(--steel-900);
+    --roll-key-label-on-black: var(--steel-50);
+    --roll-ruler-bg: var(--steel-100);
+    --roll-text: var(--steel-900);
+    --roll-note-outline: var(--steel-900);
+    --roll-note-selected: #cfa155;
+    --roll-note-delete: #b85252;
+    --roll-grip: var(--steel-900);
+    --roll-cursor: var(--accent-steel);
+    --roll-playback: #bd842f;
+    --roll-marquee: var(--accent-steel);
+    --roll-marquee-fill: rgba(63, 102, 128, .22);
+    --roll-lane-active: #b7c5d1;
+    --roll-lane-alt: #cad0d6;
+    --roll-lane-header: #bdc5cc;
+    --roll-lane-header-active: #aab9c7;
 }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; }
@@ -16,50 +64,50 @@ body { margin: 0; overflow: hidden; }
     min-width: 0;
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
-.primary-toolbar { position: relative; background: #000000; color: #edf3fb; border-bottom: 1px solid #354357; }
-#background_contour { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
-.primary-toolbar > :not(#background_contour) { position: relative; z-index: 1; }
-.editing-toolbar { background: #e7edf5; border-bottom: 1px solid #a5b3c4; }
+.primary-toolbar { position: relative; background: var(--steel-900); color: var(--steel-50); border-bottom: 1px solid var(--steel-800); }
+#toolbarMeshContainer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.primary-toolbar > :not(#toolbarMeshContainer) { position: relative; z-index: 1; }
+.editing-toolbar { background: var(--steel-100); border-bottom: 1px solid var(--steel-400); }
 .brand { font-size: 21px; margin: 0 12px 0 0; letter-spacing: -.5px; }
-.brand span { display: block; font-size: 9px; letter-spacing: 2px; color: #a9b9ce; }
+.brand span { display: block; font-size: 9px; letter-spacing: 2px; color: var(--steel-400); }
 .control-group { display: flex; align-items: center; gap: 5px; }
-.control-group + .control-group { border-left: 1px solid #8294ac55; padding-left: 7px; }
+.control-group + .control-group { border-left: 1px solid var(--divider); padding-left: 7px; }
 label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 input, button, select, summary, .button-link { font: inherit; }
-input { border: 1px solid #acbacd; border-radius: 4px; padding: 5px; background: #fff; color: #213047; }
+input { border: 1px solid var(--steel-400); border-radius: 4px; padding: 5px; background: var(--field); color: var(--steel-950); }
 input[type=number] { width: 63px; }
 #noteLength { width: 68px; }
 button, summary, .button-link {
-    border: 1px solid #acbacd;
+    border: 1px solid var(--steel-400);
     border-radius: 4px;
     padding: 6px 9px;
-    background: #f8fafc;
-    color: #213047;
+    background: var(--steel-50);
+    color: var(--steel-950);
     cursor: pointer;
     white-space: nowrap;
 }
-button:hover, summary:hover, .button-link:hover { background: #dfe9f3; }
+button:hover, summary:hover, .button-link:hover { background: var(--steel-200); }
 button:disabled { opacity: .45; cursor: default; }
 .button-link { text-decoration: none; }
-#playButton { background: #087e8b; color: white; border-color: #2aa2ad; min-width: 85px; }
+#playButton { background: var(--accent-steel); color: white; border-color: var(--accent-steel-light); min-width: 85px; }
 .file-control { font-size: 12px; }
 .file-control input { width: 110px; padding: 2px; font-size: 11px; }
-:focus-visible { outline: 3px solid #d57b0f; outline-offset: 2px; }
-#selectionCount { color: #82580e; font-weight: 600; white-space: nowrap; }
-#cursorPosition { color: #076974; font-size: 12px; margin-left: auto; }
-.piano-viewport { position: relative; min-width: 0; min-height: 0; overflow: auto; background: #f8fafc; overscroll-behavior: contain; }
+:focus-visible { outline: 3px solid var(--warm); outline-offset: 2px; }
+#selectionCount { color: var(--warm-dark); font-weight: 600; white-space: nowrap; }
+#cursorPosition { color: var(--accent-steel); font-size: 12px; margin-left: auto; }
+.piano-viewport { position: relative; isolation: isolate; /* keeps the contour overlay's z-index inside, so popups stay on top */ min-width: 0; min-height: 0; overflow: auto; background: var(--steel-50); overscroll-behavior: contain; }
 #pianoSpacer { pointer-events: none; }
 #pianoCanvas { position: absolute; display: block; touch-action: none; user-select: none; }
-.statusbar { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; padding: 6px 12px; background: #f1f5f9; border-top: 1px solid var(--border); font-size: 11px; }
+.statusbar { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; padding: 6px 12px; background: var(--steel-100); border-top: 1px solid var(--border); font-size: 11px; }
 .statusbar p { margin: 0; }
 #status { flex: 1 1 280px; }
-#compositionInfo { color: #49627f; }
-.cursor-legend { display: inline-flex; align-items: center; gap: 5px; color: #53677e; }
-.cursor-legend i { width: 3px; height: 12px; background: #087e8b; margin-left: 7px; }
-.cursor-legend .playback-key { background: #df9410; }
+#compositionInfo { color: var(--steel-600); }
+.cursor-legend { display: inline-flex; align-items: center; gap: 5px; color: var(--steel-600); }
+.cursor-legend i { width: 3px; height: 12px; background: var(--accent-steel); margin-left: 7px; }
+.cursor-legend .playback-key { background: var(--roll-playback); }
 .popup-menu { position: relative; }
 .popup-menu summary { list-style-position: inside; }
-.popup-content { position: absolute; z-index: 5; right: 0; top: calc(100% + 8px); width: 260px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: #213047; box-shadow: 0 8px 30px #13283c33; }
+.popup-content { position: absolute; z-index: 5; right: 0; top: calc(100% + 8px); width: 260px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); color: var(--steel-950); box-shadow: 0 8px 30px var(--shadow); }
 .account-menu { margin-left: auto; }
 .workspace-options { position: static; }
 .editing-toolbar { position: relative; }
@@ -67,19 +115,19 @@ button:disabled { opacity: .45; cursor: default; }
 .popup-content h2 { margin: 14px 0 8px; font-size: 13px; }
 .popup-content h2:first-child { margin-top: 0; }
 .wrap-controls { flex-wrap: wrap; }
-.hint, #sampleStatus { color: #53677e; font-size: 12px; line-height: 1.5; }
+.hint, #sampleStatus { color: var(--steel-600); font-size: 12px; line-height: 1.5; }
 .sample-panel { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 6px; }
 .sample-panel .transport { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .sample-panel input[type=file] { width: 210px; }
 .sample-triggers { max-height: 180px; overflow: auto; padding-left: 24px; }
 .sample-triggers li { padding: 4px; }
 .sample-triggers button { margin-left: 16px; padding: 3px 8px; }
-.sample-triggers .current { background: #f4d997; }
-dialog { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; padding: 24px; border: 1px solid #acbacd; border-radius: 10px; color: #213047; }
-dialog::backdrop { background: #13202dcc; }
+.sample-triggers .current { background: var(--warm-light); }
+dialog { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; padding: 24px; border: 1px solid var(--steel-400); border-radius: 10px; color: var(--steel-950); }
+dialog::backdrop { background: var(--backdrop); }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 .dialog-heading h2 { font-size: 20px; margin: 0; }
-dialog p { color: #53677e; line-height: 1.5; }
+dialog p { color: var(--steel-600); line-height: 1.5; }
 .controls-guide { display: grid; grid-template-columns: minmax(150px, 1fr) 2fr; gap: 10px 20px; line-height: 1.45; }
 .controls-guide dt { font-weight: 600; }
 .controls-guide dd { margin: 0; }
@@ -99,14 +147,48 @@ dialog p { color: #53677e; line-height: 1.5; }
     .options-content { max-height: 60dvh; }
 }
 
-#activeTrack { max-width: 180px; padding: 5px; border: 1px solid #acbacd; border-radius: 4px; }
+#activeTrack { max-width: 180px; padding: 5px; border: 1px solid var(--steel-400); border-radius: 4px; }
 #activeTrackName { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #trackName { width: 180px; margin: 8px 0; }
-[aria-pressed="true"] { background: #d2e6ed; border-color: #087e8b; }
-.ghost-control { color: #53677e; }
-.ghost-control input { accent-color: #087e8b; }
+[aria-pressed="true"] { background: var(--accent-steel-soft); border-color: var(--accent-steel); }
+.ghost-control { color: var(--steel-600); }
+.ghost-control input { accent-color: var(--accent-steel); }
 
 #deleteMidiTrack { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+#pianoViewport { grid-area: 3 / 1; }
+
+/* lives inside #pianoViewport at the top-left of the scrolled content;
+   width/height are set from #pianoSpacer in index.html */
+#canvasMeshContainer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 20;
+    pointer-events: none;
+}
+
+/* Piano-roll contour opacity, per layer (the toolbar contour is not affected):
+   .base = contour everywhere except on notes, .hi = contour inside notes */
+#canvasMeshContainer .base { 
+    opacity: 0.1; 
+    /* display: none; */
+}
+#canvasMeshContainer .hi   { opacity: 1; }
+
+
+/* an overlay appended into a container; #canvasMeshContainer is sized from #pianoSpacer instead */
+.contour-overlay:not(#canvasMeshContainer) { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.piano-viewport, .toolbar { position: relative; }   /* the containers */
+
+/* plain highlight; works for HTML buttons or SVG shapes */
+button.is-pressed { background: var(--accent); color: #fff; }
+rect.is-pressed, path.is-pressed { fill: var(--accent); }
+
+/* Dashboard: light steel page that scrolls (the editor page keeps body overflow hidden) */
+.dashboard-page { display: flow-root; background: var(--steel-50); color: var(--steel-950); overflow: auto; height: auto; min-height: 100vh; }
+.dashboard-page a { color: var(--accent-steel); }
+.dashboard-page .eyebrow, .dashboard-page header p { color: var(--steel-600); }
 
 .instrument-menus { display: flex; gap: 5px; }
 .instrument-panel {

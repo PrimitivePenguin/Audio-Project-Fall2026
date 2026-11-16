@@ -9,7 +9,7 @@
 <body>
 <main class="daw-workspace">
     <header class="toolbar primary-toolbar" aria-label="Transport and project controls" id="meshContainer1">
-        <svg id="background_contour" aria-hidden="true"></svg>
+        <svg id="toolbarMeshContainer" aria-hidden="true"></svg>
         <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
         <div class="control-group" aria-label="Playback controls" data-daw-controls>
             <button id="playButton" type="button" title="Space">▶ Play</button>
@@ -40,6 +40,7 @@
             <summary>Account</summary>
             <nav class="popup-content" aria-label="Account actions">
                 <p id="currentUser" role="status">Checking login...</p>
+                <button type="button" onclick="window.location.href='/settings'">Settings</button>
                 <button type="button" onclick="window.location.href='/login'">Log in</button>
                 <button type="button" onclick="window.location.href='/signup'">Register</button>
                 <form action="/logout" method="post" style="display: inline"><button type="submit">Logout</button></form>
@@ -119,9 +120,13 @@
             </div>
         </details>
     </section>
+    
+
     <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll">
         <div id="pianoSpacer"></div>
         <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
+        <!-- scrolls with the piano roll; sized to #pianoSpacer and filled in by createContourOverlay() -->
+        <svg id="canvasMeshContainer" aria-hidden="true"></svg>
     </div>
     <footer class="statusbar">
         <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
@@ -178,35 +183,137 @@
         });
 </script>
 <script type="module">
-    import { startAnimation, renderFrame } from "/contour/contour_animation.js"
+    import { startAnimation, renderFrame, setAnimationField } from "/contour/contour_animation.js"
     import { setup } from "/contour/perlin_gen.js"
+    import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
+    import { press, release } from "/contour/press_state.js"
+    import { applyUi, toContourArgs } from "/ui/ui_main.js"
 
+
+    // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
+    // contour scrolls with the notes.
+    const piano = document.getElementById("pianoViewport");
+    const pianoSvg = document.getElementById("canvasMeshContainer");
+    const pianoOverlay = createContourOverlay(pianoSvg);
+
+    // Notes: inside every note only the highlight colours are drawn (the grey base
+    // contour is cut out there). sequencer-ui.js sends the note rectangles after each redraw.
+    document.addEventListener("jukebox:notes", e => setClipRects(pianoOverlay, e.detail));
+
+    // Keep the contour off the sticky keyboard column (left) and measure ruler (top).
+    // They stay put while the content scrolls, so the cut-off follows the scroll position.
+    const { keyboardWidth, rulerHeight } = PianoRollEditor.geometry;
+    function clipToGrid() {
+        pianoSvg.style.clipPath =
+            `inset(${piano.scrollTop + rulerHeight}px 0 0 ${piano.scrollLeft + keyboardWidth}px)`;
+    }
+    piano.addEventListener("scroll", clipToGrid, { passive: true });
+    clipToGrid();
+
+    // Toolbars: plain highlight on the buttons, no contour at all
+    document.querySelectorAll(".toolbar").forEach(tb => attachSurface(tb, { mode: "plain" }));
+    document.querySelectorAll(".toolbar button").forEach((b, i) => {
+        b.dataset.pressId ||= b.id ? `btn-${b.id}` : `toolbar-btn-${i}`;
+    });
+
+    // ACTION: pointer down/up on any [data-press-id] element presses/releases it;
+    //         handles multi-touch and fingers sliding off a key
+    const byPointer = new Map(); // pointerId -> press id
+
+    document.addEventListener("pointerdown", e => {
+        const el = e.target.closest("[data-press-id]");
+        if (!el) return;
+        byPointer.set(e.pointerId, el.dataset.pressId);
+        press(el.dataset.pressId, el);
+    });
+
+    for (const type of ["pointerup", "pointercancel"]) {
+        document.addEventListener(type, e => {
+            const id = byPointer.get(e.pointerId);
+            if (id) { release(id); byPointer.delete(e.pointerId); }
+        });
+    }
+    // A pointerup outside the window (e.g. after alt-tab mid-press) never arrives,
+    // which left buttons stuck pressed: release everything when the window loses focus.
+    window.addEventListener("blur", () => {
+        for (const id of byPointer.values()) release(id);
+        byPointer.clear();
+    });
     let res = 5;
-    let levels = 5;
-    const field = setup(res, "meshContainer1");
+    let toolbarLevels = 5;
+    const toolbarMesh = "toolbarMeshContainer";
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
     // const colorlist = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
     // const colorlist = [[0,0,0],[255,255,0],[0,0,255], [255,255,255]]
     // const colorlist = [[125, 125, 125]] // single colors
     // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
-    const colorlist = [[255,255,255], [0,0,0]]
-    let dampening = 0.25;
-    let scale = 0.5;
+    const toolbarColorList = [[255,255,255], [0,0,0]]
+    let toolbarDampening = 0.25;
+    let toolbarScale = 0.5;
 
     // Curve settings:
-    const settings = {
+    const toolbarSettings = {
         curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
         tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
         points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
-        height: 1          // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+        height: 1,         // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
+        lineWidth: 1       // stroke width in px (default 1)
     };
 
-    // Single still frame: (field, levels, colorlist, dampening, scale, time, settings)
-    renderFrame(field, levels, colorlist, dampening, scale, 0, settings);
-    // Animated: (field, levels, colorlist, increment, dampening, scale, settings)
-    // startAnimation(field, levels, colorlist, 0.1, dampening, scale, settings);
+    // Single still frame: renderFrame(elementId, field, levels, colorlist, offcolorlist, dampening, scale, time, settings)
+    //   renderFrame(toolbarMesh, setup(res, toolbarMesh), toolbarLevels, toolbarColorList, null, toolbarDampening, toolbarScale, 0, toolbarSettings);
+    // Animated: startAnimation(field, levels, colorlist, increment, dampening, scale, settings, elementId)
+    // The field is sized to the SVG, so it is rebuilt whenever the toolbar changes size
+    // (window resize, toolbar wrapping onto more lines); the animation keeps running from where it was.
+    const toolbarSvg = document.getElementById(toolbarMesh);
+    let toolbarSize = "";
+    function sizeToolbarContour() {
+        const w = toolbarSvg.clientWidth, h = toolbarSvg.clientHeight;
+        if (!w || !h || `${w}x${h}` === toolbarSize) return;
+        const first = !toolbarSize;
+        toolbarSize = `${w}x${h}`;
+        const toolbarField = setup(res, toolbarMesh);
+        if (first) {
+            startAnimation(toolbarField, toolbarLevels, toolbarColorList, 0.1, toolbarDampening, toolbarScale, toolbarSettings, toolbarMesh);
+        } else {
+            setAnimationField(toolbarMesh, toolbarField);   // keeps it stopped if it was stopped
+        }
+    }
+    new ResizeObserver(sizeToolbarContour).observe(toolbarSvg);
+    sizeToolbarContour();
 
 
+    const canvasMesh = "canvasMeshContainer";
+    // Levels, colours, noise and curve settings come from the settings page (/settings):
+    // saved on the account when logged in, else on this device; defaults match the
+    // values that used to be hard-coded here (pastel colours, white->black off colours).
+    //   { levels, colorlist, offcolorlist, dampening, scale, res, settings }
+    const canvasArgs = toContourArgs(await applyUi());
+
+    // The piano contour covers the whole scrollable area (#pianoSpacer), not just
+    // the visible part, so it scrolls with the notes. Redraw when that size changes
+    // (MIDI import, more steps, switching to Tracks, ...).
+    const canvasSvg = document.getElementById(canvasMesh);
+    const pianoSpacer = document.getElementById("pianoSpacer");
+    let canvasSize = "";
+    function renderPianoContour() {
+        const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
+        if (!w || !h || `${w}x${h}` === canvasSize) return;
+        canvasSize = `${w}x${h}`;
+        canvasSvg.style.width = `${w}px`;
+        canvasSvg.style.height = `${h}px`;
+        const canvasField = setup(canvasArgs.res, canvasMesh);
+        // only renderFrame, animated doesn't work for this
+        renderFrame(canvasMesh, canvasField, canvasArgs.levels, canvasArgs.colorlist, canvasArgs.offcolorlist,
+                    canvasArgs.dampening, canvasArgs.scale, 0, canvasArgs.settings);
+    }
+    let contourQueued = false;
+    new ResizeObserver(() => {
+        if (contourQueued) return;
+        contourQueued = true;
+        requestAnimationFrame(() => { contourQueued = false; renderPianoContour(); });
+    }).observe(pianoSpacer);
+    renderPianoContour();
 </script>
 </body>
 </html>

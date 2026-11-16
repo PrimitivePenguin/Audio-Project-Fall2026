@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/favicon.ico?v=2" type="image/x-icon">
+    <title>Settings - JukeBox</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f7; margin: 0; }
+        main { max-width: 560px; margin: 40px auto; padding: 24px; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        h1 { margin-top: 0; }
+        p.account { color: #555; margin: 0 0 16px; }
+        fieldset { border: 1px solid #ddd; border-radius: 6px; margin: 16px 0; padding: 12px 16px; }
+        legend { font-weight: 600; padding: 0 6px; }
+        legend label { font-weight: 600; cursor: pointer; }
+        .row { display: grid; grid-template-columns: 120px 1fr 60px; align-items: center; gap: 10px; margin: 10px 0; }
+        .row > label, .row > span { font-weight: 600; }
+        .row output { text-align: right; font-variant-numeric: tabular-nums; color: #555; }
+        .row.choices { grid-template-columns: 120px 1fr; }
+        .row.choices label { font-weight: normal; margin-right: 14px; }
+        select { padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+        input[type="range"] { width: 100%; }
+
+        /* live preview: the middle third is drawn "pressed" (note colours), the rest with the off colours */
+        #uiPreview { display: block; width: 100%; height: 180px; background: #fff; border: 1px solid #ddd; border-radius: 6px; }
+
+        /* colour stop lists */
+        .gradient { height: 14px; border-radius: 4px; border: 1px solid #ddd; margin: 4px 0 10px; }
+        .stop { display: grid; grid-template-columns: 1fr 48px 32px; align-items: center; gap: 8px; margin: 6px 0; }
+        .stop input[type="color"] { width: 48px; height: 28px; padding: 0; border: 1px solid #ccc; border-radius: 4px; background: none; }
+        .stop button { width: 32px; height: 28px; margin: 0; padding: 0; background: #eee; color: #333; }
+        .stop button:hover { background: #fdecea; color: #c0392b; }
+        button { padding: 8px 14px; border: 0; border-radius: 4px; background: #4a5bdc; color: #fff; font-size: 1em; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: default; }
+        button.secondary, .small { background: #e8ebfb; color: #4a5bdc; }
+        .small { font-size: .9em; padding: 6px 10px; }
+        .actions { display: flex; gap: 10px; margin-top: 20px; }
+
+        #uiStatus { margin: 12px 0 0; min-height: 1.2em; }
+        #uiStatus[data-kind="ok"] { color: #1e8449; }
+        #uiStatus[data-kind="error"] { color: #c0392b; }
+        #uiStatus[data-kind="info"] { color: #555; }
+        p.alt { text-align: center; margin-top: 16px; }
+    </style>
+</head>
+<body>
+<main id="ui">
+    <h1>Contour settings</h1>
+
+    <p class="account" th:if="${currentUser != null}">
+        Signed in as <strong th:text="${currentUser.username}">alice</strong>: settings are saved to your account.
+    </p>
+    <p class="account" th:unless="${currentUser != null}">
+        Not signed in: settings are saved on this device only.
+        <a th:href="@{/login}">Log in</a> to keep them with your account.
+    </p>
+
+    <svg id="uiPreview" role="img" aria-label="Preview of the contour with the current settings"></svg>
+
+    <fieldset>
+        <legend>Note colours (pressed)</legend>
+        <div class="gradient" data-gradient="colorStops"></div>
+        <div id="colorStops" data-list="colorStops"></div>
+        <button type="button" id="addStop" class="small">Add colour</button>
+    </fieldset>
+
+    <fieldset>
+        <legend><label><input type="checkbox" id="offColorToggle"> Different colours when not pressed</label></legend>
+        <div id="offColorSection" hidden>
+            <div class="gradient" data-gradient="offColor"></div>
+            <div id="offColorStops" data-list="offColor"></div>
+            <button type="button" id="addOffStop" class="small">Add colour</button>
+        </div>
+    </fieldset>
+
+    <fieldset>
+        <legend>Detail</legend>
+        <div class="row">
+            <label for="res">Grid size</label>
+            <input type="range" id="res">
+            <output for="res"></output>
+        </div>
+        <div class="row">
+            <label for="numLevels">Contour lines</label>
+            <input type="range" id="numLevels">
+            <output for="numLevels"></output>
+        </div>
+        <div class="row">
+            <label for="noise">Noise</label>
+            <input type="range" id="noise">
+            <output for="noise"></output>
+        </div>
+        Note: Do NOT decrease GRID SIZE to less than 5px, grid size is the distance between each point,
+         as such if grid is lowered, it will make your device struggle significantly.
+    </fieldset>
+
+    <fieldset>
+        <legend>Curve</legend>
+        <div class="row">
+            <label for="curveType">Type</label>
+            <select id="curveType">
+                <option value="segments">Segments</option>
+                <option value="linear">Linear</option>
+                <option value="catmullRom">Catmull-Rom</option>
+                <option value="bspline">B-spline</option>
+                <option value="natural">Natural spline</option>
+            </select>
+        </div>
+        <div class="row" id="tensionRow">
+            <label for="tension">Tension</label>
+            <input type="range" id="tension">
+            <output for="tension"></output>
+        </div>
+        <div class="row">
+            <label for="lineWidth">Line width</label>
+            <input type="range" id="lineWidth">
+            <output for="lineWidth"></output>
+        </div>
+        <div class="row choices">
+            <span>Points</span>
+            <div>
+                <label><input type="radio" name="points" value="interpolate"> Interpolate (smooth)</label>
+                <label><input type="radio" name="points" value="midpoint"> Midpoint (blocky)</label>
+            </div>
+        </div>
+    </fieldset>
+
+    <div class="actions">
+        <button type="button" id="saveUi">Save</button>
+        <button type="button" id="resetUi" class="secondary">Reset to defaults</button>
+    </div>
+    <p id="uiStatus" role="status" aria-live="polite" hidden></p>
+
+    <p class="alt"><a th:href="@{/}">Back to JukeBox</a></p>
+</main>
+
+<script type="module" src="/ui/ui_main.js"></script>
+</body>
+</html>

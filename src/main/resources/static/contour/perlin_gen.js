@@ -107,15 +107,10 @@ export function setup(res, containerID) {
     let height = mesh.clientHeight;
     // cols and rows to the nearest multiple of 2
 
-    let cols = Math.floor(width / res);
-    let rows = Math.floor(height / res);
-    // multiple of two to make sure the marching square algorithm works
-    if (width % 2 !== 0) {
-        cols = Math.floor(width / res) + 1;
-    }
-    if (height % 2 !== 0) {
-        rows = Math.floor(height / res) + 1;
-    }
+    // One more grid point than cells, rounded up, so the contour reaches the
+    // right and bottom edges (floor() left the last partial cell empty)
+    const cols = Math.ceil(width / res) + 1;
+    const rows = Math.ceil(height / res) + 1;
     let field = [];
 
     // circle parameters

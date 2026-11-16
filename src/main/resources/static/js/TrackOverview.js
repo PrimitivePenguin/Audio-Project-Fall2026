@@ -3,7 +3,8 @@ class TrackOverview {
     static laneHeight = 84;
 
     static color(trackId) {
-        const palette = ['#3474c9', '#47896c', '#9068b6', '#b86a4b', '#378b99', '#b27b23'];
+        // muted to sit on the steel-gray theme; slot 2 is the steel note colour
+        const palette = ['#5b7a99', '#55606b', '#7d7096', '#9a705e', '#52838d', '#977f4f'];
         let hash = 0;
         for (const character of trackId) {
             hash = (hash * 31 + character.charCodeAt(0)) >>> 0;

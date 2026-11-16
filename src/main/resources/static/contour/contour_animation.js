@@ -12,15 +12,21 @@ const interval = 1000 / targetFPS;
 const animations = new Map();
 
 // Removes the previous frame's paths and draws a new one into the given SVG
-function drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings) {
+function drawInto(elementId, field, num_color, colorlist, offcolorlist, dampening, scale, time, settings = {}) {
     const svg = document.getElementById(elementId);
     if (!svg) {
         console.warn(`contour: no element with id "${elementId}"`);
         return false;
     }
-    svg.querySelectorAll('path').forEach(p => p.remove());
+    // An SVG set up by createContourOverlay has .base/.hi layers: the base gets
+    // offcolorlist (not pressed) and the hi layer gets colorlist (pressed).
+    // A plain SVG is drawn into directly with colorlist.
+    const base = svg.querySelector(":scope > g.base");
+    const hi = svg.querySelector(":scope > g.hi");
+    const target = base ? { base, hi } : { base: svg };
+    const baseColors = base ? (offcolorlist ?? colorlist) : colorlist;
     const modulatedField = generatePerlin(field, scale, dampening, time, settings.height ?? 1);
-    draw(modulatedField, num_color, colorlist, settings, elementId);
+    draw(target, modulatedField, num_color, baseColors, settings, colorlist);
     return true;
 }
 
@@ -33,7 +39,7 @@ function animateLoop(timestamp, elementId) {
 
     if (elapsed >= interval) {
         a.lastUpdate = timestamp - (elapsed % interval); // reset for next frame
-        if (!drawInto(elementId, a.field, a.num_color, a.colorlist, a.dampening, a.scale, a.t, a.settings)) {
+        if (!drawInto(elementId, a.field, a.num_color, a.colorlist, a.colorlist, a.dampening, a.scale, a.t, a.settings)) {
             stopAnimation(elementId);
             return;
         }
@@ -54,6 +60,15 @@ export function startAnimation(field, colors, colorlist, increment, dampening, s
         lastUpdate: 0, animationID: null, isAnimating: false, stopped: false,
     });
     resumeAnimation(elementId);
+}
+
+// Swaps in a new field (e.g. after the SVG was resized) without changing whether
+// the animation is running; the next frame uses it. Returns false if the id was never started.
+export function setAnimationField(elementId, field) {
+    const a = animations.get(elementId);
+    if (!a) return false;
+    a.field = field;
+    return true;
 }
 
 // Stops one animation by id. stopAnimation() with no id stops every animation.
@@ -84,8 +99,8 @@ export function resumeAnimation(elementId) {
 }
 
 // Draws a single still frame into the SVG with this id.
-export function renderFrame(field, num_color, colorlist, dampening, scale, time = 0, settings = {}, elementId = DEFAULT_ID) {
-    drawInto(elementId, field, num_color, colorlist, dampening, scale, time, settings);
+export function renderFrame(elementId, field, num_color, colorlist, offcolorlist, dampening, scale, time = 0, settings = {}) {
+    drawInto(elementId, field, num_color, colorlist, offcolorlist, dampening, scale, time, settings);
 }
 
 // Pause everything while the tab is hidden; on return, resume only the

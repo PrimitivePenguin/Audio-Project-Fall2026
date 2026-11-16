@@ -1,5 +1,6 @@
 package com.cmpt276group18.audio_project.service;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.List;
 
@@ -69,6 +70,27 @@ public class UserService {
         Optional<UserInfo> user = findById(id);
         if (user.isEmpty() || newRole == null) { return false; }
         user.get().setRoleType(newRole);
+        userRepository.save(user.get());
+        return true;
+    }
+
+    // UI SETTINGS (settings page, see UIController)
+
+    // Largest ui JSON stored per user, so nobody can fill the database with huge blobs
+    public static final int MAX_UI_BYTES = 10_000;
+
+    // Saved ui JSON for this user: empty if there is no such user or nothing was saved yet
+    public Optional<String> getUi(Integer userId) {
+        return findById(userId).map(UserInfo::getUiJson);
+    }
+
+    // Stores the ui JSON on the user. False if the user does not exist or the JSON is too big.
+    // (UIController checks it is valid JSON; the JS model validates the contents when it loads.)
+    public boolean saveUi(Integer userId, String json) {
+        if (json == null || json.getBytes(StandardCharsets.UTF_8).length > MAX_UI_BYTES) { return false; }
+        Optional<UserInfo> user = findById(userId);
+        if (user.isEmpty()) { return false; }
+        user.get().setUiJson(json);
         userRepository.save(user.get());
         return true;
     }

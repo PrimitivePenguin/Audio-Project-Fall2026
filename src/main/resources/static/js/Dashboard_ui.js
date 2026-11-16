@@ -55,11 +55,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             exportBtn.textContent = 'Download MIDI';
             exportBtn.type = 'button';
             exportBtn.style.marginRight = '8px';
-            exportBtn.onclick = () => {
+            exportBtn.onclick = async () => {
                 try {
-                    const rawData = typeof proj.projectData === 'string' ? JSON.parse(proj.projectData) : proj.projectData;
+                    const project = await manager.getProject(proj.id);
+                    const rawData = typeof project.projectData === 'string'
+                        ? JSON.parse(project.projectData)
+                        : project.projectData;
+                    if (!rawData || typeof rawData !== 'object') {
+                        throw new Error('Project has no valid MIDI data.');
+                    }
                     const seq = new NoteSequence(rawData.stepCount || 16, rawData.ppq || 480);
-                    seq.name = proj.name;
+                    seq.name = project.name;
                     seq.tracks = rawData.tracks;
                     seq.tempos = rawData.tempos;
                     seq.timeSignatures = rawData.timeSignatures;
@@ -71,12 +77,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `${proj.name}.mid`;
+                    a.download = `${project.name}.mid`;
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
-                    showStatus(`Downloaded "${proj.name}.mid".`);
+                    showStatus(`Downloaded "${project.name}.mid".`);
                 } catch (err) {
                     showStatus(`Export error: ${err.message}`);
                 }

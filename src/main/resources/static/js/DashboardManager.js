@@ -12,6 +12,19 @@ class DashboardManager {
         }
     }
 
+    async getProject(id) {
+        try {
+            const response = await fetch(`/api/projects/${id}`, {
+                credentials: 'same-origin'
+            });
+            if (!response.ok) throw new Error('Failed to fetch project');
+            return await response.json();
+        } catch (error) {
+            console.error('Error fetching project:', error);
+            throw error;
+        }
+    }
+
     async createProject(name, sequenceJson) {
         try {
             const response = await fetch('/api/projects', {

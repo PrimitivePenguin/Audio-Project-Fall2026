@@ -8,16 +8,18 @@ scheduler and `AudioContext`.
 ## Files
 
 - `static/js/instruments/DrumMachine.js` (sounds, engine wiring, `window.jukeboxDrums`)
-- `static/js/instruments/drum-machine-ui.js` (step grid panel)
+- `static/js/DrumMachineUI.js` (step grid panel)
 - `static/index.html` (script tags)
 
-Load all three instrument scripts before `sequencer-ui.js`, in this order:
+Load the instrument scripts before `sequencer-ui.js`, in this order:
 
 ```html
-<script src="js/instruments/SynthInstrumentManager.js"></script>
-<script src="js/instruments/DrumMachine.js"></script>
-<script src="js/instruments/DrumMachineUI.js"></script>
-<script src="js/sequencer-ui.js"></script>
+<script src="/js/instruments/SynthInstrumentManager.js"></script>
+<script src="/js/InstrumentPanel.js"></script>
+<script src="/js/SynthUI.js"></script>
+<script src="/js/instruments/DrumMachine.js"></script>
+<script src="/js/DrumMachineUI.js"></script>
+<script src="/js/sequencer-ui.js"></script>
 ```
 
 Each registers from the `jukebox:ready` event. The UI reads `window.jukeboxDrums`,
@@ -76,7 +78,7 @@ jukeboxDrums.ensure();                     // create any missing drum tracks
 
 ## UI
 
-- A **Drums** button (bottom right) opens the panel.
+- A **Drums** button in the top toolbar opens the panel.
 - One row per drum: a label (click to preview), 16 step buttons per page and a
   volume slider. A pager appears when the pattern is longer than 16 steps.
 - Step buttons are real buttons with `aria-pressed` and per-step labels, so the
@@ -107,8 +109,8 @@ jukeboxDrums.ensure();                     // create any missing drum tracks
 - Three drums with fixed sounds. No sample loading or replacement.
 - No per-step velocity or accents; every hit plays at the track volume.
 - No playhead highlight on the grid.
-- Patterns and volumes are not persisted, are not part of the note
-  undo/redo history, and are not included in MIDI export.
+- Patterns and volumes persist through database Save Project (see below); they
+  are not part of note Undo/Redo or MIDI export.
 - The 300 ms refresh poll is a simple way to notice engine changes without
   modifying shared engine code.
 
@@ -125,3 +127,11 @@ jukeboxDrums.ensure();                     // create any missing drum tracks
 6. Drums and synth notes play together in time.
 7. New Sequence clears the grid; a pattern longer than 16 steps shows the
    pager; MIDI import keeps existing drum steps.
+
+## Integrated project state and focus
+
+`jukeboxDrums.snapshot()` returns `{stepCount, tracks: [{id, volume, steps}]}` for existing kit tracks. `restoreState(state)` replaces only kit IDs, rebuilds generated audio and restores finite clamped volume plus strict boolean patterns within the authoritative composition length. Old/malformed state uses empty/default kit values. It never changes uploaded audio or musical MIDI tracks. Database initialization passes `instrumentState.drums` through the once-only ready event after loading the selected composition. No extra manager, AudioContext or scheduler is introduced. A restored kit can allocate the shared suspended context before the first Play.
+
+The primary-toolbar panel uses shared `InstrumentPanel` presentation, Close/Escape and internal overflow. Only one instrument panel is open; the 300 ms UI refresh stops when closed. Central pointer focus completion handles buttons and range releases; keyboard-focused ranges/buttons retain native behavior, and Space becomes transport after a completed pointer interaction. Viewer patterns/volumes are read-only; preview remains available.
+
+Drum-generated audio is reproducible from configuration (noise differs on reload), whereas arbitrary uploaded audio is not persisted by this API. See [sequencer integration](sequencer-api.md#post-merge-dashboard-and-instrument-integration) for the versioned JSON, sample limitation and manual checks.

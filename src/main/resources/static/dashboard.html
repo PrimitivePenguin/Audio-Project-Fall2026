@@ -6,9 +6,10 @@
     <link rel="icon" href="/favicon.ico?v=2" type="image/x-icon">
     <title>JukeBox — Project Dashboard</title>
     <link rel="stylesheet" href="/css/sequencer.css">
+    <link rel="stylesheet" href="/css/dashboard.css">
 </head>
-<body>
-<main style="max-width: 900px; margin: 40px auto; padding: 20px;">
+<body class="dashboard-page">
+<main class="dashboard-content">
     <header style="margin-bottom: 24px;">
         <p class="eyebrow">JUKEBOX / DASHBOARD</p>
         <h1>Project Manager</h1>
@@ -17,7 +18,7 @@
     </header>
 
     <div class="auth-buttons" style="display: flex; gap: 12px; align-items: center;">
-        <a href="/login" style="padding: 8px 16px; text-decoration: none; color: #007bff; border: 1px solid #007bff; border-radius: 4px; font-family: sans-serif; font-size: 14px;">
+        <a href="/login" style="padding: 8px 16px; text-decoration: none; color: #8cd9ff; border: 1px solid #8cd9ff; border-radius: 4px; font-family: sans-serif; font-size: 14px;">
             Login
         </a>
         <form action="/logout" method="post" style="margin: 0;">
@@ -57,8 +58,8 @@
 <script src="/js/vendor/tonejs-midi-2.0.28.js"></script>
 <script src="/js/NoteSequence.js"></script>
 <script src="/js/midi-io.js"></script>
-<script src="/js/dashboardmanager.js"></script>
-<script src="/js/dashboard_ui.js"></script>
+<script src="/js/DashboardManager.js"></script>
+<script src="/js/Dashboard_ui.js"></script>
 <script src="/js/project-collaboration-test.js"></script>
 </body>
 </html>

@@ -262,6 +262,8 @@ async function test(name, fn) {
         };
         sandbox.requestAnimationFrame = () => {};
         sandbox.window.addEventListener = () => {};
+        sandbox.window.location = { pathname: '/index.html' };
+        sandbox.localStorage = { getItem() { return null; } };
         sandbox.TestEngine = class extends SequencerEngine {
             constructor() {
                 super();

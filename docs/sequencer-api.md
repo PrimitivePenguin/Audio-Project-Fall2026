@@ -257,7 +257,7 @@ Import/replacement, Remove Imported MIDI and New Sequence establish a new sequen
 
 ### Milestone 1 verification
 
-Run all nine frontend suites listed below, the JavaScript syntax checks, and Spring Boot tests. The Iteration 2 suite adds selection/Shift/marquee, overlapping tracks, move previews and cancellation, pitch/tick boundaries, clipboard/provenance, export, group resizing, focus safety, history and a 100000-note movement calculation. Existing suites retain MIDI, sample, audio-clock and instrument integration coverage. These are automated fake-DOM/Web Audio tests, not manual browser verification.
+Run all ten frontend suites listed below, the JavaScript syntax checks, and Spring Boot tests. The Iteration 2 suite adds selection/Shift/marquee, overlapping tracks, move previews and cancellation, pitch/tick boundaries, clipboard/provenance, export, group resizing, focus safety, history and a 100000-note movement calculation. Existing suites retain MIDI, sample, audio-clock and instrument integration coverage. These are automated fake-DOM/Web Audio tests, not manual browser verification.
 
 Manual browser checklist after `sh mvnw spring-boot:run` at `http://localhost:8080/`:
 
@@ -592,3 +592,72 @@ Manual checks:
 11. Load the runnable instrument registration example before the UI. Check preparation precedes playback, Stop during preparation prevents a late start, and source/voice failures produce warnings while healthy voices continue.
 
 Remaining limitations: no arbitrary lossless MIDI round-trip, controller/sustain/bend rendering, MIDI devices, WAV export, drag autoscroll, final instruments/effects, collaboration or persistence. Notes that began before loop start are not chased, and scheduled tails can ring over loop boundaries as described above. Rendering is virtualized; very dense files still require scanning visible candidates from the model. Source sample/audio, unsupported MIDI events and application provenance are excluded from MIDI export. The compatible, now validated `voiceFactory` contract continues to receive original per-note track identity, channel/program, pitch, velocity and committed tick timing on the shared audio clock. Final instrument/DSP behavior still requires testing with the teammate's implementation; automated mocks do not verify audible effects-tail flushing.
+
+## Post-merge dashboard and instrument integration
+
+### Entry points and initialization
+
+`/index.html` and `/project/{UUID}` share the same editor HTML. The latter is a Spring forward; the browser URL remains nested. All entry script/style URLs and inline contour-module imports therefore use **root-absolute** paths. Relative imports inside `/contour/*.js` remain module-relative and resolve correctly. Dashboard script names now match the actual `DashboardManager.js` and `Dashboard_ui.js` casing for Linux deployments.
+
+Load SynthInstrumentManager, InstrumentPanel, SynthUI, DrumMachine and DrumMachineUI before `sequencer-ui.js`. Their once-only `jukebox:ready` listeners initialize after the database GET and canonical sequence/loop loading finish. The event still supplies `{engine, editor}` and additionally supplies `instrumentState` (validated envelope version 1 or null). The synth registers the one instrument manager; drums use the existing sample-track map, never replace that manager, and share its AudioContext and scheduler. Invalid pending-project JSON no longer aborts the ready event.
+
+`editor.getState()` additionally exposes `readOnly` for instrument UIs. Viewer parameter/pattern setters reject writes and their controls are disabled. Existing editor write controls are re-disabled after refresh; playback, inspection and permitted navigation remain available. Backend ownership, sharing, authorization and optimistic version checks are unchanged and remain authoritative.
+
+### Toolbar instrument menus
+
+**Synth** and **Drums** now live in the primary toolbar. Each mounts the existing UI once beneath its button through `InstrumentPanel`; there are no bottom-corner launchers or duplicate audio components. Only one panel opens at a time. Toggle/Close dismiss it, and Escape closes the active panel after modal/gesture handling. A focused native select retains Escape for its chooser. Menus are nonmodal, permit continued playback and edit navigation, and scroll internally. Placement follows toolbar height on opening/window resize and is bounded for short viewports. Keyboard focus returns to the opener on Escape; native Tab/Space/Enter remain available. UI polling runs only while a panel is open and stops on close/pagehide.
+
+### Database JSON extension
+
+`databaseSnapshot()` extends the existing sequence JSON without changing its version-2 note schema or the backend database structure:
+
+```json
+{
+  "instruments": {
+    "version": 1,
+    "synth": {"tracks": [{"trackId": "stable-midi-track-id", "settings": {
+      "waveform": "triangle", "attack": 0.01, "decay": 0.08,
+      "sustain": 0.5, "release": 0.2, "filterCutoff": 1200, "gain": 0.05
+    }}]},
+    "drums": {"stepCount": 32, "tracks": [
+      {"id": "drum-kick", "volume": 0.8, "steps": [true, false, false, false]}
+    ]}
+  }
+}
+```
+
+The example drum array is abbreviated: saves contain the full composition-length boolean array. `jukeboxSynth.snapshot()` reads complete current settings per existing stable MIDI track ID. `restoreState(state)` clears old settings, applies supported waveform/finite bounded parameters and ignores unknown tracks/invalid values. Missing settings default normally. MIDI channel/program/IDs and note metadata never change. New Sequence resets settings even when the default Piano ID is reused.
+
+`jukeboxDrums.snapshot()` reads known kit tracks only, including their current gain and steps. `restoreState(state)` replaces only `drum-kick`, `drum-snare`, `drum-hat`, regenerates their audio buffers and preserves these IDs without duplicate tracks. Composition `stepCount` is authoritative; restored arrays are padded/truncated to it, strict booleans are accepted and finite gain is clamped to 0–1.5. This can initialize the shared **suspended** AudioContext but does not start playback or a scheduler. Snare/hat noise regenerates per page load, so sample waveforms are not bit-identical across reloads.
+
+Snapshots read settings at Save time; they never reset them first. Restore occurs before each UI's first render. Old projects without `instruments` load defaults; unsupported envelope versions also use defaults. Database Save retains the existing project UUID/name/role/version, updates its local version only on success, and surfaces 409 conflicts without silently retrying. There are no backend endpoints, tables or migrations for this extension. Instrument state is database-project configuration, not MIDI-export content or note Undo history; the local MIDI library continues using its existing format.
+
+### Uploaded audio limitation
+
+Drums are reconstructible from generated sounds and pattern/volume data. Arbitrary uploaded audio is **not** stored in the current project JSON or a persistent asset service. Its `sample` metadata carries `audioPersisted: false`, name and trigger steps. Loading shows an unavailable-audio/re-upload message and does not fabricate a playable null-buffer track. Metadata survives subsequent saves; re-uploading audio reconnects its saved trigger positions. Remove Sample clears the pending metadata. A filename alone never implies that audio was restored. Durable audio assets remain a separate backend task.
+
+### Pointer focus and Space
+
+The existing centralized button/summary policy also covers the instrument toolbar menus; per-control `blur()` workarounds were removed. Instrument menu roots opt in with `data-daw-pointer-inputs`:
+
+- A pointer-operated range keeps focus during dragging and releases it only on matching pointerup, including releases outside the slider.
+- A pointer-operated native select keeps focus while choosing. Its completed change event schedules the workspace handoff. Keyboard input cancels the pointer token, so keyboard-driven selects/sliders retain native behavior. Dismissing a native chooser without changing an option conservatively retains select focus; Tab/click the workspace to resume shortcuts.
+- Buttons/steps/previews/pagers/reset use the ordinary pointer-click completion policy. Menus remain open.
+
+The deferred handoff uses `focus({preventScroll: true})` on the same visible Tracks/Piano Roll viewport, yields to newer keyboard/pointer actions and respects open native/ARIA modals. Inputs elsewhere, account controls and navigation are not opted in. Space continues Play/Pause/Resume from the existing cursor/paused position, consumes repeat keydowns and uses only the existing audio scheduler. No MIDI/history mutation is caused by focus changes.
+
+### Dashboard scrolling
+
+`dashboard.html` uses `body.dashboard-page` and `/css/dashboard.css`. Only this page overrides body overflow to vertical auto/horizontal hidden. Long local/database names and action rows wrap; dark-background headings/status/link contrast is corrected. The DAW retains its fixed-height workspace and internal viewport scrolling.
+
+### Verification and manual checklist
+
+`node src/test/frontend/integration-tests.js` adds 23 integration cases alongside the existing frontend suites. Coverage includes assets/routes, one-time initialization, full instrument state round trips, old/invalid data, viewer restrictions, stale versions, sample metadata/re-upload, MIDI preservation, menu lifecycle, range/select/button focus and 0/1/5/25 projects in both Dashboard lists. Automated DOM/audio stubs and CSS assertions do not establish actual browser scrolling, native chooser behavior or audible rendering.
+
+1. On Dashboard, create/import enough local and database projects for 25+ entries, including long names. Test wheel/trackpad/touch/PageDown/Tab and the last card's actions at laptop/mobile widths; confirm no horizontal page overflow.
+2. Open both `/index.html` and an authorized `/project/{UUID}`. Check DevTools Network for instrument/contour 404s, one Synth/Drums launcher each, and one shared transport. Open/close/switch panels, resize and scroll the Drums panel; check Escape and keyboard navigation.
+3. Edit every synth parameter on two stable tracks, set drum patterns on multiple pages and volumes, Save/reload, then inspect/hear the restored state. Check old projects and a Viewer session; try a stale editor version and confirm 409 leaves the newer save intact.
+4. Drag each volume/ADSR slider and choose synth track/waveform with the mouse. Next Space should Play/Pause while the panel remains open. Tab to those controls and verify native arrow/Space/Enter behavior, including native chooser cancellation and confirmation/Shortcuts dialogs. Repeat in Tracks and Piano Roll.
+5. Test shared sample/synth/drum playback, cursor start, custom loops, Pause/Resume, Stop and MIDI export. Reload a project with an uploaded sample: expect an unavailable-audio warning, then re-upload and verify saved triggers. No raw audio restoration is claimed.
+
+Post-merge automated validation: **246 frontend tests**, **28 Spring Boot tests**, JavaScript syntax checks for **29 files**, and `git diff --check` passed. Real-browser layout/native focus and audible playback were not verified; no Playwright/Puppeteer runtime is installed in this workspace.

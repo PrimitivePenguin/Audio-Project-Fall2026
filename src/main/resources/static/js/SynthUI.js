@@ -39,32 +39,6 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
         return lo + (hi - lo) * x;
     }
 
-    // ---- Styles ----
-
-    const style = document.createElement('style');
-    style.textContent = `
-    .synth-toggle { position: fixed; left: 12px; bottom: 12px; z-index: 60; }
-    .synth-panel {
-      position: fixed; left: 12px; bottom: 52px; z-index: 60; width: 300px;
-      padding: 10px 12px; border-radius: 8px;
-      background: Canvas; color: CanvasText; border: 1px solid GrayText;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-      font: 13px system-ui, sans-serif;
-    }
-    .synth-panel[hidden], .synth-note[hidden] { display: none; }
-    .synth-row { display: grid; grid-template-columns: 64px 1fr 62px; align-items: center; gap: 8px; margin: 6px 0; }
-    .synth-row select, .synth-row input[type="range"] { width: 100%; box-sizing: border-box; }
-    .synth-readout { text-align: right; font-variant-numeric: tabular-nums; }
-    .synth-note { margin: 6px 0; opacity: 0.75; }
-    .synth-footer { display: flex; justify-content: flex-end; margin-top: 8px; }
-  `;
-    document.head.appendChild(style);
-
-    // After a mouse click, release focus so Space still controls the transport.
-    const releasePointerFocus = (event) => {
-        if (event.detail > 0) event.currentTarget.blur();
-    };
-
     // ---- Elements ----
 
     function makeRow(labelText, control, readout) {
@@ -111,8 +85,6 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
             synth.setParam(selectedId, p.key, fromSlider(p, Number(slider.value)));
             readout.textContent = p.fmt(synth.getSettings(selectedId)[p.key]);
         });
-        // Release focus after a mouse drag so Space controls the transport again.
-        slider.addEventListener('pointerup', () => slider.blur());
         return { p, slider, readout, row: makeRow(p.label, slider, readout) };
     });
 
@@ -124,14 +96,13 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.textContent = 'Reset to defaults';
-    reset.addEventListener('click', (event) => {
+    reset.addEventListener('click', () => {
         if (selectedId) {
             for (const [key, value] of Object.entries(synth.DEFAULTS)) {
                 synth.setParam(selectedId, key, value);
             }
         }
         render(true);
-        releasePointerFocus(event);
     });
     const footer = document.createElement('div');
     footer.className = 'synth-footer';
@@ -150,27 +121,11 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
         footer
     );
 
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'synth-toggle';
-    toggle.textContent = 'Synth';
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', (event) => {
-        const open = panel.hidden;
-        panel.hidden = !open;
-        toggle.setAttribute('aria-expanded', String(open));
+    InstrumentPanel.attach('synthMenu', 'synthToggle', panel, 'Synth settings', () => {
+        render(true);
         clearInterval(pollTimer);
-        if (open) {
-            render(true);
-            pollTimer = setInterval(() => render(), 300); // picks up track changes, New Sequence, import
-        }
-        releasePointerFocus(event);
-    });
-
-    const root = document.createElement('div');
-    root.setAttribute('data-daw-controls', ''); // the app's focus policy treats these as DAW controls
-    root.append(toggle, panel);
-    document.body.appendChild(root);
+        pollTimer = setInterval(() => render(), 300);
+    }, () => clearInterval(pollTimer));
 
     // ---- Rendering ----
 
@@ -206,7 +161,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
         trackSelect.value = selectedId ?? '';
 
         const track = tracks.find((t) => t.id === selectedId);
-        const disabled = !track || track.channel === PERCUSSION_CHANNEL;
+        const disabled = !track || track.channel === PERCUSSION_CHANNEL || editor?.getState?.().readOnly;
         note.hidden = !(track && track.channel === PERCUSSION_CHANNEL);
 
         const settings = selectedId ? synth.getSettings(selectedId) : synth.DEFAULTS;

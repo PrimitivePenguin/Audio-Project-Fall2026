@@ -1,0 +1,26 @@
+body.dashboard-page {
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 100dvh;
+    color: #edf3fb;
+}
+.dashboard-content {
+    max-width: 940px;
+    margin: 32px auto;
+    padding: 20px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.dashboard-page a { color: #8cd9ff; }
+.dashboard-page .transport, .dashboard-page li { color: #213047; }
+.dashboard-page .hint { color: #bdcde0; }
+.dashboard-page .transport .hint { color: #49627f; }
+.dashboard-page label { white-space: normal; flex-wrap: wrap; max-width: 100%; }
+.dashboard-page input { max-width: 100%; min-width: 0; }
+.dashboard-page .auth-buttons, .dashboard-page li { flex-wrap: wrap; gap: 12px; }
+.dashboard-page li > span { min-width: 0; flex: 1 1 220px; }
+.dashboard-page li > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.dashboard-page li button { white-space: normal; }
+@media (max-width: 650px) {
+    .dashboard-content { margin: 8px auto; padding: 12px; }
+}

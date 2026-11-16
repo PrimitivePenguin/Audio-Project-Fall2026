@@ -95,4 +95,17 @@ class ProjectControllerMockMvcTest {
 
         verify(projectService).update(PROJECT_ID, 42, null, null, 1L);
     }
+    @Test
+    void instrumentJsonPassesThroughWithExistingVersionCheck() throws Exception {
+        String projectData = "{\"instruments\":{\"version\":1,\"synth\":{\"tracks\":[]},\"drums\":{\"tracks\":[]}}}";
+        String request = new tools.jackson.databind.ObjectMapper().writeValueAsString(
+                new ProjectController.ProjectRequest("Instrument project", projectData, 7L));
+        mockMvc.perform(put("/api/projects/" + PROJECT_ID)
+                        .sessionAttr(UserManagementController.SESSION_USER_ID, 42)
+                        .contentType("application/json")
+                        .content(request))
+                .andExpect(status().isOk());
+        verify(projectService).update(PROJECT_ID, 42, "Instrument project", projectData, 7L);
+    }
+
 }

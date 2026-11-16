@@ -53,6 +53,14 @@ public class ProjectService {
                 .orElseThrow(() -> new ProjectAccessException("You do not have access to this project"));
     }
 
+    public Optional<String> sharedBy(UUID projectId, Integer userId) {
+        return collaboratorRepository.findByProjectIdAndUserId(projectId, userId)
+                .map(ProjectCollaborator::getInvitedBy)
+                .flatMap(userRepository::findById)
+                .map(user -> user.getUsername() != null && !user.getUsername().isBlank()
+                        ? user.getUsername() : user.getEmail());
+    }
+
     public Optional<Project> findReadable(UUID projectId, Integer userId) {
         return hasRole(projectId, userId).isPresent()
                 ? projectRepository.findById(projectId) : Optional.empty();

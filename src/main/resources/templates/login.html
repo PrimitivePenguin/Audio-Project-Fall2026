@@ -29,7 +29,7 @@
         <!-- Role in bold; admins get a different colour so the two are easy to tell apart -->
         <p>Role: <strong class="role" th:classappend="${currentUser.roleType.name() == 'ADMIN'} ? 'admin' : 'user'"
                          th:text="${currentUser.roleType}">USER</strong></p>
-        <p><a th:href="@{/}">Go to JukeBox</a></p>
+        <p><a th:href="@{/dashboard}">Go to Dashboard</a></p>
         <!-- Only admins see this link -->
 +       <p th:if="${currentUser.roleType.name() == 'ADMIN'}"><a th:href="@{/admin}">Go to admin page</a></p>
         <form th:action="@{/logout}" method="post">

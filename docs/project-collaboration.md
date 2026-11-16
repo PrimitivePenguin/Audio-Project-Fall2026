@@ -22,13 +22,16 @@ they have a row in `project_collaborators`.
 | `POST` | `/api/projects/{id}/transfer-ownership` | owner | Transfer ownership |
 
 `GET /api/projects` includes the current user's `role` for each project. The
-dashboard uses that role to show only permitted actions. Owners cannot leave;
-they must transfer ownership first.
+dashboard displays that role and uses it to show only permitted actions.
+Owners cannot leave; they must transfer ownership first. For editor and viewer
+memberships, the response also includes `sharedBy` with the username of the
+user who invited them, and the dashboard displays that information. Editors and
+viewers also have a **Leave** action to remove their membership.
 
 The dashboard's **Load in editor** action opens `/project/{id}`. That route
 serves the editor page, which fetches the project data during initialization
-through the permission-protected API. The existing local project library
-continues to work independently.
+through the permission-protected API. The dashboard's **Share** and **Rename**
+actions are shown according to the current user's project role.
 
 When a database project is loaded, owners and editors can use **Save Project**
 to persist note, track, tempo, loop, and pattern changes. Viewers cannot edit

@@ -5,9 +5,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newProjectNameInput = document.getElementById('newProjectName');
     const createBtn = document.getElementById('createBtn');
     const statusEl = document.getElementById('status');
+    const loginStatus = document.getElementById('loginStatus');
+    const loginLink = document.getElementById('loginLink');
+    const logoutForm = document.getElementById('logoutForm');
 
     function showStatus(msg) {
         statusEl.textContent = msg;
+    }
+
+    async function renderLoginStatus() {
+        try {
+            const response = await fetch('/api/current-user', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error('Unable to check login status');
+            const user = await response.json();
+            if (user.authenticated) {
+                loginStatus.textContent = `Logged in as ${user.username} (${user.role}).`;
+                loginLink.hidden = true;
+                logoutForm.hidden = false;
+            } else {
+                loginStatus.textContent = 'Not logged in.';
+                loginLink.hidden = false;
+                logoutForm.hidden = true;
+            }
+        } catch (error) {
+            loginStatus.textContent = 'Login status unavailable.';
+            loginLink.hidden = false;
+            logoutForm.hidden = true;
+            console.error('Error checking login status:', error);
+        }
     }
 
     async function renderList() {
@@ -205,5 +230,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
+    await renderLoginStatus();
     await renderList();
 });

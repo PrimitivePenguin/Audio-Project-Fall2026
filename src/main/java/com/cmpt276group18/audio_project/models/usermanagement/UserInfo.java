@@ -50,6 +50,11 @@ public class UserInfo {
     @Column(length = 500)
     private String comment;
 
+    // Contour UI settings from the settings page, as the JSON string ui_model.js saves
+    // (null = never saved). Size is checked in UserService.saveUi.
+    @Column(columnDefinition = "TEXT")
+    private String uiJson;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -118,4 +123,7 @@ public class UserInfo {
 
     public String getComment() { return comment; }
     public void setComment(String comment) { this.comment = comment; }
+
+    public String getUiJson() { return uiJson; }
+    public void setUiJson(String uiJson) { this.uiJson = uiJson; }
 }

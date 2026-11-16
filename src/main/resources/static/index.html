@@ -32,6 +32,7 @@
             <summary>Account</summary>
             <nav class="popup-content" aria-label="Account actions">
                 <p id="currentUser" role="status">Checking login...</p>
+                <button type="button" onclick="window.location.href='/settings'">Settings</button>
                 <button type="button" onclick="window.location.href='/login'">Log in</button>
                 <button type="button" onclick="window.location.href='/signup'">Register</button>
                 <form action="/logout" method="post" style="display: inline"><button type="submit">Logout</button></form>
@@ -177,6 +178,7 @@
     import { setup } from "/contour/perlin_gen.js"
     import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
     import { press, release } from "/contour/press_state.js"
+    import { applyUi, toContourArgs } from "/ui/ui_main.js"
 
 
     // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
@@ -273,25 +275,11 @@
 
 
     const canvasMesh = "canvasMeshContainer";
-    const canvasLevels = 15;
-    // const canvasColorList = [[255,255,255], [0,0,0]]
-    // const canvasColorList = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[255,255,255]]; // white, yellow, magenta, cyan, black, 
-    const canvasColorList = [[255,255,255],[255,179,186],[255,214,165],[255,250,180],[186,255,201],[174,198,255],[203,170,240],[255,255,255]]; // pastel: white, red, orange, yellow, green, blue, violet, white
-    const canvasOffColor = [[255,255,255], [0,0,0]]
-
-
-    // const canvasColorList = [[255,255,255], [255,255,0],[255,173,0], [255,0,255],[68,214,44], [0,255,255],[77, 77, 255],[0,0,0]]; // white, orange, yellow, magenta, green, cyan, blue, black, 
-    let canvasDampening = 0.25;
-    let canvasScale = 0.15;
-
-    // Curve settings:
-    const canvasSettings = {
-        curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
-        tension: 1,         // catmullRom only: 0 = straight lines, 1 = standard
-        points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
-        height: 1.5,         // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
-        lineWidth: 1         // stroke width in px (default 1)
-    };
+    // Levels, colours, noise and curve settings come from the settings page (/settings):
+    // saved on the account when logged in, else on this device; defaults match the
+    // values that used to be hard-coded here (pastel colours, white->black off colours).
+    //   { levels, colorlist, offcolorlist, dampening, scale, res, settings }
+    const canvasArgs = toContourArgs(await applyUi());
 
     // The piano contour covers the whole scrollable area (#pianoSpacer), not just
     // the visible part, so it scrolls with the notes. Redraw when that size changes
@@ -305,9 +293,10 @@
         canvasSize = `${w}x${h}`;
         canvasSvg.style.width = `${w}px`;
         canvasSvg.style.height = `${h}px`;
-        const canvasField = setup(res, canvasMesh);
+        const canvasField = setup(canvasArgs.res, canvasMesh);
         // only renderFrame, animated doesn't work for this
-        renderFrame(canvasMesh, canvasField, canvasLevels, canvasColorList, canvasOffColor, canvasDampening, canvasScale, 0, canvasSettings);
+        renderFrame(canvasMesh, canvasField, canvasArgs.levels, canvasArgs.colorlist, canvasArgs.offcolorlist,
+                    canvasArgs.dampening, canvasArgs.scale, 0, canvasArgs.settings);
     }
     let contourQueued = false;
     new ResizeObserver(() => {

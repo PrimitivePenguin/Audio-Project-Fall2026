@@ -12,7 +12,7 @@ async function test(name, run) {
 
 function noteRectangles(harness) {
     return harness.canvasCalls.filter(
-        (call) => call.method === 'strokeRect' && call.strokeStyle === '#1b467f'
+        (call) => call.method === 'strokeRect' && call.strokeStyle === harness.rollColor('note-outline')
     );
 }
 
@@ -578,7 +578,7 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(h.engine.sequence.notes.length, 2);
         assert.match(h.elements.noteInfo.textContent, /Release to delete/);
         assert.ok(
-            h.canvasCalls.some((call) => call.method === 'fillRect' && call.fillStyle === '#d44848')
+            h.canvasCalls.some((call) => call.method === 'fillRect' && call.fillStyle === h.rollColor('note-delete'))
         );
         h.elements.pianoCanvas.onpointerup(end);
         h.elements.pianoCanvas.onclick(end);

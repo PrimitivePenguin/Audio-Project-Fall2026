@@ -33,7 +33,7 @@ async function playing(h, steps = 128, startStep = 0) {
 }
 function playheadX(h) {
     h.paint();
-    const line = h.canvasCalls.find((call) => call.method === 'fillRect' && call.fillStyle === '#df9410');
+    const line = h.canvasCalls.find((call) => call.method === 'fillRect' && call.fillStyle === h.rollColor('playback'));
     return line?.args[0];
 }
 function sample(overrides = {}) {

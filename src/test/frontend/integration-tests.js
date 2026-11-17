@@ -288,7 +288,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
             assert.equal(h.elements.projectList.children.length, count || 1);
             assert.equal(h.elements.databaseProjectList.children.length, count);
             if (count) {
-                assert.equal(h.elements.projectList.children.at(-1).children[1].children.length, 4);
+                assert.ok(h.elements.projectList.children.at(-1).children[1].children.some((button) => button.textContent === 'Download MIDI'));
                 const controls = h.elements.databaseProjectList.children.at(-1).children[1].children;
                 assert.ok(controls.some((button) => button.textContent === 'Load in editor'));
                 assert.ok(controls.some((button) => button.textContent === 'Share'));
@@ -297,7 +297,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         });
     }
     await test('dashboard overflow/contrast/wrapping is page-scoped and its script casing matches disk', () => {
-        const html = fs.readFileSync(path.join(staticDir, 'dashboard.html'), 'utf8');
+        const html = fs.readFileSync(path.join(staticDir, '../templates/dashboard.html'), 'utf8');
         const css = fs.readFileSync(path.join(staticDir, 'css/dashboard.css'), 'utf8');
         assert.match(html, /body class="dashboard-page"/);
         assert.match(css, /body\.dashboard-page[\s\S]*?overflow-y: auto/);

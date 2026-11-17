@@ -330,23 +330,11 @@ test('drag cannot open a piano roll or rename/add tracks and outside drops are c
     assert.equal(h.readyEvents[0].detail.editor.getState().mode, 'tracks');
 });
 
-test('existing DashboardManager storage round-trips reordered/deleted canonical tracks and exact notes', () => {
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const vm = require('node:vm');
-    const stored = new Map();
-    const scope = vm.createContext({ localStorage: {
-        getItem(name) { return stored.get(name) ?? null; },
-        setItem(name, value) { stored.set(name, value); }
-    } });
-    vm.runInContext(fs.readFileSync(path.join(__dirname,
-        '../../main/resources/static/js/DashboardManager.js'), 'utf8'), scope);
-    const manager = vm.runInContext('new DashboardManager()', scope);
+test('database project JSON round-trips reordered/deleted canonical tracks and exact notes', () => {
     const h = setup();
     h.engine.reorderMidiTrack('strings', 0);
     h.engine.deleteMidiTrack('bass');
-    const id = manager.saveProject('Track changes', h.engine.sequence.toJSON());
-    const data = manager.getProjects()[id].data;
+    const data = JSON.parse(json(h));
     const loaded = new h.NoteSequence(data.stepCount, data.ppq);
     loaded.name = data.name;
     loaded.tracks = data.tracks;

@@ -254,6 +254,8 @@ async function test(name, fn) {
         };
         const engines = [];
         sandbox.document = document;
+        sandbox.AbortController = AbortController;
+        sandbox.getComputedStyle = () => ({ getPropertyValue: () => '#000000' });
         sandbox.CustomEvent = class {
             constructor(type, options) {
                 this.type = type;

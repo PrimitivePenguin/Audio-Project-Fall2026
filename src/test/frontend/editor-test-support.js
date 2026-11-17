@@ -173,7 +173,10 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         }
     }
 
+    const css = fs.readFileSync(path.resolve(__dirname, '../../main/resources/static/css/sequencer.css'), 'utf8');
+    const cssValues = new Map([...css.matchAll(/(--roll-[\w-]+):\s*([^;]+);/g)].map((match) => [match[1], match[2]]));
     const scope = vm.createContext({
+        getComputedStyle: () => ({ getPropertyValue: (key) => cssValues.get(key) ?? '' }),
         document: {
             get activeElement() {
                 return activeElement;
@@ -199,8 +202,10 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 };
             },
             dispatchEvent(event) {
-                readyEvents.push(event);
-                options.onReady?.(event.detail.engine);
+                if (event.type === 'jukebox:ready') {
+                    readyEvents.push(event);
+                    options.onReady?.(event.detail.engine);
+                }
                 documentListeners[event.type]?.(event);
             }
         },
@@ -215,7 +220,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             AudioContext,
             devicePixelRatio: pixelRatio,
             addEventListener(name, callback) {
-                windowListeners[name] = callback;
+                windowListeners[name] = name === 'resize' ? () => { callback(); animationCallback?.(); } : callback;
             },
             confirm() {
                 confirmCount++;
@@ -300,6 +305,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         readyEvents,
         elements,
         canvasCalls,
+        rollColor: (name) => cssValues.get('--roll-' + name)?.trim(),
         intervals,
         windowListeners,
         documentListeners,
@@ -315,6 +321,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         },
         resize() {
             resizeObservers.forEach((callback) => callback());
+            animationCallback?.();
         },
         setModalOpen(value) {
             modalOpen = value;
@@ -340,6 +347,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         paint() {
             canvasCalls.length = 0;
             elements.pianoViewport.listeners.scroll();
+            animationCallback();
         },
         flushDeferredActions() {
             deferredActions.splice(0).forEach((callback) => callback());

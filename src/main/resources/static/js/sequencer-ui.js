@@ -61,6 +61,42 @@
     const playbackFollow = new PianoRollFollow();
     let observedScrollLeft = pianoViewport.scrollLeft;
 
+    let renderIndex = null;
+    let renderIndexSequence = null;
+    let renderIndexNotes = null;
+    let renderIndexLength = -1;
+    let renderLanes = null;
+    let lastHighlightKey = null;
+    let pendingViewportRender = false;
+
+    function invalidateRenderIndex() {
+        renderIndex = null;
+        renderLanes = null;
+    }
+
+    function getRenderIndex() {
+        const sequence = engine.sequence;
+        if (!renderIndex || renderIndexSequence !== sequence || renderIndexNotes !== sequence.notes ||
+            renderIndexLength !== sequence.notes.length) {
+            renderIndex = new NoteRenderIndex(sequence);
+            renderLanes = TrackOverview.lanes(sequence);
+            renderIndexSequence = sequence;
+            renderIndexNotes = sequence.notes;
+            renderIndexLength = sequence.notes.length;
+        }
+        return renderIndex;
+    }
+
+    function visibleRenderNotes(width, height, scrollLeft, scrollTop, allPitches = false) {
+        const index = getRenderIndex();
+        const low = allPitches ? 0 : Math.max(lowestPitch,
+            Math.floor(highestPitch - (height + scrollTop - RULER_HEIGHT) / ROW_HEIGHT));
+        const high = allPitches ? 127 : Math.min(highestPitch,
+            Math.ceil(highestPitch - scrollTop / ROW_HEIGHT + 1));
+        return index.query(engine.sequence.stepToTick((scrollLeft - 8) / STEP_WIDTH),
+            engine.sequence.stepToTick((scrollLeft + width - KEYBOARD_WIDTH) / STEP_WIDTH), low, high);
+    }
+
     function editableNotes(includeOutsidePitchRange = false) {
         if (workspaceMode !== 'piano') {
             return [];
@@ -377,6 +413,7 @@
     }
 
     function recordEdit(before) {
+        invalidateRenderIndex();
         checkHistory();
         const after = snapshotNotes();
         const ids = new Set([...before.keys(), ...after.keys()]);
@@ -389,6 +426,7 @@
     }
 
     function restoreHistory(source, destination, side) {
+        invalidateRenderIndex();
         cancelEditorGesture();
         checkHistory();
         const entry = source.at(-1);
@@ -492,6 +530,7 @@
     }
     let latestAudioUploadId = 0;
     let latestMidiImportId = 0;
+    let midiImportController = null;
     let isStartingPlayback = false;
     let lowestPitch = 36;
     let highestPitch = 83;
@@ -628,6 +667,7 @@
     }
 
     function syncEditorState() {
+        invalidateRenderIndex();
         syncTrackControls();
         syncEditingCursor();
         getElement('patternSteps').value = engine.totalSteps;
@@ -775,6 +815,7 @@
 
     // Canvas rendering: keep the original layer order and drawing state.
     function renderPianoRoll() {
+        pendingViewportRender = false;
         const width = pianoViewport.clientWidth;
         const height = pianoViewport.clientHeight;
         const scrollLeft = pianoViewport.scrollLeft;
@@ -817,7 +858,11 @@
             drawingContext.fill();
         }
         // Lets the contour overlay (index.html) highlight the area under each note.
-        document.dispatchEvent(new CustomEvent('jukebox:notes', { detail: noteRects }));
+        const highlightKey = JSON.stringify(noteRects);
+        if (highlightKey !== lastHighlightKey) {
+            lastHighlightKey = highlightKey;
+            document.dispatchEvent(new CustomEvent('jukebox:notes', { detail: noteRects }));
+        }
     }
 
     function prepareCanvas(width, height, scrollLeft, scrollTop) {
@@ -945,16 +990,30 @@
             }
             return block;
         };
-        if (workspaceMode === 'piano' && activeTrackId !== null && ghostNotesEnabled) {
+        const visible = visibleRenderNotes(width, height, scrollLeft, scrollTop);
+        const tracks = new Map(engine.sequence.tracks.map((track) => [track.id, track]));
+        const eligibleTrack = (note) => {
+            const track = tracks.get(note.trackId);
+            return track && !track.hidden && track.visible !== false;
+        };
+        if (activeTrackId !== null && ghostNotesEnabled) {
             drawingContext.globalAlpha = 0.22;
-            for (const note of PianoRollEditor.eligibleNotes(engine.sequence, { lowestPitch, highestPitch })) {
-                if (note.trackId !== activeTrackId) {
-                    drawBlock(note, null, false);
-                }
+            for (const note of visible) {
+                if (eligibleTrack(note) && note.trackId !== activeTrackId) drawBlock(note, null, false);
             }
             drawingContext.globalAlpha = 1;
         }
-        const eligible = editableNotes();
+        const eligible = visible.filter((note) => eligibleTrack(note) &&
+            (activeTrackId === null || note.trackId === activeTrackId));
+        // An originally offscreen selected note can move into view during a preview.
+        const visibleIds = new Set(eligible.map((note) => note.id));
+        const previewIds = new Set([...(editGesture?.previews?.keys() ?? []),
+            ...(resizeGesture?.previews?.keys() ?? []), ...(resizeGesture?.noteId ? [resizeGesture.noteId] : [])]);
+        for (const id of previewIds) {
+            const note = getRenderIndex().byId.get(id);
+            if (note && !visibleIds.has(id) && eligibleTrack(note) &&
+                (activeTrackId === null || note.trackId === activeTrackId)) eligible.push(note);
+        }
         const notes = eligible.filter((note) => note.id !== selectedNoteId);
         const selected = eligible.find((note) => note.id === selectedNoteId);
         if (selected) {
@@ -971,8 +1030,8 @@
             // scrolled-content coordinates instead of canvas coordinates.
             const left = Math.max(block.x, KEYBOARD_WIDTH);
             const top = Math.max(block.y, RULER_HEIGHT);
-            const right = block.x + block.width;
-            const bottom = block.y + block.height;
+            const right = Math.min(width, block.x + block.width);
+            const bottom = Math.min(height, block.y + block.height);
             if (right > left && bottom > top) {
                 noteRects.push({ x: left + scrollLeft, y: top + scrollTop, width: right - left, height: bottom - top });
             }
@@ -991,7 +1050,8 @@
     }
 
     function drawTrackOverview(width, height, first, last, scrollLeft, scrollTop) {
-        const lanes = TrackOverview.lanes(engine.sequence);
+        getRenderIndex();
+        const lanes = renderLanes;
         const visible = lanes.filter((lane) => {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             return y + TrackOverview.laneHeight > RULER_HEIGHT && y < height;
@@ -1007,10 +1067,14 @@
         drawingContext.beginPath();
         drawingContext.rect(KEYBOARD_WIDTH, RULER_HEIGHT, width - KEYBOARD_WIDTH, height - RULER_HEIGHT);
         drawingContext.clip();
+        const visibleByTrack = new Map(visible.map((lane) => [lane.track.id, []]));
+        for (const note of visibleRenderNotes(width, height, scrollLeft, scrollTop, true)) {
+            visibleByTrack.get(note.trackId)?.push(note);
+        }
         for (const lane of visible) {
             drawingContext.fillStyle = noteColor(lane.track.id);
             drawingContext.globalAlpha = lane.track.hidden || lane.track.visible === false ? 0.35 : 1;
-            for (const note of lane.notes) {
+            for (const note of visibleByTrack.get(lane.track.id)) {
                 const bounds = TrackOverview.rectangle(note, lane, engine.sequence, { scrollLeft, scrollTop });
                 if (bounds.x + Math.max(2, bounds.width) < KEYBOARD_WIDTH || bounds.x > width) {
                     continue;
@@ -2469,6 +2533,8 @@
             return;
         }
         const token = ++latestMidiImportId;
+        midiImportController?.abort();
+        midiImportController = new AbortController();
         try {
             if (file.size > 10 * 1024 * 1024) {
                 throw new Error('MIDI limit: 10 MB.');
@@ -2477,7 +2543,9 @@
             if (token !== latestMidiImportId) {
                 return;
             }
-            const result = MidiIO.importInto(engine, buffer);
+            const result = await MidiIO.parseAsync(buffer, { signal: midiImportController.signal });
+            if (token !== latestMidiImportId) return;
+            result.sequence = engine.importMidiSequence(result.sequence);
             cancelEditorGesture();
             overlapIds = [];
             selectNote(null);
@@ -2521,6 +2589,7 @@
 
     function removeImportedMidi() {
         latestMidiImportId++;
+        midiImportController?.abort();
         stopPlayback();
         try {
             engine.removeImportedMidi();
@@ -2547,6 +2616,7 @@
             return;
         }
         latestMidiImportId++;
+        midiImportController?.abort();
         latestAudioUploadId++;
         isSampleLoading = false;
         loadedSampleName = '';
@@ -2689,7 +2759,9 @@
     pianoViewport.addEventListener('scroll', () => {
         reconcileHorizontalScroll();
         // Reposition the viewport canvas before mapping the captured screen coordinate.
-        renderPianoRoll();
+        pianoCanvas.style.left = `${pianoViewport.scrollLeft}px`;
+        pianoCanvas.style.top = `${pianoViewport.scrollTop}px`;
+        pendingViewportRender = true;
         if (cursorGesture) {
             moveCursor(cursorGesture);
         }
@@ -2697,9 +2769,12 @@
             moveTrackGesture(trackGesture);
         }
     });
-    window.addEventListener('resize', renderPianoRoll);
+    function requestViewportRender() {
+        pendingViewportRender = true;
+    }
+    window.addEventListener('resize', requestViewportRender);
     if (typeof ResizeObserver !== 'undefined') {
-        const viewportObserver = new ResizeObserver(renderPianoRoll);
+        const viewportObserver = new ResizeObserver(requestViewportRender);
         viewportObserver.observe(pianoViewport);
     }
     document.addEventListener('visibilitychange', () => {
@@ -2707,7 +2782,10 @@
             stopPlayback();
         }
     });
-    window.addEventListener('pagehide', stopPlayback);
+    window.addEventListener('pagehide', () => {
+        midiImportController?.abort();
+        stopPlayback();
+    });
     function updatePlayhead(timestamp = 0) {
         const trackScrolled = updateTrackDragScroll(timestamp);
         const position = engine.audioContext && (engine.isPlaying || engine.isPaused)
@@ -2718,7 +2796,8 @@
         if (engine.audioContext) {
             engine.getPlaybackStep();
         }
-        if (step !== displayedStep || scrolled || trackScrolled) {
+        if (step !== displayedStep || scrolled || trackScrolled || pendingViewportRender) {
+            pendingViewportRender = false;
             displayedStep = step;
             renderPianoRoll();
             Array.from(getElement('sampleTriggers').children).forEach((item) => {

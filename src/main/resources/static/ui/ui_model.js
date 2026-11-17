@@ -57,9 +57,9 @@ export function defaultSettings() {
         colorStops: evenStops(pastel),
         // index.html canvasOffColor: white -> black behind the notes
         offColor: { enabled: true, stops: evenStops([[255, 255, 255], [0, 0, 0]]) },
-        res: 5,
-        numLevels: 15,
-        noise: 0.25,
+        res: 10, 
+        numLevels: 10,
+        noise: 0.35,
         curve: { type: "catmullRom", tension: 1, points: "interpolate", lineWidth: 1 },
     };
 }

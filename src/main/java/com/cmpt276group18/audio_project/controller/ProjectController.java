@@ -1,6 +1,7 @@
 package com.cmpt276group18.audio_project.controller;
 
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -39,14 +40,22 @@ public class ProjectController {
         Integer userId = currentUser(session);
         if (userId == null) return unauthorized();
         return ResponseEntity.ok(projectService.findForUser(userId).stream()
-                .map(project -> Map.of(
-                        "id", project.getId(),
-                        "name", project.getName(),
-                        // "projectData", project.getProjectData(),
-                        "createdAt", project.getCreatedAt(),
-                        "updatedAt", project.getUpdatedAt(),
-                        "version", project.getVersion(),
-                        "role", projectService.roleForUser(project.getId(), userId)))
+                .map(project -> {
+                    ProjectRole role = projectService.roleForUser(project.getId(), userId);
+                    Map<String, Object> response = new HashMap<>(Map.of(
+                            "id", project.getId(),
+                            "name", project.getName(),
+                            // "projectData", project.getProjectData(),
+                            "createdAt", project.getCreatedAt(),
+                            "updatedAt", project.getUpdatedAt(),
+                            "version", project.getVersion(),
+                            "role", role));
+                    if (role != ProjectRole.OWNER) {
+                        projectService.sharedBy(project.getId(), userId)
+                                .ifPresent(sharedBy -> response.put("sharedBy", sharedBy));
+                    }
+                    return response;
+                })
                 .toList());
     }
 

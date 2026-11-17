@@ -14,6 +14,20 @@ body.dashboard-page {
 .dashboard-page a { color: #8cd9ff; }
 .dashboard-page .transport, .dashboard-page li { color: #213047; }
 .dashboard-page .hint { color: #bdcde0; }
+.dashboard-page #loginStatus {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    margin: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--accent-steel-light);
+    border-radius: 6px;
+    background: rgba(95, 134, 160, .24);
+    color: #f4f8fc;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .15px;
+}
 .dashboard-page .transport .hint { color: #49627f; }
 .dashboard-page label { white-space: normal; flex-wrap: wrap; max-width: 100%; }
 .dashboard-page input { max-width: 100%; min-width: 0; }

@@ -160,7 +160,8 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 
 /* lives inside #pianoViewport at the top-left of the scrolled content;
    width/height are set from #pianoSpacer in index.html */
-#canvasMeshContainer {
+#canvasMeshContainer,
+#contourCanvas {   /* canvas renderer: viewport-sized, positioned from the scroll position in index.html */
     position: absolute;
     top: 0;
     left: 0;

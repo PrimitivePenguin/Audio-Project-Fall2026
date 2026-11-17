@@ -3,7 +3,7 @@ import { draw } from "./contour.js"
 import { generatePerlin } from "./perlin_gen.js"
 
 const DEFAULT_ID = "background_contour";
-const targetFPS = 5;
+const targetFPS = 1;
 const interval = 1000 / targetFPS;
 
 // One state object per SVG element id, so several contours can run at once.

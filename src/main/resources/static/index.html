@@ -127,6 +127,8 @@
         <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
         <!-- scrolls with the piano roll; sized to #pianoSpacer and filled in by createContourOverlay() -->
         <svg id="canvasMeshContainer" aria-hidden="true"></svg>
+        <!-- canvas renderer (the default): viewport-sized, follows the scroll position -->
+        <canvas id="contourCanvas" aria-hidden="true"></canvas>
     </div>
     <footer class="statusbar">
         <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
@@ -188,27 +190,25 @@
     import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
     import { press, release } from "/contour/press_state.js"
     import { applyUi, toContourArgs } from "/ui/ui_main.js"
+    import { createCanvasContour } from "/contour/canvas_overlay.js"
 
 
     // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
     // contour scrolls with the notes.
     const piano = document.getElementById("pianoViewport");
     const pianoSvg = document.getElementById("canvasMeshContainer");
-    const pianoOverlay = createContourOverlay(pianoSvg);
+    const pianoContourCanvas = document.getElementById("contourCanvas");
 
     // Notes: inside every note only the highlight colours are drawn (the grey base
     // contour is cut out there). sequencer-ui.js sends the note rectangles after each redraw.
-    document.addEventListener("jukebox:notes", e => setClipRects(pianoOverlay, e.detail));
+    // Which renderer shows them is only known once the saved settings are loaded (further down),
+    // so the latest rectangles are kept until then.
+    let noteRects = [];
+    let showNoteRects = () => {};
+    document.addEventListener("jukebox:notes", e => { noteRects = e.detail; showNoteRects(noteRects); });
 
-    // Keep the contour off the sticky keyboard column (left) and measure ruler (top).
-    // They stay put while the content scrolls, so the cut-off follows the scroll position.
+    // The contour stays off the sticky keyboard column (left) and measure ruler (top).
     const { keyboardWidth, rulerHeight } = PianoRollEditor.geometry;
-    function clipToGrid() {
-        pianoSvg.style.clipPath =
-            `inset(${piano.scrollTop + rulerHeight}px 0 0 ${piano.scrollLeft + keyboardWidth}px)`;
-    }
-    piano.addEventListener("scroll", clipToGrid, { passive: true });
-    clipToGrid();
 
     // Toolbars: plain highlight on the buttons, no contour at all
     document.querySelectorAll(".toolbar").forEach(tb => attachSurface(tb, { mode: "plain" }));
@@ -296,16 +296,66 @@
     const canvasSvg = document.getElementById(canvasMesh);
     const pianoSpacer = document.getElementById("pianoSpacer");
     let canvasSize = "";
-    function renderPianoContour() {
-        const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
-        if (!w || !h || `${w}x${h}` === canvasSize) return;
-        canvasSize = `${w}x${h}`;
-        canvasSvg.style.width = `${w}px`;
-        canvasSvg.style.height = `${h}px`;
-        const canvasField = setup(canvasArgs.res, canvasMesh);
-        // only renderFrame, animated doesn't work for this
-        renderFrame(canvasMesh, canvasField, canvasArgs.levels, canvasArgs.colorlist, canvasArgs.offcolorlist,
-                    canvasArgs.dampening, canvasArgs.scale, 0, canvasArgs.settings);
+    let renderPianoContour;
+
+    if (canvasArgs.renderer === "svg") {
+        // SVG renderer: one <path> per level, covering the whole scrollable area
+        pianoContourCanvas.style.display = "none";
+        const pianoOverlay = createContourOverlay(pianoSvg);
+        showNoteRects = rects => setClipRects(pianoOverlay, rects);
+        showNoteRects(noteRects);
+
+        // the keyboard and ruler stay put while the content scrolls, so the cut-off follows the scroll position
+        const clipToGrid = () => {
+            pianoSvg.style.clipPath =
+                `inset(${piano.scrollTop + rulerHeight}px 0 0 ${piano.scrollLeft + keyboardWidth}px)`;
+        };
+        piano.addEventListener("scroll", clipToGrid, { passive: true });
+        clipToGrid();
+
+        renderPianoContour = () => {
+            const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
+            if (!w || !h || `${w}x${h}` === canvasSize) return;
+            canvasSize = `${w}x${h}`;
+            canvasSvg.style.width = `${w}px`;
+            canvasSvg.style.height = `${h}px`;
+            const canvasField = setup(canvasArgs.res, canvasMesh);
+            // only renderFrame, animated doesn't work for this
+            renderFrame(canvasMesh, canvasField, canvasArgs.levels, canvasArgs.colorlist, canvasArgs.offcolorlist,
+                        canvasArgs.dampening, canvasArgs.scale, 0, canvasArgs.settings);
+        };
+    } else {
+        // Canvas renderer (default): the contour paths still cover the whole scrollable area,
+        // but the canvas is only as big as the viewport and is moved along with the scroll
+        // position (like #pianoCanvas), so a long composition never needs a huge bitmap.
+        pianoSvg.style.display = "none";
+        // 0.1 = the opacity sequencer.css gives the SVG .base layer
+        const pianoContour = createCanvasContour(pianoContourCanvas, { baseAlpha: 0.1 });
+        showNoteRects = rects => pianoContour.setRects(rects);
+        showNoteRects(noteRects);
+
+        const placePianoContour = () => {
+            const w = piano.clientWidth, h = piano.clientHeight;
+            if (!w || !h) return;
+            pianoContourCanvas.style.left = `${piano.scrollLeft}px`;
+            pianoContourCanvas.style.top = `${piano.scrollTop}px`;
+            pianoContourCanvas.style.width = `${w}px`;
+            pianoContourCanvas.style.height = `${h}px`;
+            pianoContour.setView({
+                width: w, height: h, offsetX: piano.scrollLeft, offsetY: piano.scrollTop,
+                clip: { x: keyboardWidth, y: rulerHeight, width: w - keyboardWidth, height: h - rulerHeight },
+            });
+        };
+        piano.addEventListener("scroll", placePianoContour, { passive: true });
+        new ResizeObserver(placePianoContour).observe(piano);
+        placePianoContour();
+
+        renderPianoContour = () => {
+            const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
+            if (!w || !h || `${w}x${h}` === canvasSize) return;
+            canvasSize = `${w}x${h}`;
+            pianoContour.build("pianoSpacer", canvasArgs);   // field sized to the whole scrollable area
+        };
     }
     let contourQueued = false;
     new ResizeObserver(() => {

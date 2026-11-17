@@ -40,6 +40,9 @@ export function attachUiController(model, view) {
     for (const r of els.points) {
         on(r, "change", e => { if (e.target.checked) apply({ curve: { points: e.target.value } }); });
     }
+    for (const r of els.renderer) {
+        on(r, "change", e => { if (e.target.checked) apply({ renderer: e.target.value }); });
+    }
     on(els.offColorToggle, "change", e => apply({ offColor: { enabled: e.target.checked } }));
 
     // stop lists: delegated, so rows can come and go

@@ -15,6 +15,8 @@
 //       each slider may have an <output for="id"> next to it showing its value
 //     #tensionRow       (hidden unless curve.type === "catmullRom")
 //     input[name=points]  radio pair: interpolate / midpoint
+//     input[name=renderer]  radio pair: canvas / svg
+//     #uiPreviewCanvas canvas used for the live preview when the renderer is canvas
 //     #saveUi, #resetUi  buttons
 //     #uiStatus  feedback text (saved / errors)
 //     #uiPreview svg used for the live contour preview
@@ -43,6 +45,8 @@ export function createUiView(root) {
         tensionRow:      $("#tensionRow"),
         lineWidth:       $("#lineWidth"),
         points:          [...root.querySelectorAll("input[name=points]")],
+        renderer:        [...root.querySelectorAll("input[name=renderer]")],
+        previewCanvas:   $("#uiPreviewCanvas"),
         save:            $("#saveUi"),
         reset:           $("#resetUi"),
         status:          $("#uiStatus"),
@@ -95,6 +99,7 @@ export function render(els, s) {
     setValue(els.lineWidth, s.curve.lineWidth);
     setValue(els.curveType, s.curve.type);
     for (const r of els.points) r.checked = r.value === s.curve.points;
+    for (const r of els.renderer) r.checked = r.value === s.renderer;
     if (els.offColorToggle) els.offColorToggle.checked = s.offColor.enabled;
 
     if (els.offColorSection) els.offColorSection.hidden = !s.offColor.enabled;

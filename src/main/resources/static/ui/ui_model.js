@@ -20,6 +20,7 @@
 
 export const CURVE_TYPES = ["segments", "linear", "catmullRom", "bspline", "natural"];
 export const POINT_MODES = ["interpolate", "midpoint"];
+export const RENDERERS = ["canvas", "svg"];   // how the contour is drawn; canvas is faster
 
 // Limits used by validate(); the View can also use them for slider min/max.
 export const LIMITS = {
@@ -61,6 +62,7 @@ export function defaultSettings() {
         numLevels: 10,
         noise: 0.35,
         curve: { type: "catmullRom", tension: 1, points: "interpolate", lineWidth: 1 },
+        renderer: "canvas",
     };
 }
 
@@ -195,6 +197,8 @@ export function validate(s) {
         res:       num(s.res,       LIMITS.res,       d.res,       "Grid size",        errors, false),
         numLevels: num(s.numLevels, LIMITS.numLevels, d.numLevels, "Number of levels", errors, true),
         noise:     num(s.noise,     LIMITS.noise,     d.noise,     "Noise",            errors, false),
+        // settings saved before this option existed have no renderer: they get the default (canvas)
+        renderer:  choice(s.renderer, RENDERERS, d.renderer, "Renderer", errors),
     };
 
     const curve = isObject(s.curve) ? s.curve : {};

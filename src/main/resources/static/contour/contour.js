@@ -456,6 +456,65 @@ export function drawCanvas(ctx, field, num_color, colorStops = [[0, 0, 0], [255,
 }
 
 
+// INPUT:  field, num_color, settings: the same as draw()
+// OUTPUT: array with one Path2D per level (null for a level with no lines)
+// ACTION: canvas output in two steps, so the expensive part runs once:
+//         the paths are built here, then paintContour() strokes them as often
+//         as needed (scrolling, notes changing) without redoing the contour.
+export function buildContourPaths(field, num_color, settings = {}) {
+    const s = { ...DEFAULT_SETTINGS, ...settings };
+    s.res = settings.res ?? field.res ?? gridRes;
+    const { levels, step, minVal } = levelColors(num_color);
+    const segsByLevel = buildAllSegments(field, levels.length, minVal, step);
+    return levels.map((th, k) => {
+        if (segsByLevel[k].length === 0) return null;
+        const path = new Path2D();
+        drawLevel(segsByLevel[k], th, field, s.res, s, canvasPen(path));
+        return path;
+    });
+}
+
+// INPUT:  ctx: CanvasRenderingContext2D (already cleared and transformed by the caller),
+//         paths: from buildContourPaths, num_color,
+//         baseStops: colours outside the rects, hiStops: colours inside the rects,
+//         options { rects: [{ x, y, width, height }], baseAlpha, lineWidth }
+// OUTPUT: none
+// ACTION: canvas version of the SVG overlay's base/hi layers: the base contour is
+//         drawn everywhere, then inside the rects it is erased and the hi contour
+//         is drawn instead (clearRect respects the clip, so overlapping rects are fine).
+export function paintContour(ctx, paths, num_color, baseStops, hiStops = baseStops,
+                             { rects = [], baseAlpha = 1, lineWidth = 1 } = {}) {
+    const baseColors = levelColors(num_color, baseStops).colors;
+    const stroke = colors => {
+        for (let k = 0; k < paths.length; k++) {
+            if (!paths[k]) continue;
+            ctx.strokeStyle = colors[k];
+            ctx.stroke(paths[k]);
+        }
+    };
+
+    ctx.lineWidth = lineWidth;
+    ctx.save();
+    ctx.globalAlpha = baseAlpha;
+    stroke(baseColors);
+    ctx.restore();
+
+    if (rects.length === 0) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    ctx.save();
+    ctx.beginPath();
+    for (const { x, y, width, height } of rects) {
+        ctx.rect(x, y, width, height);
+        x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+        x1 = Math.max(x1, x + width); y1 = Math.max(y1, y + height);
+    }
+    ctx.clip();
+    ctx.clearRect(x0, y0, x1 - x0, y1 - y0);
+    stroke(levelColors(num_color, hiStops).colors);
+    ctx.restore();
+}
+
+
 // ===================== EXTRA =====================
 
 // INPUT:  p0, p3: end points {x, y}, p1, p2: control points {x, y},

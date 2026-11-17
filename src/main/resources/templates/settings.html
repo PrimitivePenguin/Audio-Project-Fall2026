@@ -22,7 +22,7 @@
         input[type="range"] { width: 100%; }
 
         /* live preview: the middle third is drawn "pressed" (note colours), the rest with the off colours */
-        #uiPreview { display: block; width: 100%; height: 180px; background: #fff; border: 1px solid #ddd; border-radius: 6px; }
+        #uiPreview, #uiPreviewCanvas { display: block; width: 100%; height: 180px; background: #fff; border: 1px solid #ddd; border-radius: 6px; }
 
         /* colour stop lists */
         .gradient { height: 14px; border-radius: 4px; border: 1px solid #ddd; margin: 4px 0 10px; }
@@ -55,7 +55,9 @@
         <a th:href="@{/login}">Log in</a> to keep them with your account.
     </p>
 
-    <svg id="uiPreview" role="img" aria-label="Preview of the contour with the current settings"></svg>
+    <!-- only one of the two is shown, depending on the Renderer setting (ui_main.js) -->
+    <canvas id="uiPreviewCanvas" role="img" aria-label="Preview of the contour with the current settings"></canvas>
+    <svg id="uiPreview" role="img" aria-label="Preview of the contour with the current settings" style="display: none"></svg>
 
     <fieldset>
         <legend>Note colours (pressed)</legend>
@@ -121,6 +123,17 @@
             <div>
                 <label><input type="radio" name="points" value="interpolate"> Interpolate (smooth)</label>
                 <label><input type="radio" name="points" value="midpoint"> Midpoint (blocky)</label>
+            </div>
+        </div>
+    </fieldset>
+
+    <fieldset>
+        <legend>Drawing</legend>
+        <div class="row choices">
+            <span>Renderer</span>
+            <div>
+                <label><input type="radio" name="renderer" value="canvas"> Canvas (faster)</label>
+                <label><input type="radio" name="renderer" value="svg"> SVG</label>
             </div>
         </div>
     </fieldset>

@@ -57,7 +57,7 @@ export function defaultSettings() {
     return {
         colorStops: evenStops(pastel),
         // index.html canvasOffColor: white -> black behind the notes
-        offColor: { enabled: true, stops: evenStops([[255, 255, 255], [0, 0, 0]]) },
+        offColor: { enabled: false, stops: evenStops([[255, 255, 255], [0, 0, 0]]) },
         res: 10, 
         numLevels: 10,
         noise: 0.35,

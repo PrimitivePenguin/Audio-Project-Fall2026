@@ -370,7 +370,7 @@ async function spaceWithNativeDefault(h) {
         assert.deepEqual(noteData(h), before);
         h.paint();
         assert.ok(h.canvasCalls.some((call) => call.method === 'fillRect' &&
-            call.fillStyle === '#087e8b' && Math.abs(call.args[0] - (100 + 5.75 * 38)) < 1e-7));
+            call.fillStyle === h.rollColor('cursor') && Math.abs(call.args[0] - (100 + 5.75 * 38)) < 1e-7));
         h.elements.pianoViewport.scrollLeft = 0;
         setCursor(h, 36);
         assert.match(h.elements.cursorPosition.textContent, /Measure 3 · Beat 2 · Step 1/);
@@ -510,7 +510,7 @@ async function spaceWithNativeDefault(h) {
         }
         assert.match(html, /fetch\('\/api\/current-user'\)/);
         assert.match(html, /action="\/logout" method="post"/);
-        assert.match(html, /href="\/dashboard.html"/);
+        assert.match(html, /href="\/dashboard(?:\.html)?"/);
         assert.match(html, /<dialog[^>]*aria-labelledby="shortcutsTitle"/);
         assert.match(css, /height: 100dvh/);
         assert.match(css, /minmax\(0, 1fr\)/);

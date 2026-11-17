@@ -661,3 +661,9 @@ The deferred handoff uses `focus({preventScroll: true})` on the same visible Tra
 5. Test shared sample/synth/drum playback, cursor start, custom loops, Pause/Resume, Stop and MIDI export. Reload a project with an uploaded sample: expect an unavailable-audio warning, then re-upload and verify saved triggers. No raw audio restoration is claimed.
 
 Post-merge automated validation: **246 frontend tests**, **28 Spring Boot tests**, JavaScript syntax checks for **29 files**, and `git diff --check` passed. Real-browser layout/native focus and audible playback were not verified; no Playwright/Puppeteer runtime is installed in this workspace.
+
+## Bounded long-MIDI rendering
+
+Piano contours now use viewport-sized Canvas/SVG surfaces and a three-region overscan cache with globally aligned noise samples. Colors, appearance settings, curve options and toolbar animation remain intact. Scroll/resize draws coalesce into the existing playhead RAF; unchanged highlight geometry is not rebroadcast. A render-only pitch/interval index culls offscreen notes and caches overview groupings. Existing integrations mutating timing directly should call `editor.refresh()` to invalidate derived geometry.
+
+Large editor MIDI imports use cancellable `MidiIO.parseAsync()` workers when available; public synchronous APIs and the one audio engine are unchanged. See [rendering performance](rendering-performance.md) for benchmark commands/results, fallback behavior, natural-curve edge limitations and the browser/audio verification checklist.

@@ -159,7 +159,7 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 #pianoViewport { grid-area: 3 / 1; }
 
 /* lives inside #pianoViewport at the top-left of the scrolled content;
-   width/height are set from #pianoSpacer in index.html */
+   width/height follow the visible viewport in index.html */
 #canvasMeshContainer,
 #contourCanvas {   /* canvas renderer: viewport-sized, positioned from the scroll position in index.html */
     position: absolute;
@@ -178,7 +178,7 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 #canvasMeshContainer .hi   { opacity: 1; }
 
 
-/* an overlay appended into a container; #canvasMeshContainer is sized from #pianoSpacer instead */
+/* an overlay appended into a container; #canvasMeshContainer is positioned/sized by the viewport adapter */
 .contour-overlay:not(#canvasMeshContainer) { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .piano-viewport, .toolbar { position: relative; }   /* the containers */
 

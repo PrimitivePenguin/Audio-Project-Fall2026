@@ -187,10 +187,11 @@
 <script type="module">
     import { startAnimation, renderFrame, setAnimationField } from "/contour/contour_animation.js"
     import { setup } from "/contour/perlin_gen.js"
-    import { createContourOverlay, attachSurface, setClipRects } from "/contour/overlay.js"
+    import { attachSurface } from "/contour/overlay.js"
     import { press, release } from "/contour/press_state.js"
     import { applyUi, toContourArgs } from "/ui/ui_main.js"
     import { createCanvasContour } from "/contour/canvas_overlay.js"
+    import { createSvgContour } from "/contour/svg_overlay.js"
 
 
     // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
@@ -283,87 +284,41 @@
     sizeToolbarContour();
 
 
-    const canvasMesh = "canvasMeshContainer";
     // Levels, colours, noise and curve settings come from the settings page (/settings):
     // saved on the account when logged in, else on this device; defaults match the
     // values that used to be hard-coded here (pastel colours, white->black off colours).
     //   { levels, colorlist, offcolorlist, dampening, scale, res, settings }
     const canvasArgs = toContourArgs(await applyUi());
 
-    // The piano contour covers the whole scrollable area (#pianoSpacer), not just
-    // the visible part, so it scrolls with the notes. Redraw when that size changes
-    // (MIDI import, more steps, switching to Tracks, ...).
-    const canvasSvg = document.getElementById(canvasMesh);
+    // Both modes keep viewport-sized surfaces and bounded, globally aligned geometry.
+    const useSvg = canvasArgs.renderer === "svg";
+    pianoSvg.style.display = useSvg ? "" : "none";
+    pianoContourCanvas.style.display = useSvg ? "none" : "";
+    const surface = useSvg ? pianoSvg : pianoContourCanvas;
     const pianoSpacer = document.getElementById("pianoSpacer");
-    let canvasSize = "";
-    let renderPianoContour;
-
-    if (canvasArgs.renderer === "svg") {
-        // SVG renderer: one <path> per level, covering the whole scrollable area
-        pianoContourCanvas.style.display = "none";
-        const pianoOverlay = createContourOverlay(pianoSvg);
-        showNoteRects = rects => setClipRects(pianoOverlay, rects);
-        showNoteRects(noteRects);
-
-        // the keyboard and ruler stay put while the content scrolls, so the cut-off follows the scroll position
-        const clipToGrid = () => {
-            pianoSvg.style.clipPath =
-                `inset(${piano.scrollTop + rulerHeight}px 0 0 ${piano.scrollLeft + keyboardWidth}px)`;
-        };
-        piano.addEventListener("scroll", clipToGrid, { passive: true });
-        clipToGrid();
-
-        renderPianoContour = () => {
-            const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
-            if (!w || !h || `${w}x${h}` === canvasSize) return;
-            canvasSize = `${w}x${h}`;
-            canvasSvg.style.width = `${w}px`;
-            canvasSvg.style.height = `${h}px`;
-            const canvasField = setup(canvasArgs.res, canvasMesh);
-            // only renderFrame, animated doesn't work for this
-            renderFrame(canvasMesh, canvasField, canvasArgs.levels, canvasArgs.colorlist, canvasArgs.offcolorlist,
-                        canvasArgs.dampening, canvasArgs.scale, 0, canvasArgs.settings);
-        };
-    } else {
-        // Canvas renderer (default): the contour paths still cover the whole scrollable area,
-        // but the canvas is only as big as the viewport and is moved along with the scroll
-        // position (like #pianoCanvas), so a long composition never needs a huge bitmap.
-        pianoSvg.style.display = "none";
-        // 0.1 = the opacity sequencer.css gives the SVG .base layer
-        const pianoContour = createCanvasContour(pianoContourCanvas, { baseAlpha: 0.1 });
-        showNoteRects = rects => pianoContour.setRects(rects);
-        showNoteRects(noteRects);
-
-        const placePianoContour = () => {
-            const w = piano.clientWidth, h = piano.clientHeight;
-            if (!w || !h) return;
-            pianoContourCanvas.style.left = `${piano.scrollLeft}px`;
-            pianoContourCanvas.style.top = `${piano.scrollTop}px`;
-            pianoContourCanvas.style.width = `${w}px`;
-            pianoContourCanvas.style.height = `${h}px`;
-            pianoContour.setView({
-                width: w, height: h, offsetX: piano.scrollLeft, offsetY: piano.scrollTop,
-                clip: { x: keyboardWidth, y: rulerHeight, width: w - keyboardWidth, height: h - rulerHeight },
-            });
-        };
-        piano.addEventListener("scroll", placePianoContour, { passive: true });
-        new ResizeObserver(placePianoContour).observe(piano);
-        placePianoContour();
-
-        renderPianoContour = () => {
-            const w = pianoSpacer.offsetWidth, h = pianoSpacer.offsetHeight;
-            if (!w || !h || `${w}x${h}` === canvasSize) return;
-            canvasSize = `${w}x${h}`;
-            pianoContour.build("pianoSpacer", canvasArgs);   // field sized to the whole scrollable area
-        };
+    const pianoContour = useSvg ? createSvgContour(pianoSvg)
+        : createCanvasContour(pianoContourCanvas, { baseAlpha: 0.1 });
+    showNoteRects = rects => pianoContour.setRects(rects);
+    showNoteRects(noteRects);
+    function placePianoContour() {
+        const width = piano.clientWidth, height = piano.clientHeight;
+        surface.style.left = `${piano.scrollLeft}px`;
+        surface.style.top = `${piano.scrollTop}px`;
+        surface.style.width = `${width}px`;
+        surface.style.height = `${height}px`;
+        const rightInset = Math.max(0, width - (pianoSpacer.offsetWidth - piano.scrollLeft));
+        const bottomInset = Math.max(0, height - (pianoSpacer.offsetHeight - piano.scrollTop));
+        if (useSvg) surface.style.clipPath = `inset(${rulerHeight}px ${rightInset}px ${bottomInset}px ${keyboardWidth}px)`;
+        pianoContour.setView({ width, height, offsetX: piano.scrollLeft, offsetY: piano.scrollTop,
+            clip: { x: keyboardWidth, y: rulerHeight, width: Math.max(0, width - keyboardWidth - rightInset), height: Math.max(0, height - rulerHeight - bottomInset) } });
     }
-    let contourQueued = false;
-    new ResizeObserver(() => {
-        if (contourQueued) return;
-        contourQueued = true;
-        requestAnimationFrame(() => { contourQueued = false; renderPianoContour(); });
-    }).observe(pianoSpacer);
-    renderPianoContour();
+    pianoContour.build("pianoSpacer", canvasArgs);
+    piano.addEventListener("scroll", placePianoContour, { passive: true });
+    const pianoContourObserver = new ResizeObserver(placePianoContour);
+    pianoContourObserver.observe(piano);
+    pianoContourObserver.observe(pianoSpacer);
+    placePianoContour();
+
 </script>
 </body>
 </html>

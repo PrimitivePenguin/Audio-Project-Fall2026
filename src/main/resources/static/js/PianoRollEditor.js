@@ -362,3 +362,44 @@ class PianoRollFollow {
         return null;
     }
 }
+
+// Render-only interval trees retain canonical note references, never copies of MIDI data.
+// Pitch buckets and subtree maximum ends prune long songs, including sustained notes.
+class NoteRenderIndex {
+    constructor(sequence) {
+        this.byId = new Map();
+        this.order = new Map();
+        const buckets = Array.from({ length: 128 }, () => []);
+        sequence.notes.forEach((note, index) => {
+            this.byId.set(note.id, note);
+            this.order.set(note.id, index);
+            buckets[note.midi].push(note);
+        });
+        const build = (notes, start, end) => {
+            if (start >= end) return null;
+            const middle = (start + end) >> 1;
+            const note = notes[middle];
+            const left = build(notes, start, middle);
+            const right = build(notes, middle + 1, end);
+            return { note, left, right, maxEnd: Math.max(note.ticks + note.durationTicks,
+                left?.maxEnd ?? 0, right?.maxEnd ?? 0) };
+        };
+        this.roots = buckets.map((notes) => {
+            notes.sort((a, b) => a.ticks - b.ticks);
+            return build(notes, 0, notes.length);
+        });
+    }
+
+    query(start, end, low = 0, high = 127, predicate = () => true) {
+        const result = [];
+        const visit = (node) => {
+            if (!node || node.maxEnd < start) return;
+            visit(node.left);
+            const note = node.note;
+            if (note.ticks <= end && note.ticks + note.durationTicks >= start && predicate(note)) result.push(note);
+            if (note.ticks <= end) visit(node.right);
+        };
+        for (let pitch = Math.max(0, low); pitch <= Math.min(127, high); pitch++) visit(this.roots[pitch]);
+        return result.sort((a, b) => this.order.get(a.id) - this.order.get(b.id));
+    }
+}

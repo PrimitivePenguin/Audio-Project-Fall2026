@@ -23,7 +23,7 @@ export const POINT_MODES = ["interpolate", "midpoint"];
 
 // Limits used by validate(); the View can also use them for slider min/max.
 export const LIMITS = {
-    res:       { min: 2,   max: 20 },
+    res:       { min: 5,   max: 20 },
     numLevels: { min: 2,   max: 40 },
     noise:     { min: 0.05, max: 1 },
     tension:   { min: 0,   max: 2 },

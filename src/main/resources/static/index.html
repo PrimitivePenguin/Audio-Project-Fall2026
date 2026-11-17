@@ -239,7 +239,7 @@
         for (const id of byPointer.values()) release(id);
         byPointer.clear();
     });
-    let res = 5;
+    let toolbarRes = 10;
     let toolbarLevels = 5;
     const toolbarMesh = "toolbarMeshContainer";
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
@@ -249,7 +249,7 @@
     // const colorlist = [[0,0,0], [255,0,0], [255,0,255], [0,0,255], [255,255,255]]
     const toolbarColorList = [[255,255,255], [0,0,0]]
     let toolbarDampening = 0.25;
-    let toolbarScale = 0.5;
+    let toolbarScale = 1;
 
     // Curve settings:
     const toolbarSettings = {
@@ -272,7 +272,7 @@
         if (!w || !h || `${w}x${h}` === toolbarSize) return;
         const first = !toolbarSize;
         toolbarSize = `${w}x${h}`;
-        const toolbarField = setup(res, toolbarMesh);
+        const toolbarField = setup(toolbarRes, toolbarMesh);
         if (first) {
             startAnimation(toolbarField, toolbarLevels, toolbarColorList, 0.1, toolbarDampening, toolbarScale, toolbarSettings, toolbarMesh);
         } else {

@@ -239,7 +239,7 @@
         for (const id of byPointer.values()) release(id);
         byPointer.clear();
     });
-    let toolbarRes = 10;
+    let toolbarRes = 12;
     let toolbarLevels = 5;
     const toolbarMesh = "toolbarMeshContainer";
     // const colorlist = [[255,255,255],[255,0,0], [255,166,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[0,0,0]]; // white, yellow, magenta, cyan, black, 
@@ -253,8 +253,8 @@
 
     // Curve settings:
     const toolbarSettings = {
-        curve: "catmullRom",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
-        tension: 2,         // catmullRom only: 0 = straight lines, 1 = standard
+        curve: "bspline",   // "segments" | "linear" | "catmullRom" | "bspline" | "natural"
+        tension: 1,         // catmullRom only: 0 = straight lines, 1 = standard
         points: "interpolate",   // "interpolate" (smooth) | "midpoint" (classic blocky marching squares)
         height: 1,         // vertical exaggeration: 1 = normal, 2 = steeper / more lines, 0.5 = flatter
         lineWidth: 1       // stroke width in px (default 1)

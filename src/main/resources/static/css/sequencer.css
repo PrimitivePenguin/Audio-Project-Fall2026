@@ -246,3 +246,15 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .mixer-panel { max-height: 16rem; overflow-y: auto; }
 .mix-row select { max-width: 6.5rem; }
 .mix-row { row-gap: 0.25rem; }
+.automation-panel { margin-top: 0.5rem; }
+.automation-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin-bottom: 0.25rem;
+}
+.automation-toolbar label { display: flex; align-items: center; gap: 0.4rem; }
+.automation-toolbar button[aria-pressed="true"] { font-weight: 600; }
+.automation-hint { font-size: 0.85em; opacity: 0.7; }
+.automation-canvas { display: block; }

@@ -32,7 +32,7 @@
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
         canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
-        canEdit: () => databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
+        canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
         tracksChanged: (id) => {
             syncEditorState();
@@ -53,7 +53,6 @@
         },
         redraw: () => { pendingViewportRender = true; },
         selectionChanged: updateTrackActions,
-        cursorTick: () => editingCursorTick,
         scrollTop: () => pianoViewport.scrollTop,
         snap: () => snapMode,
         laneAt: (point) => overviewTrackAt(point),
@@ -71,8 +70,17 @@
             checkHistory();
             pushHistory({ kind: 'audio-clip', before, after });
         },
-        assetInHistory: (id) => [undoStack, redoStack].some((stack) => stack.some((entry) =>
-            entry.kind === 'audio-clip' && [...entry.before, ...entry.after].some((clip) => clip.assetId === id)))
+        discardAssetHistory: (id) => {
+            for (const stack of [undoStack, redoStack]) {
+                for (let i = stack.length - 1; i >= 0; i--) {
+                    const action = stack[i];
+                    if (action.kind === 'audio-clip' &&
+                        (action.before.some((clip) => clip.assetId === id) || action.after.some((clip) => clip.assetId === id))) {
+                        stack.splice(i, 1);
+                    }
+                }
+            }
+        }
     });
 
     // Grid geometry and editor state. Musical timing stays in NoteSequence.
@@ -274,6 +282,7 @@
             overviewScrollTop = pianoViewport.scrollTop;
         }
         workspaceMode = mode;
+        if (mode === 'piano') arrangement.selectRackAsset(null);
         if (mode === 'piano' || trackId) arrangement.select(null);
         activeTrackId = trackId;
         overlapIds = [];
@@ -657,6 +666,10 @@
     }
 
     async function saveDatabaseProject() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (!databaseProject || databaseProject.role === 'VIEWER' || databaseSaveInFlight) {
             return;
         }
@@ -1246,7 +1259,7 @@
         const kept = new Set();
         for (const lane of lanes) {
             const { track, index } = lane;
-            const top = RULER_HEIGHT + index * TrackOverview.laneHeight - scrollTop + 17;
+            const top = RULER_HEIGHT + index * TrackOverview.laneHeight - scrollTop + TrackOverview.laneHeight - 28;
             if (top < RULER_HEIGHT || top + 24 > height) continue;
             kept.add(track.id);
             let button = muteButtons.get(track.id);
@@ -1353,7 +1366,7 @@
                     drawingContext.fillRect(x, y + offset, 2, 2);
                 }
             }
-            drawingContext.fillText(label, 50, y + 28, 49);
+            drawingContext.fillText(label, 28, y + 28, 69);
             const count = lane.track.audio ? engine.arrangement.getIndex(sequence).counts.get(lane.track.id) ?? 0 : lane.notes.length;
             const noun = lane.track.audio ? 'clip' : 'note';
             drawingContext.fillText(`${count} ${noun}${count === 1 ? '' : 's'}`, 28, y + 48);
@@ -1936,6 +1949,7 @@
         if (editGesture || resizeGesture || cursorGesture || trackGesture || arrangement.gesture || event.button !== 0) {
             return;
         }
+        arrangement.selectRackAsset(null);
         checkHistory();
         pianoViewport.focus({ preventScroll: true });
         const initialPoint = canvasPoint(event);
@@ -2559,6 +2573,13 @@
             ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName)) {
             return;
         }
+        if (workspaceMode === 'tracks' && arrangement.rackAssetId &&
+            (event.key === 'Delete' || event.key === 'Backspace') &&
+            !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+            event.preventDefault();
+            if (!event.repeat) return arrangement.deleteRackAsset();
+            return;
+        }
         if (workspaceMode === 'tracks' && !arrangement.gesture && !trackGesture && !cursorGesture &&
             !['BUTTON', 'A', 'SUMMARY'].includes(target?.tagName) &&
             !target?.closest?.('button, a, summary') && !event.altKey && !event.shiftKey) {
@@ -2727,6 +2748,10 @@
         bpmInput.value = engine.bpm;
     };
     async function togglePlayback() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (isStartingPlayback || engine.isPlaying || engine.startPromise) {
             playRequestId++;
             engine.pause();
@@ -2861,6 +2886,10 @@
     }
 
     function startNewSequence() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (
             !window.confirm(
                 'Start a new sequence? This clears this arrangement, MIDI notes, and legacy sample triggers.'

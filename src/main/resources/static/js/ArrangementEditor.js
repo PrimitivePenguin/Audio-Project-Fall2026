@@ -5,6 +5,9 @@ class ArrangementEditor {
         this.store = new SampleAssetStore();
         this.trackId = null;
         this.clipId = null;
+        this.rackAssetId = null;
+        this.rackButtons = new Map();
+        this.deletingAsset = false;
         this.selected = new Set();
         this.clipboard = [];
         this.razor = false;
@@ -45,9 +48,15 @@ class ArrangementEditor {
             this.model.tracks.get(this.trackId).name = name;
             this.hooks.tracksChanged();
         });
-        el('audioClipSelect').onchange = () => this.select(this.trackId, el('audioClipSelect').value);
+        el('audioClipSelect').onchange = () => {
+            this.selectRackAsset(null);
+            this.select(this.trackId, el('audioClipSelect').value);
+        };
         el('deleteAudioClip').onclick = () => this.action(() => this.deleteSelected());
         el('duplicateAudioClip').onclick = () => this.action(() => this.duplicateSelected());
+        el('sampleRack').addEventListener('click', (event) => {
+            if (!event.target?.closest?.('.sample-asset')) this.selectRackAsset(null);
+        });
         el('rackFiles').onchange = (event) => {
             const files = Array.from(event.target.files ?? []);
             event.target.value = '';
@@ -89,6 +98,7 @@ class ArrangementEditor {
         this.dropPreview = null;
         this.relinkId = null;
         this.clipboard = [];
+        this.selectRackAsset(null);
         this.select(null);
         this.refreshRack();
     }
@@ -131,7 +141,6 @@ class ArrangementEditor {
         el('audioClipInfo').textContent = this.selected.size > 1 ? `${this.selected.size} clips selected` : clip
             ? `${asset.name} · start tick ${clip.startTick} · source offset ${clip.sourceOffsetSeconds.toFixed(3)} s · length ${clip.playDurationSeconds.toFixed(3)} s${asset.buffer ? '' : ' · missing audio'}`
             : '';
-        for (const button of this.placeButtons ?? []) button.disabled = !editable || !track;
     }
 
     options(id, placeholder, items, label) {
@@ -144,23 +153,75 @@ class ArrangementEditor {
         this.el(id).replaceChildren(option('', placeholder), ...Array.from(items, (item) => option(item.id, label(item))));
     }
 
+    selectRackAsset(id) {
+        this.rackAssetId = this.model.assets.has(id) ? id : null;
+        for (const [assetId, { row, label }] of this.rackButtons) {
+            const selected = assetId === this.rackAssetId;
+            row.classList.toggle('is-selected', selected);
+            label.setAttribute('aria-pressed', String(selected));
+        }
+    }
+
+    deleteRackAsset() {
+        const model = this.model;
+        const id = this.rackAssetId;
+        const asset = model.assets.get(id);
+        if (!asset || !this.hooks.canEdit()) return;
+        const clips = [...model.clips.values()].filter((clip) => clip.assetId === id);
+        const count = clips.length;
+        if (count && !window.confirm(`Delete "${asset.name}" and its ${count} referencing ${count === 1 ? 'clip' : 'clips'}?`)) return;
+
+        this.deletingAsset = true;
+        this.cancelDrop();
+        this.dragAsset = null;
+        const status = this.el('rackStatus');
+        status.textContent = `Deleting ${asset.name}…`;
+        this.assetJobs = this.assetJobs.then(async () => {
+            try {
+                await this.store.delete(id);
+                if (this.model !== model) return;
+                for (const clip of clips) model.deleteClip(clip.id);
+                model.assets.delete(id);
+                this.clipboard = this.clipboard.filter((clip) => clip.assetId !== id);
+                this.hooks.discardAssetHistory(id);
+                if (this.rackAssetId === id) this.selectRackAsset(null);
+                this.setSelection(this.selected, this.trackId);
+                status.textContent = `Deleted ${asset.name}.`;
+            } catch (error) {
+                status.textContent = `Could not delete ${asset.name}: ${error.message}`;
+            } finally {
+                this.deletingAsset = false;
+                this.refreshRack();
+            }
+        });
+        return this.assetJobs;
+    }
+
     refreshRack() {
         const list = this.el('rackAssets');
-        this.placeButtons = [];
+        const focusedId = [...this.rackButtons].find(([, { label }]) => label === document.activeElement)?.[0];
+        this.rackButtons.clear();
         list.replaceChildren();
         for (const asset of this.model.assets.values()) {
             const row = document.createElement('li');
-            const label = document.createElement('span');
+            const label = document.createElement('button');
+            label.type = 'button';
+            label.className = 'sample-asset-label';
+            row.onclick = () => this.selectRackAsset(asset.id);
+            this.rackButtons.set(asset.id, { row, label });
             const status = asset.loading ? 'Loading' : asset.buffer
                 ? (asset.local ? 'Ready · stored in this browser' : 'Ready · session only') : 'Missing audio · relink original file';
             label.textContent = `${asset.name} · ${asset.duration.toFixed(2)} s · ${status}`;
-            row.style.borderLeftColor = TrackOverview.color(asset.id);
+            const color = TrackOverview.color(asset.id);
+            row.style.backgroundColor = color;
+            row.style.color = ArrangementEditor.assetInk(color);
             row.className = 'sample-asset';
             row.append(label);
             if (asset.buffer) {
                 row.draggable = label.draggable = true;
                 const startDrag = (event) => {
                     if (!this.hooks.canEdit()) { event.preventDefault(); return; }
+                    this.selectRackAsset(asset.id);
                     this.dragAsset = asset.id;
                     event.dataTransfer.effectAllowed = 'copy';
                     event.dataTransfer.setData('application/x-jukebox-asset', asset.id);
@@ -168,29 +229,16 @@ class ArrangementEditor {
                 label.addEventListener('dragstart', startDrag);
                 row.addEventListener('dragstart', (event) => { if (event.target === row) startDrag(event); });
                 row.addEventListener('dragend', () => { this.dragAsset = null; this.cancelDrop(); });
-                const place = this.button('Place at cursor', () => this.action(() =>
-                    this.place(asset.id, this.trackId, this.hooks.cursorTick())));
-                this.placeButtons.push(place);
-                row.append(place);
             } else if (!asset.loading) {
                 row.append(this.button('Relink', () => {
                     this.relinkId = asset.id;
                     this.el('relinkAudioFile').click();
                 }));
             }
-            if (this.hooks.canEdit()) {
-                const remove = this.button('Remove from rack', () => this.action(() => {
-                    if ([...this.model.clips.values()].some((clip) => clip.assetId === asset.id) ||
-                        this.hooks.assetInHistory(asset.id) || this.clipboard.some((clip) => clip.assetId === asset.id)) {
-                        throw new Error('This sample is referenced by a clip or clip history.');
-                    }
-                    this.model.assets.delete(asset.id);
-                    this.refreshRack();
-                }));
-                row.append(remove);
-            }
             list.append(row);
         }
+        this.selectRackAsset(this.rackAssetId);
+        if (focusedId) (this.rackButtons.get(focusedId)?.label ?? this.el('rackFiles')).focus({ preventScroll: true });
         this.refreshInspector();
     }
 
@@ -533,10 +581,10 @@ class ArrangementEditor {
             if (bottom <= top) return;
             view.clipMasks.push({ x: left + view.scrollLeft, y: top + view.scrollTop,
                 width: right - left, height: bottom - top, opaque: true });
-            context.fillStyle = asset.buffer ? '#283e50' : '#54464a';
+            const color = TrackOverview.color(asset.id);
+            const ink = ArrangementEditor.assetInk(color);
+            context.fillStyle = color;
             context.fillRect(left, y, right - left, height);
-            context.fillStyle = TrackOverview.color(asset.id);
-            context.fillRect(left, y, right - left, 3);
             if (mode === 'spectrogram' && asset.spectrogram) {
                 const bounds = { y: y + 18, height: height - 18, scrollLeft: view.scrollLeft };
                 ArrangementEditor.paintSpectrum(context, entry, asset, sequence, bounds, start, end);
@@ -544,13 +592,13 @@ class ArrangementEditor {
             if (mode === 'waveform' && asset.waveform) {
                 const signalEnd = x + Math.max(1, sequence.tickToStep(endTick - clip.startTick) * stepWidth);
                 ArrangementEditor.paintWaveform(context, entry, asset, sequence, { left,
-                    right: Math.min(right, signalEnd), y: y + 18, height: height - 18, scrollLeft: view.scrollLeft });
+                    right: Math.min(right, signalEnd), y: y + 18, height: height - 18, scrollLeft: view.scrollLeft }, ink);
             }
             context.save();
             context.beginPath();
             context.rect(left, y, right - left, height);
             context.clip();
-            context.fillStyle = '#f2f7fb';
+            context.fillStyle = ink;
             context.font = '11px system-ui';
             context.textAlign = 'left';
             context.fillText(asset.name + (!asset.buffer ? ' · missing' : ''), left + 4, y + 13);
@@ -558,14 +606,23 @@ class ArrangementEditor {
                 context.fillText(asset.previewStatus === 'pending' ? 'Preparing spectrogram…' : 'Spectrogram unavailable',
                     left + 4, y + 32);
             }
-            context.strokeStyle = highlight ? '#ffd68b' : '#657f90';
+            context.strokeStyle = highlight ? '#ffd68b' : asset.buffer ? '#3d4954' : ink;
+            if (!asset.buffer && !highlight) context.setLineDash([3, 2]);
             context.lineWidth = highlight ? 2 : 1;
             context.strokeRect(x, y, width, height);
             context.restore();
         }
     }
 
-    static paintWaveform(context, entry, asset, sequence, bounds) {
+    static assetInk(color) {
+        const [r, g, b] = color.slice(1).match(/../g).map((hex) => {
+            const channel = parseInt(hex, 16) / 255;
+            return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.179 ? '#000000' : '#ffffff';
+    }
+
+    static paintWaveform(context, entry, asset, sequence, bounds, ink) {
         const { low, high } = asset.waveform;
         const { keyboardWidth, stepWidth } = PianoRollEditor.geometry;
         const map = AudioArrangement.timeMap(sequence);
@@ -576,7 +633,7 @@ class ArrangementEditor {
         };
         const center = bounds.y + bounds.height / 2;
         const amplitude = (bounds.height - 4) / 2;
-        context.strokeStyle = '#a4c2c8';
+        context.strokeStyle = ink;
         context.lineWidth = 1;
         context.beginPath();
         let from = sourceBin(bounds.left);

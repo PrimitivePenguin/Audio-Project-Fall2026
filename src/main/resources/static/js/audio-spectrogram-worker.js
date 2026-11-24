@@ -47,7 +47,8 @@ function spectrogram({ channels, width, fftSize, sampleRate, height }) {
             bytes[pixel] = 22 + 219 * value ** 2;
             bytes[pixel + 1] = 34 + 180 * value;
             bytes[pixel + 2] = 47 + 147 * Math.sqrt(value);
-            bytes[pixel + 3] = 255;
+            // Let low-energy bins reveal the asset color beneath the spectral detail.
+            bytes[pixel + 3] = 255 * value;
         }
     }
     return bytes;

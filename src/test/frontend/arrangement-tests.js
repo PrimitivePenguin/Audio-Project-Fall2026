@@ -83,8 +83,142 @@ const tests = [
         assert.equal(decodes, 2);
         assert.equal(h.engine.arrangement.clips.size, 2);
         assert.ok([...h.engine.arrangement.clips.values()].every((value) => value.assetId === clip.assetId));
-        row.children.find((child) => child.textContent === 'Remove from rack').onclick();
-        assert.match(h.elements.status.textContent, /referenced/);
+        assert.equal(row.draggable, true);
+        assert.deepEqual(row.children, [label]);
+        assert.equal(row.style.backgroundColor, h.TrackOverview.color(clip.assetId));
+        assert.equal(h.engine.arrangement.assets.size, 2);
+    }],
+    ['rack selection switches and clears, survives a drop, and routes Delete by context', async () => {
+        const h = createEditorHarness();
+        h.engine.initContext();
+        h.engine.audioContext.decodeAudioData = async () => audio();
+        h.SampleAssetStore.prototype.write = async () => {};
+        const deleted = [];
+        h.SampleAssetStore.prototype.delete = async (id) => deleted.push(id);
+        const midi = note(h);
+        h.elements.tracksView.onclick();
+        h.elements.addAudioTrack.onclick();
+        await h.elements.rackFiles.onchange({ target: { files: [file('A.wav', 42), file('B.wav', 43)] } });
+        const [first, second] = h.elements.rackAssets.children;
+        const [asset, unused] = [...h.engine.arrangement.assets.values()];
+        const pressed = (row) => row.children[0].getAttribute('aria-pressed');
+        const key = (key, target) => {
+            let prevented = false;
+            h.documentListeners.keydown({ key, target, preventDefault() { prevented = true; } });
+            return prevented;
+        };
+        first.onclick();
+        assert.deepEqual([pressed(first), pressed(second)], ['true', 'false']);
+        assert.equal(h.engine.arrangement.clips.size, 0);
+        second.onclick();
+        assert.deepEqual([pressed(first), pressed(second)], ['false', 'true']);
+        h.elements.sampleRack.listeners.click({ target: h.elements.rackAssets });
+        assert.deepEqual([pressed(first), pressed(second)], ['false', 'false']);
+
+        const dataTransfer = { setData() {} };
+        first.children[0].listeners.dragstart({ dataTransfer });
+        h.elements.pianoCanvas.listeners.drop({ ...h.pointer(160, 145), dataTransfer });
+        assert.equal(pressed(first), 'true');
+        assert.equal(h.engine.arrangement.clips.size, 1);
+        second.onclick();
+        assert.equal(key('Backspace', { tagName: 'INPUT' }), false);
+        assert.equal(key('Delete', second.children[0]), true);
+        await new Promise(setImmediate);
+        assert.deepEqual(deleted, [unused.id]);
+        assert.equal(h.confirmCount, 0);
+        assert.equal(h.engine.arrangement.clips.size, 1);
+        assert.equal(h.elements.rackAssets.children[0].children[0].getAttribute('aria-pressed'), 'false');
+
+        h.clickAt(155, 145);
+        assert.equal(key('Delete'), true);
+        assert.equal(h.engine.arrangement.clips.size, 0);
+        assert.ok(h.engine.arrangement.assets.has(asset.id));
+        h.elements.rackAssets.children[0].onclick();
+        h.elements.pianoRollView.onclick();
+        h.clickNote(midi);
+        assert.equal(key('Backspace'), true);
+        assert.equal(h.engine.sequence.notes.length, 0);
+        assert.deepEqual(deleted, [unused.id]);
+    }],
+    ['referenced rack deletion confirms, rolls back on storage failure, and removes every reference on success', async () => {
+        const h = createEditorHarness();
+        h.engine.initContext();
+        h.engine.audioContext.decodeAudioData = async () => audio();
+        h.SampleAssetStore.prototype.write = async () => {};
+        let fail = true;
+        let attempts = 0;
+        h.SampleAssetStore.prototype.delete = async () => {
+            attempts++;
+            if (fail) throw new Error('IndexedDB refused the transaction');
+        };
+        h.elements.tracksView.onclick();
+        h.elements.addAudioTrack.onclick();
+        await h.elements.rackFiles.onchange({ target: { files: [file('Referenced.wav', 12)] } });
+        const model = h.engine.arrangement;
+        const [id] = model.assets.keys();
+        const [lane] = model.tracks.keys();
+        const card = h.elements.rackAssets.children[0];
+        const dataTransfer = { setData() {} };
+        card.children[0].listeners.dragstart({ dataTransfer });
+        h.elements.pianoCanvas.listeners.drop({ ...h.pointer(160, 145), dataTransfer });
+        model.createClip(id, lane, 240);
+        card.onclick();
+        const originalConfirm = h.scope.window.confirm;
+        let confirmation;
+        h.scope.window.confirm = (message) => {
+            confirmation = message;
+            return originalConfirm(message);
+        };
+        const key = () => h.documentListeners.keydown({ key: 'Backspace', preventDefault() {} });
+        h.setConfirmation(false);
+        key();
+        assert.equal(h.confirmCount, 1);
+        assert.match(confirmation, /2 referencing clips/);
+        assert.equal(attempts, 0);
+        assert.equal(model.clips.size, 2);
+
+        h.setConfirmation(true);
+        key();
+        await new Promise(setImmediate);
+        assert.equal(attempts, 1);
+        assert.equal(model.assets.has(id), true);
+        assert.equal(model.clips.size, 2);
+        assert.match(h.elements.rackStatus.textContent, /IndexedDB refused/);
+
+        fail = false;
+        key();
+        await new Promise(setImmediate);
+        assert.equal(h.confirmCount, 3);
+        assert.equal(model.assets.size, 0);
+        assert.equal(model.clips.size, 0);
+        const json = model.toJSON();
+        assert.equal(json.assets.length + json.clips.length, 0);
+        history(h);
+        history(h, true);
+        assert.equal(model.clips.size, 0);
+    }],
+    ['IndexedDB deletion resolves only after commit and rejects when aborted', async () => {
+        const h = createEditorHarness();
+        const store = new h.SampleAssetStore();
+        let transaction, key;
+        store.databaseHandle = async () => ({
+            transaction(name, mode) {
+                assert.deepEqual([name, mode], ['audio', 'readwrite']);
+                return transaction = { objectStore: () => ({ delete(id) { key = id; } }) };
+            }
+        });
+        let completed = false;
+        const pending = store.delete('asset-key').then(() => { completed = true; });
+        await new Promise(setImmediate);
+        assert.equal(key, 'asset-key');
+        assert.equal(completed, false);
+        transaction.oncomplete();
+        await pending;
+        const refused = store.delete('asset-key');
+        await new Promise(setImmediate);
+        transaction.error = new Error('abort');
+        transaction.onabort();
+        await assert.rejects(refused, /abort/);
     }],
     ['rack is docked and MIDI and blank drops add audio lanes without consuming assets', async () => {
         const html = fs.readFileSync(path.join(__dirname, '../../main/resources/static/index.html'), 'utf8');
@@ -130,13 +264,21 @@ const tests = [
         h.elements.tracksView.onclick();
         h.paint();
         assert.equal(h.elements.clipVisualization.value, 'waveform');
-        assert.ok(h.canvasCalls.some(({ strokeStyle }) => strokeStyle === '#a4c2c8'));
+        const color = h.TrackOverview.color(asset.id);
+        const ink = h.ArrangementEditor.assetInk(color);
+        const hasClipBackground = () => h.canvasCalls.some(({ method, fillStyle, args }) =>
+            method === 'fillRect' && fillStyle === color && args[3] === h.TrackOverview.laneHeight - 14);
+        assert.ok(hasClipBackground());
+        assert.ok(h.canvasCalls.some(({ method, strokeStyle }) => method === 'stroke' && strokeStyle === ink));
+        assert.ok(h.canvasCalls.some(({ method, fillStyle, args }) =>
+            method === 'fillText' && fillStyle === ink && args[0] === asset.name));
         assert.ok(!h.canvasCalls.some(({ method }) => method === 'drawImage'));
         const snapshot = JSON.stringify(arrangement.toJSON());
         h.elements.clipVisualization.value = 'spectrogram';
         h.elements.clipVisualization.onchange();
         h.paint();
         assert.ok(h.canvasCalls.some(({ method }) => method === 'drawImage'));
+        assert.ok(hasClipBackground());
         assert.equal(JSON.stringify(arrangement.toJSON()), snapshot);
         assert.equal(arrangement.clips.get(clip.id), clip);
         const restored = createEditorHarness(1, { storage: { 'jukebox-clip-view': 'spectrogram' } });
@@ -465,6 +607,11 @@ const tests = [
         h.elements.tracksView.onclick();
         const mute = (label) => h.elements.laneMuteControls.children.find((button) => button.getAttribute('aria-label') === label);
         assert.equal(mute('Mute Piano').getAttribute('aria-pressed'), 'false');
+        h.paint();
+        const pianoCount = h.canvasCalls.find(({ method, args }) => method === 'fillText' && args[0] === '1 note');
+        const audioCount = h.canvasCalls.find(({ method, args }) => method === 'fillText' && args[0] === '1 clip');
+        assert.ok(parseFloat(mute('Mute Piano').style.top) >= pianoCount.args[2] + 8);
+        assert.ok(parseFloat(mute('Mute Audio').style.top) >= audioCount.args[2] + 8);
         const midiOutputs = [];
         h.engine.voiceFactory = (event, context, output) => {
             midiOutputs.push(output);
@@ -510,6 +657,8 @@ const tests = [
         })).reduce((max, item) => item.brightness > max.brightness ? item : max));
         assert.ok(peaks[0].row > peaks[1].row && peaks[0].brightness > 100 && peaks[1].brightness > 100);
         assert.equal(peaks[2].brightness, 34);
+        for (let row = 0; row < height; row++) assert.equal(result[(row * width + 2) * 4 + 3], 0);
+        assert.ok(result[(peaks[0].row * width) * 4 + 3] > 100);
     }],
     ['trimmed spectrograms crop source time and warp across tempo boundaries at the active zoom', () => {
         const h = createEditorHarness();

@@ -45,6 +45,16 @@ class SampleAssetStore {
         });
     }
 
+    async delete(id) {
+        const db = await this.databaseHandle();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction('audio', 'readwrite');
+            transaction.oncomplete = () => resolve();
+            transaction.onabort = () => reject(transaction.error ?? new Error('Local audio deletion was aborted.'));
+            transaction.objectStore('audio').delete(id);
+        });
+    }
+
     static async identify(bytes) {
         const hash = await crypto.subtle.digest('SHA-256', bytes);
         return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');

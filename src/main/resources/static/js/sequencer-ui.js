@@ -2436,7 +2436,7 @@
         getElement('sampleTriggerSummary').textContent = triggers.length
             ? `Active triggers ${first + 1}–${Math.min(first + SAMPLE_PAGE_SIZE, triggers.length)} of ${triggers.length}.`
             : 'No active triggers.';
-        sampleMix.refresh();
+        syncMixer();
     }
 
     function addSampleTrigger() {
@@ -2495,16 +2495,29 @@
         renderSampleEditor();
     };
 
-     // ---- Per-channel mix controls (volume + pan) ----
-     const formatVolume = (value) => `${Math.round(value * 100)}%`;
+// ---- Per-channel mixer (volume, pan, filter, effect sends) ----
+     const formatPct = (value) => `${Math.round(value * 100)}%`;
      const formatPan = (value) =>
          Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
+     const formatHz = (hz) => (hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)));
+     const CUTOFF_RATIO = 1000; // cutoff slider spans 20 Hz–20 kHz logarithmically
 
-     function createMixRow(title, getChannelId, isChannelAvailable) {
+     const MIX_CONTROLS = [
+         { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
+         { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
+         { key: 'cutoff', label: 'Filter', min: 0, max: 1, step: 0.001, format: formatHz,
+             toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
+             fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
+         { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
+         { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
+         { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
+     ];
+
+     function createMixRow(title, id) {
          const row = document.createElement('div');
          row.className = 'mix-row';
          row.setAttribute('role', 'group');
-         row.setAttribute('aria-label', title);
+         row.setAttribute('aria-label', `${title} mix`);
          // Opts into the "release focus after pointer use" policy so Space still controls transport.
          row.setAttribute('data-daw-pointer-inputs', '');
 
@@ -2513,78 +2526,75 @@
          heading.textContent = title;
          row.append(heading);
 
-         const makeSlider = (label, min, max, step, format) => {
+         const controls = MIX_CONTROLS.map((control) => {
+             const toSlider = control.toSlider ?? ((value) => value);
+             const fromSlider = control.fromSlider ?? ((value) => value);
              const wrapper = document.createElement('label');
              const text = document.createElement('span');
-             text.textContent = label;
+             text.textContent = control.label;
              const input = document.createElement('input');
              input.type = 'range';
-             input.min = String(min);
-             input.max = String(max);
-             input.step = String(step);
+             input.min = String(control.min);
+             input.max = String(control.max);
+             input.step = String(control.step);
+             input.title = 'Double-click to reset';
              const readout = document.createElement('output');
              wrapper.append(text, input, readout);
              row.append(wrapper);
-             return { input, readout, format };
-         };
-         const volume = makeSlider('Vol', 0, 1.5, 0.01, formatVolume);
-         const pan = makeSlider('Pan', -1, 1, 0.01, formatPan);
-         pan.input.title = 'Pan (double-click to center)';
+
+             input.addEventListener('input', () => {
+                 engine.setChannelParam(id, control.key, fromSlider(input.valueAsNumber));
+                 refresh();
+             });
+             input.addEventListener('dblclick', () => {
+                 engine.resetChannelParam(id, control.key);
+                 refresh();
+             });
+             return { control, input, readout, toSlider };
+         });
 
          function refresh() {
-             const id = getChannelId();
-             const available = id !== null && isChannelAvailable(id);
-             const mix = available ? engine.getChannelMix(id) : { volume: 1, pan: 0 };
-             const locked = !available || databaseProject?.role === 'VIEWER';
-             volume.input.disabled = pan.input.disabled = locked;
-             // Don't fight the user's thumb while they're dragging.
-             if (document.activeElement !== volume.input) volume.input.value = String(mix.volume);
-             if (document.activeElement !== pan.input) pan.input.value = String(mix.pan);
-             volume.readout.textContent = volume.format(Number(volume.input.value));
-             pan.readout.textContent = pan.format(Number(pan.input.value));
+             const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
+             const mix = engine.getChannelMix(id);
+             for (const { control, input, readout, toSlider } of controls) {
+                 input.disabled = locked;
+                 // Don't fight the user's thumb while they're dragging.
+                 if (document.activeElement !== input) input.value = String(toSlider(mix[control.key]));
+                 readout.textContent = control.format(mix[control.key]);
+             }
          }
-
-         volume.input.addEventListener('input', () => {
-             const id = getChannelId();
-             if (id !== null) engine.setChannelVolume(id, volume.input.valueAsNumber);
-             refresh();
-         });
-         pan.input.addEventListener('input', () => {
-             const id = getChannelId();
-             if (id !== null) engine.setChannelPan(id, pan.input.valueAsNumber);
-             refresh();
-         });
-         pan.input.addEventListener('dblclick', () => {
-             const id = getChannelId();
-             if (id !== null && !pan.input.disabled) engine.setChannelPan(id, 0);
-             pan.input.value = '0';
-             refresh();
-         });
 
          return { row, refresh };
      }
+
      const mixerPanel = document.createElement('div');
      mixerPanel.className = 'mixer-panel';
      getElement('trackMetadata').after(mixerPanel);
      let mixerKey = '';
      let mixerRows = [];
-     const sampleMix = createMixRow('Sample mix', () => 'uploaded', (id) => engine.tracks.has(id));
-     getElement('sampleName').after(sampleMix.row);
-// Rebuilds rows only when tracks are added, removed, renamed or reordered;
-// otherwise just refreshes slider values so dragging isn't interrupted.
+
+     function mixChannels() {
+         const channels = engine.sequence.tracks.map((track) => ({ id: track.id, name: track.name }));
+         channels.push({ id: 'uploaded', name: 'Sample' });
+         for (const drum of window.jukeboxDrums?.KIT ?? []) {
+             channels.push({ id: drum.id, name: drum.label });
+         }
+         return channels;
+     }
+
+// Rebuilds rows only when the channel list changes; otherwise just refreshes values.
      function syncMixer() {
-         const tracks = engine.sequence.tracks;
-         const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
+         const channels = mixChannels();
+         const key = JSON.stringify(channels);
          if (key !== mixerKey) {
              mixerKey = key;
-             mixerRows = tracks.map((track) =>
-                 createMixRow(track.name, () => track.id,
-                     (id) => engine.sequence.tracks.some((candidate) => candidate.id === id)));
+             mixerRows = channels.map(({ id, name }) => createMixRow(name, id));
              mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
          }
          mixerRows.forEach((mix) => mix.refresh());
      }
-     getElement('sampleName').after(sampleMix.row);
+// Drum and sample channels appear/disappear outside the editor sync, so poll lightly.
+     setInterval(syncMixer, 500);
 
     // Audio and MIDI loading use separate tokens to ignore stale async results.
     getElement('audioFile').onchange = async (event) => {
@@ -2606,8 +2616,7 @@
             const restoredMix = unavailableSample;
             engine.addTrack('uploaded', buffer);
             if (restoredMix) {
-                engine.setChannelVolume('uploaded', restoredMix.volume);
-                engine.setChannelPan('uploaded', restoredMix.pan);
+                engine.applyChannelMix('uploaded', restoredMix);
             }
             loadedSampleName = file.name || 'uploaded audio';
             unavailableSample = null;
@@ -2816,8 +2825,7 @@
                     audioPersisted: false,
                     name: typeof data.sample.name === 'string' ? data.sample.name : '',
                     steps: Array.from({ length: engine.totalSteps }, (_, step) => data.sample.steps?.[step] === true),
-                    volume: Number.isFinite(data.sample.volume) ? data.sample.volume : undefined,
-                    pan: Number.isFinite(data.sample.pan) ? data.sample.pan : undefined
+                    ...engine.extractMix(data.sample)
                 };
                 getElement('sampleStatus').textContent = 'Uploaded audio was not stored. Re-upload the original sample to play it.';
             }

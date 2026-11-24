@@ -241,3 +241,6 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
     overflow-y: auto;
 }
 .drum-pan { width: 5rem; }
+.mix-title { min-width: 6rem; font-weight: 600; }
+.mix-row input[type="range"] { width: 6rem; }
+.mixer-panel { max-height: 16rem; overflow-y: auto; }

@@ -140,8 +140,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             stepCount: engine.totalSteps,
             tracks: KIT.filter((drum) => getTrack(drum.id)).map((drum) => ({
                 id: drum.id,
-                volume: getVolume(drum.id),
-                pan: getPan(drum.id),
+                ...engine.getChannelMix(drum.id),
                 steps: getSteps(drum.id).map(Boolean)
             }))
         };
@@ -166,8 +165,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             if (Array.isArray(entry.steps)) {
                 track.steps = Array.from({ length: engine.totalSteps }, (_, step) => entry.steps[step] === true);
             }
-            engine.setChannelVolume(entry.id, entry.volume);
-            engine.setChannelPan(entry.id, entry.pan);
+            engine.applyChannelMix(entry.id, entry);
         }
     }
 

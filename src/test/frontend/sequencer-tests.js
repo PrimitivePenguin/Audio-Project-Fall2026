@@ -1,4 +1,5 @@
 // Run with node src/test/frontend/sequencer-tests.js (no npm dependencies).
+
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -33,6 +34,15 @@ class Context {
     createGain() {
         return {
             gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {} },
+            connect() {},
+            disconnect() {
+                this.disconnected = true;
+            }
+        };
+    }
+    createStereoPanner() {
+        return {
+            pan: { value: 0 },
             connect() {},
             disconnect() {
                 this.disconnected = true;
@@ -580,6 +590,147 @@ async function test(name, fn) {
         assert.throws(() => MidiIO.parse(raw([0, 144, 60, 100, 0, 255, 47, 0])));
         assert.throws(() => MidiIO.parse(raw([0, 144, 60, 100, 0, 128, 60, 0, 0, 255, 47, 0])));
     });
+
+    // Objects built inside the vm sandbox have another realm's prototypes; compare plain copies.
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    await test('sample tracks get a volume, pan and trim strip; mono is compensated for pan law', () => {
+        const e = new SequencerEngine();
+        e.addTrack('mono', { numberOfChannels: 1 });
+        e.addTrack('stereo', { numberOfChannels: 2 });
+        const mono = e.tracks.get('mono');
+        const stereo = e.tracks.get('stereo');
+        assert.ok(Math.abs(mono.trimNode.gain.value - Math.SQRT2) < 1e-9);
+        assert.equal(stereo.trimNode.gain.value, 1);
+        assert.equal(mono.gainNode.gain.value, 0.8);
+        assert.equal(mono.panNode.pan.value, 0);
+        e.removeTrack('mono');
+        assert.equal(mono.gainNode.disconnected, true);
+        assert.equal(mono.panNode.disconnected, true);
+        assert.equal(mono.trimNode.disconnected, true);
+    });
+    await test('MIDI voices render through a lazily created per-track strip', async () => {
+        const e = new SequencerEngine();
+        e.sequence.addNote({ midi: 60, startStep: 0, durationSteps: 1 });
+        let output;
+        let trackId;
+        e.voiceFactory = (event, context, out) => {
+            output = out;
+            trackId = event.trackId;
+            return { stop() {}, finished: new Promise(() => {}) };
+        };
+        assert.equal(e.midiStrips.size, 0);
+        await e.play();
+        assert.equal(e.midiStrips.size, 1);
+        assert.equal(output, e.midiStrips.get(trackId).gainNode);
+        assert.notEqual(output, e.masterGain);
+        assert.equal(e.midiStrips.get(trackId).gainNode.gain.value, 1);
+        e.stop();
+    });
+    await test('channel volume and pan clamp, reject bad input, and need no audio nodes', () => {
+        const e = new SequencerEngine();
+        e.addTrack('kick', {});
+        const midiId = e.sequence.tracks[0].id;
+        assert.equal(e.setChannelVolume('kick', 9), true);
+        assert.equal(e.tracks.get('kick').gainNode.gain.value, 1.5);
+        assert.equal(e.setChannelVolume('kick', -1), true);
+        assert.equal(e.tracks.get('kick').gainNode.gain.value, 0);
+        assert.equal(e.setChannelPan('kick', -5), true);
+        assert.equal(e.tracks.get('kick').panNode.pan.value, -1);
+        assert.equal(e.setChannelVolume('kick', NaN), false);
+        assert.equal(e.setChannelPan('kick', Infinity), false);
+        assert.equal(e.setChannelVolume('missing', 0.5), false);
+        assert.equal(e.getChannelMixer('missing'), null);
+        // A MIDI channel can be edited before any note has created its strip.
+        assert.equal(e.midiStrips.size, 0);
+        assert.deepEqual(plain(e.getChannelMixer(midiId)), { volume: 1, pan: 0 });
+        assert.equal(e.setChannelPan(midiId, 0.25), true);
+        assert.equal(e.midiStrips.size, 0);
+        assert.deepEqual(plain(e.getChannelMixer(midiId)), { volume: 1, pan: 0.25 });
+    });
+    await test('master volume can be set before the audio context exists', () => {
+        const e = new SequencerEngine();
+        assert.equal(e.getMasterVolume(), 0.7);
+        assert.equal(e.setMasterVolume(0.4), true);
+        assert.equal(e.setMasterVolume(NaN), false);
+        assert.equal(e.setMasterVolume(5), true);
+        assert.equal(e.getMasterVolume(), 1);
+        e.setMasterVolume(0.4);
+        assert.equal(e.audioContext, null);
+        e.initContext();
+        assert.equal(e.masterGain.gain.value, 0.4);
+        e.setMasterVolume(0.2);
+        assert.equal(e.masterGain.gain.value, 0.2);
+    });
+    await test('saved mixer values reach channels created later and survive track replacement', () => {
+        const e = new SequencerEngine();
+        e.restoreMixerState({
+            version: 1,
+            master: { volume: 0.5 },
+            channels: [
+                { id: 'kick', volume: 0.3, pan: 0.5 },
+                { id: 'uploaded', pan: -1 }
+            ]
+        });
+        assert.equal(e.getMasterVolume(), 0.5);
+        e.addTrack('kick', {});
+        assert.ok(Math.abs(e.tracks.get('kick').gainNode.gain.value - 0.3) < 1e-9);
+        assert.equal(e.tracks.get('kick').panNode.pan.value, 0.5);
+        e.addTrack('kick', {}); // replacement must not reset the mix
+        assert.equal(e.tracks.get('kick').panNode.pan.value, 0.5);
+        // 'uploaded' has no audio yet (samples are not stored in projects); its pan waits for the re-upload.
+        assert.equal(e.getChannelMixer('uploaded'), null);
+        e.addTrack('uploaded', {});
+        assert.equal(e.tracks.get('uploaded').panNode.pan.value, -1);
+        assert.equal(e.tracks.get('uploaded').gainNode.gain.value, 0.8);
+        // Restoring over live strips updates them in place.
+        e.restoreMixerState({ version: 1, channels: [{ id: 'kick', pan: -0.5 }] });
+        assert.equal(e.tracks.get('kick').panNode.pan.value, -0.5);
+        assert.equal(e.tracks.get('kick').gainNode.gain.value, 0.8);
+    });
+    await test('mixer state round-trips and old or malformed projects load with defaults', () => {
+        const e = new SequencerEngine();
+        e.addTrack('kick', {});
+        e.setChannelVolume('kick', 0.6);
+        e.setChannelPan('kick', -0.25);
+        e.setMasterVolume(0.55);
+        const saved = JSON.parse(JSON.stringify(e.getMixerState()));
+        const f = new SequencerEngine();
+        f.addTrack('kick', {});
+        f.restoreMixerState(saved);
+        assert.deepEqual(plain(f.getMixerState()), saved);
+        const defaults = { version: 1, master: { volume: 0.7 }, channels: [] };
+        for (const bad of [
+            undefined, null, 'x', {}, { version: 2, channels: [] },
+            { version: 1, channels: 'nope' },
+            { version: 1, master: { volume: 'loud' }, channels: [null, 7, { id: 5 }, { id: 'kick', volume: 'x', pan: NaN }] }
+        ]) {
+            f.restoreMixerState(bad);
+            assert.deepEqual(plain(f.getMixerState()), defaults);
+            assert.equal(f.tracks.get('kick').gainNode.gain.value, 0.8);
+            assert.equal(f.tracks.get('kick').panNode.pan.value, 0);
+        }
+    });
+    await test('New Sequence resets mixer state and MIDI strips', async () => {
+        const e = new SequencerEngine();
+        e.sequence.addNote({ midi: 60, startStep: 0, durationSteps: 1 });
+        e.voiceFactory = () => ({ stop() {}, finished: new Promise(() => {}) });
+        e.addTrack('kick', {});
+        await e.play();
+        e.stop();
+        const midiId = e.sequence.tracks[0].id;
+        e.setChannelVolume('kick', 0.1);
+        e.setChannelPan(midiId, 0.9);
+        e.setMasterVolume(0.2);
+        assert.equal(e.midiStrips.size, 1);
+        e.newSequence();
+        assert.equal(e.midiStrips.size, 0);
+        assert.equal(e.getMasterVolume(), 0.7);
+        assert.equal(e.masterGain.gain.value, 0.7);
+        assert.deepEqual(plain(e.getMixerState()), { version: 1, master: { volume: 0.7 }, channels: [] });
+        e.addTrack('kick', {});
+        assert.equal(e.tracks.get('kick').gainNode.gain.value, 0.8);
+    });
+
     console.log(`${passed} tests passed`);
 })().catch((error) => {
     console.error(error);

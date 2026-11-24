@@ -87,9 +87,17 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
     // ---- Public API ----
 
     const getSteps = (id) => (isDrum(id) ? [...(getTrack(id)?.steps ?? [])] : []);
-    const getVolume = (id) => getTrack(id)?.gainNode.gain.value ?? DEFAULT_VOLUME;
+    const getVolume = (id) => (getTrack(id) ? engine.getChannelMix(id).volume : DEFAULT_VOLUME);
+    const getPan = (id) => (getTrack(id) ? engine.getChannelMix(id).pan : 0);
+
+
     const stepCount = () => engine.totalSteps;
 
+    function setPan(id, value) {
+        if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isFinite(value)) return false;
+        ensureTracks();
+        return engine.setChannelPan(id, value);
+    }
     // step is zero-based (0 = first sixteenth), like engine.setStep.
     function setStep(id, step, on) {
         if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isInteger(step) || step < 0 || step >= engine.totalSteps) {
@@ -109,8 +117,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
     function setVolume(id, value) {
         if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isFinite(value)) return false;
         ensureTracks();
-        getTrack(id).gainNode.gain.value = Math.min(1.5, Math.max(0, value));
-        return true;
+        return engine.setChannelVolume(id, value); // keeps the engine's mix state in sync
     }
 
     // One-shot audition through the track's own gain node (respects volume).
@@ -134,6 +141,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             tracks: KIT.filter((drum) => getTrack(drum.id)).map((drum) => ({
                 id: drum.id,
                 volume: getVolume(drum.id),
+                pan: getPan(drum.id),
                 steps: getSteps(drum.id).map(Boolean)
             }))
         };
@@ -141,7 +149,10 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
 
     function restoreState(state) {
         // Only kit tracks belong to this API; never remove uploaded samples or MIDI tracks.
-        KIT.forEach((drum) => engine.removeTrack(drum.id));
+        KIT.forEach((drum) => {
+            engine.removeTrack(drum.id);
+            engine.resetChannelMix(drum.id);
+        });
         if (!Array.isArray(state?.tracks)) {
             return;
         }
@@ -155,19 +166,19 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             if (Array.isArray(entry.steps)) {
                 track.steps = Array.from({ length: engine.totalSteps }, (_, step) => entry.steps[step] === true);
             }
-            if (typeof entry.volume === 'number' && Number.isFinite(entry.volume)) {
-                track.gainNode.gain.value = Math.min(1.5, Math.max(0, entry.volume));
-            }
+            engine.setChannelVolume(entry.id, entry.volume);
+            engine.setChannelPan(entry.id, entry.pan);
         }
     }
 
     restoreState(instrumentState?.drums);
 
+
     window.jukeboxDrums = {
         KIT: KIT.map(({ id, label }) => ({ id, label })),
         ensure: () => { ensureTracks(); },
         hasTrack: (id) => !!getTrack(id),
-        setStep, toggleStep, setVolume, preview,
-        getSteps, getVolume, stepCount, snapshot, restoreState,
+        setStep, toggleStep, setVolume, setPan, preview,
+        getSteps, getVolume, getPan, stepCount, snapshot, restoreState,
     };
 }, { once: true });

@@ -11,9 +11,17 @@ const SCHEDULE_AHEAD_SEC = 0.1; // how far ahead to schedule audio
 const START_DELAY_SEC = 0.05; // small head start so step 0 isn't late
 
 const DEFAULT_TRACK_GAIN = 0.8;
+const DEFAULT_MIDI_GAIN = 1;      // keeps MIDI tracks as loud as they are today
+const DEFAULT_PAN = 0;
+const MAX_TRACK_GAIN = 1.5;
+const PARAM_SMOOTHING_SEC = 0.015; // time constant; avoids zipper noise while dragging
 const MASTER_GAIN = 0.7; // headroom so summed tracks don't clip as easily
 
 class SequencerEngine {
+    // Mix state lives here, not on the nodes, so it survives track removal/recreation
+// and can be set before the AudioContext exists.
+    #mix = new Map();       // trackId -> { volume, pan }
+    #midiBuses = new Map(); // MIDI trackId -> { gain, pan }
     constructor() {
         // Audio graph
         this.audioContext = null;
@@ -482,6 +490,7 @@ class SequencerEngine {
     }
 
     #syncInstrumentTracks() {
+        this.#pruneMidiBuses();
         this.#cancelPreparation();
         this.instrumentPreparation = null;
         this.#callInstrumentHook('syncTracks', [
@@ -643,6 +652,7 @@ class SequencerEngine {
         this.stop();
         for (const trackId of [...this.tracks.keys()]) {
             this.removeTrack(trackId);
+            this.#mix.clear();
         }
         this.replaceSequence(new NoteSequence());
     }
@@ -683,18 +693,22 @@ class SequencerEngine {
 
     // --- Track & Grid Management ---
     addTrack(trackId, audioBuffer) {
-        this.initContext(); // guarantees audioContext and masterGain exist
-
+        this.initContext();
         this.removeTrack(trackId);
-        // Per-track gain node for volume control
+
+        const mix = this.#mixFor(trackId, DEFAULT_TRACK_GAIN);
         const gainNode = this.audioContext.createGain();
-        gainNode.gain.value = DEFAULT_TRACK_GAIN;
-        gainNode.connect(this.masterGain);
+        gainNode.gain.value = mix.volume;
+        const panNode = this.audioContext.createStereoPanner();
+        panNode.pan.value = mix.pan;
+        gainNode.connect(panNode);
+        panNode.connect(this.masterGain);
 
         this.tracks.set(trackId, {
             buffer: audioBuffer,
             steps: new Array(this.totalSteps).fill(false),
             gainNode,
+            panNode,
             activeSources: new Set()
         });
     }
@@ -718,6 +732,7 @@ class SequencerEngine {
         track.steps = [];
         try {
             track.gainNode.disconnect();
+            track.panNode.disconnect();
         } catch (error) {
             failures.push(error);
         }
@@ -830,9 +845,11 @@ class SequencerEngine {
                 this.sequence.ticksToSeconds(soundingFromTick)
         };
         try {
+            // Notes whose track is unknown fall back to the master bus.
+            const output = track ? this.#getMidiBus(track.id).gain : this.masterGain;
             const voice = this.voiceFactory
-                ? this.voiceFactory(event, this.audioContext, this.masterGain)
-                : this.createPitchedVoice(event);
+                ? this.voiceFactory(event, this.audioContext, output)
+                : this.createPitchedVoice(event, output)
             if (runId !== this.runId) {
                 this.#discardVoice(voice);
                 return;
@@ -884,12 +901,12 @@ class SequencerEngine {
     }
 
     // Future instruments implement (event, sharedContext, output) => { stop(), finished: Promise }.
-    createPitchedVoice(event) {
+    createPitchedVoice(event, output = this.masterGain) {
         const oscillator = this.audioContext.createOscillator();
         const gain = this.audioContext.createGain();
         oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
         oscillator.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(output);
         const end = event.when + event.duration;
         const ramp = Math.min(0.005, event.duration / 4);
         gain.gain.setValueAtTime(0, event.when);
@@ -915,8 +932,131 @@ class SequencerEngine {
         };
     }
 
+    // --- Per-track mix (volume / pan) ---
+    #defaultVolume(id) {
+        return this.tracks.has(id) ? DEFAULT_TRACK_GAIN : DEFAULT_MIDI_GAIN;
+    }
+
+    #mixFor(id, defaultVolume = this.#defaultVolume(id)) {
+        let mix = this.#mix.get(id);
+        if (!mix) {
+            mix = { volume: defaultVolume, pan: DEFAULT_PAN };
+            this.#mix.set(id, mix);
+        }
+        return mix;
+    }
+
+    #isChannel(id) {
+        return this.tracks.has(id) || this.sequence.tracks.some((track) => track.id === id);
+    }
+
+    #channelNodes(id) {
+        const sample = this.tracks.get(id);
+        if (sample) {
+            return { gain: sample.gainNode, pan: sample.panNode };
+        }
+        return this.#midiBuses.get(id) ?? null;
+    }
+
+    #smooth(param, value) {
+        const now = this.audioContext.currentTime;
+        param.cancelScheduledValues(now);
+        param.setTargetAtTime(value, now, PARAM_SMOOTHING_SEC);
+    }
+
+// Works for sample tracks and MIDI tracks, before or during playback.
+    setChannelVolume(id, value) {
+        if (!Number.isFinite(value) || !this.#isChannel(id)) {
+            return false;
+        }
+        const volume = Math.min(MAX_TRACK_GAIN, Math.max(0, value));
+        this.#mixFor(id).volume = volume;
+        const nodes = this.#channelNodes(id);
+        if (nodes) {
+            this.#smooth(nodes.gain.gain, volume);
+        }
+        return true;
+    }
+
+// -1 = hard left, 0 = center, 1 = hard right.
+    setChannelPan(id, value) {
+        if (!Number.isFinite(value) || !this.#isChannel(id)) {
+            return false;
+        }
+        const pan = Math.min(1, Math.max(-1, value));
+        this.#mixFor(id).pan = pan;
+        const nodes = this.#channelNodes(id);
+        if (nodes) {
+            this.#smooth(nodes.pan.pan, pan);
+        }
+        return true;
+    }
+
+    getChannelMix(id) {
+        const mix = this.#mix.get(id);
+        return {
+            volume: mix?.volume ?? this.#defaultVolume(id),
+            pan: mix?.pan ?? DEFAULT_PAN
+        };
+    }
+
+    resetChannelMix(id) {
+        this.#mix.delete(id);
+    }
+
+// For project save/load of MIDI tracks (drums save their own mix via jukeboxDrums).
+    snapshotMix() {
+        return {
+            tracks: this.sequence.tracks.map((track) => ({
+                trackId: track.id,
+                ...this.getChannelMix(track.id)
+            }))
+        };
+    }
+
+    restoreMix(state) {
+        if (!Array.isArray(state?.tracks)) {
+            return;
+        }
+        for (const entry of state.tracks) {
+            this.setChannelVolume(entry?.trackId, entry?.volume);
+            this.setChannelPan(entry?.trackId, entry?.pan);
+        }
+    }
+
+// MIDI voices connect here instead of straight to masterGain.
+    #getMidiBus(trackId) {
+        let bus = this.#midiBuses.get(trackId);
+        if (!bus) {
+            const mix = this.getChannelMix(trackId);
+            const gain = this.audioContext.createGain();
+            const pan = this.audioContext.createStereoPanner();
+            gain.gain.value = mix.volume;
+            pan.pan.value = mix.pan;
+            gain.connect(pan);
+            pan.connect(this.masterGain);
+            bus = { gain, pan };
+            this.#midiBuses.set(trackId, bus);
+        }
+        return bus;
+    }
+
+    #pruneMidiBuses() {
+        const ids = new Set(this.sequence.tracks.map((track) => track.id));
+        for (const [id, bus] of this.#midiBuses) {
+            if (!ids.has(id)) {
+                try {
+                    bus.gain.disconnect();
+                    bus.pan.disconnect();
+                } catch (_) {}
+                this.#midiBuses.delete(id);
+            }
+        }
+    }
+
     // --- UI Event Hook ---
     onStepTick(callback) {
         this.onStepTickCallback = callback;
     }
 }
+

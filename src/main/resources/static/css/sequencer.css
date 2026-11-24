@@ -226,3 +226,18 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .drum-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
 
 .primary-toolbar { z-index: 10; }
+.mix-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin: 0.5rem 0;
+}
+.mix-row label { display: flex; align-items: center; gap: 0.4rem; }
+.mix-row output { min-width: 3.2ch; font-variant-numeric: tabular-nums; }
+.mix-row input[type="range"] { width: 8rem; }
+.mixer-panel {
+    max-height: 12rem;
+    overflow-y: auto;
+}
+.drum-pan { width: 5rem; }

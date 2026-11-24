@@ -163,6 +163,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 disconnect() {}
             };
         }
+        createStereoPanner() {
+            return { pan: { value: 0 }, connect() { return this; }, disconnect() {} };
+        }
         createBufferSource() {
             const source = new AudioSource();
             this.sources.push(source);

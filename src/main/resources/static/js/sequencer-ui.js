@@ -2505,14 +2505,16 @@
      const MIX_CONTROLS = [
          { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
          { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
-         { key: 'cutoff', label: 'Filter', min: 0, max: 1, step: 0.001, format: formatHz,
+         { key: 'filterType', label: 'Filter', select: [['lowpass', 'Low-pass'], ['highpass', 'High-pass']] },
+         { key: 'cutoff', label: 'Cutoff', min: 0, max: 1, step: 0.001, format: formatHz,
              toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
              fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
          { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
          { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
+         { key: 'delayBeats', label: 'Time', min: 0.125, max: 2, step: 0.125, format: (v) => `${+v.toFixed(3)} beat` },
+         { key: 'delayFeedback', label: 'Fdbk', min: 0, max: 0.9, step: 0.01, format: formatPct },
          { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
      ];
-
      function createMixRow(title, id) {
          const row = document.createElement('div');
          row.className = 'mix-row';
@@ -2527,11 +2529,26 @@
          row.append(heading);
 
          const controls = MIX_CONTROLS.map((control) => {
-             const toSlider = control.toSlider ?? ((value) => value);
-             const fromSlider = control.fromSlider ?? ((value) => value);
              const wrapper = document.createElement('label');
              const text = document.createElement('span');
              text.textContent = control.label;
+
+             if (control.select) {
+                 const input = document.createElement('select');
+                 for (const [value, label] of control.select) {
+                     input.append(new Option(label, value));
+                 }
+                 wrapper.append(text, input);
+                 row.append(wrapper);
+                 input.addEventListener('change', () => {
+                     engine.setChannelFilterType(id, input.value);
+                     refresh();
+                 });
+                 return { control, input };
+             }
+
+             const toSlider = control.toSlider ?? ((value) => value);
+             const fromSlider = control.fromSlider ?? ((value) => value);
              const input = document.createElement('input');
              input.type = 'range';
              input.min = String(control.min);
@@ -2558,8 +2575,12 @@
              const mix = engine.getChannelMix(id);
              for (const { control, input, readout, toSlider } of controls) {
                  input.disabled = locked;
-                 // Don't fight the user's thumb while they're dragging.
-                 if (document.activeElement !== input) input.value = String(toSlider(mix[control.key]));
+                 const focused = document.activeElement === input;
+                 if (control.select) {
+                     if (!focused) input.value = mix.filterType;
+                     continue;
+                 }
+                 if (!focused) input.value = String(toSlider(mix[control.key]));
                  readout.textContent = control.format(mix[control.key]);
              }
          }

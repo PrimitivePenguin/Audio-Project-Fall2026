@@ -244,3 +244,5 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .mix-title { min-width: 6rem; font-weight: 600; }
 .mix-row input[type="range"] { width: 6rem; }
 .mixer-panel { max-height: 16rem; overflow-y: auto; }
+.mix-row select { max-width: 6.5rem; }
+.mix-row { row-gap: 0.25rem; }

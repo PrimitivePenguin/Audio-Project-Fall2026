@@ -14,20 +14,23 @@ const DEFAULT_TRACK_GAIN = 0.8;
 const DEFAULT_MIDI_GAIN = 1;      // keeps MIDI tracks as loud as they are today
 const DEFAULT_PAN = 0;
 const MAX_TRACK_GAIN = 1.5;
-const DELAY_BEATS = 0.75;      // dotted eighth, synced to BPM
-const DELAY_FEEDBACK = 0.4;
-const DELAY_DAMP_HZ = 4000;    // darkens each repeat
-const MAX_DELAY_SEC = 2;
+
+const MAX_DELAY_SEC = 4;       // 2 beats at the slowest tempo (40 BPM) = 3 s
+const DELAY_DAMP_HZ = 4000;
 const REVERB_SECONDS = 2;
 
-// Every per-channel mixer parameter. Volume's default depends on channel type.
+// Fully-open cutoff for each filter type.
+const FILTER_TYPES = { lowpass: 20000, highpass: 20 };
+
 const MIX_PARAMS = {
-    volume:     { min: 0,    max: MAX_TRACK_GAIN, def: null },
-    pan:        { min: -1,   max: 1,              def: 0 },
-    cutoff:     { min: 20,   max: 20000,          def: 20000 },  // Hz, fully open
-    resonance:  { min: 0,    max: 15,             def: 0 },      // dB (lowpass Q is in dB)
-    delaySend:  { min: 0,    max: 1,              def: 0 },
-    reverbSend: { min: 0,    max: 1,              def: 0 }
+    volume:        { min: 0,     max: MAX_TRACK_GAIN, def: null },
+    pan:           { min: -1,    max: 1,              def: 0 },
+    cutoff:        { min: 20,    max: 20000,          def: 20000 }, // default follows filter type
+    resonance:     { min: 0,     max: 15,             def: 0 },
+    delaySend:     { min: 0,     max: 1,              def: 0 },
+    delayBeats:    { min: 0.125, max: 2,              def: 0.75 }, // synced to BPM
+    delayFeedback: { min: 0,     max: 0.9,            def: 0.4 },
+    reverbSend:    { min: 0,     max: 1,              def: 0 }
 };
 const PARAM_SMOOTHING_SEC = 0.015; // time constant; avoids zipper noise while dragging
 const MASTER_GAIN = 0.7; // headroom so summed tracks don't clip as easily
@@ -37,7 +40,7 @@ class SequencerEngine {
 // and can be set before the AudioContext exists.
     #mix = new Map();       // trackId -> { volume, pan }
     #midiBuses = new Map(); // MIDI trackId -> { gain, pan }
-    #fx = null; // shared delay + reverb buses
+    #impulse = null; // reverb impulse shared by every channel's convolver
     constructor() {
         // Audio graph
         this.audioContext = null;
@@ -92,8 +95,7 @@ class SequencerEngine {
             this.masterGain = this.audioContext.createGain();
             this.masterGain.gain.value = MASTER_GAIN;
             this.masterGain.connect(this.audioContext.destination);
-            this.#buildFxBuses();
-            this.#updateDelayTime(true);
+
         }
     }
 
@@ -571,7 +573,7 @@ class SequencerEngine {
         }
         const tick = this.getPlaybackTick();
         this.bpm = Math.max(MIN_BPM, Math.min(MAX_BPM, newBpm));
-        this.#updateDelayTime();
+        this.#updateDelayTimes();
         this.sequence.tempos = [{ ticks: 0, bpm: this.bpm }];
         if (this.isPlaying) {
             this.playbackAnchorTick = tick;
@@ -644,7 +646,7 @@ class SequencerEngine {
         this.isPaused = false;
         this.pausedTick = null;
         this.bpm = sequence.tempos.find((tempo) => tempo.ticks === 0)?.bpm ?? 120;
-        this.#updateDelayTime();
+        this.#updateDelayTimes();
         this.#syncInstrumentTracks();
     }
 
@@ -940,19 +942,25 @@ class SequencerEngine {
         };
     }
 
-// --- Per-channel mix: volume, pan, filter, effect sends ---
+// --- Per-channel mix: volume, pan, filter, per-channel delay and reverb ---
     #defaultVolume(id) {
         return this.tracks.has(id) ? DEFAULT_TRACK_GAIN : DEFAULT_MIDI_GAIN;
     }
 
-    #mixFor(id, defaultVolume = this.#defaultVolume(id)) {
+    #defaultFor(id, key, mix) {
+        if (key === 'volume') return this.#defaultVolume(id);
+        if (key === 'cutoff') return FILTER_TYPES[mix?.filterType ?? 'lowpass'];
+        return MIX_PARAMS[key].def;
+    }
+
+    #mixFor(id) {
         let mix = this.#mix.get(id);
         if (!mix) {
-            mix = {};
+            mix = { filterType: 'lowpass' };
             this.#mix.set(id, mix);
         }
-        for (const [key, spec] of Object.entries(MIX_PARAMS)) {
-            mix[key] ??= key === 'volume' ? defaultVolume : spec.def;
+        for (const key of Object.keys(MIX_PARAMS)) {
+            mix[key] ??= this.#defaultFor(id, key, mix);
         }
         return mix;
     }
@@ -965,30 +973,48 @@ class SequencerEngine {
         return this.#isChannel(id);
     }
 
-    mixParamSpecs() {
-        return MIX_PARAMS;
-    }
-
     #strip(id) {
         return this.tracks.get(id)?.strip ?? this.#midiBuses.get(id) ?? null;
-    }
-
-    #paramNode(strip, key) {
-        switch (key) {
-            case 'volume': return strip.gain.gain;
-            case 'pan': return strip.pan.pan;
-            case 'cutoff': return strip.filter.frequency;
-            case 'resonance': return strip.filter.Q;
-            case 'delaySend': return strip.delaySend.gain;
-            case 'reverbSend': return strip.reverbSend.gain;
-            default: return null;
-        }
     }
 
     #smooth(param, value) {
         const now = this.audioContext.currentTime;
         param.cancelScheduledValues(now);
         param.setTargetAtTime(value, now, PARAM_SMOOTHING_SEC);
+    }
+
+    #delaySeconds(beats) {
+        return Math.min(MAX_DELAY_SEC, (beats * 60) / this.bpm);
+    }
+
+// The one place a stored mix value becomes an audio-node change.
+    #applyParam(strip, mix, key, value) {
+        switch (key) {
+            case 'volume': this.#smooth(strip.gain.gain, value); break;
+            case 'pan': this.#smooth(strip.pan.pan, value); break;
+            case 'cutoff': this.#smooth(strip.filter.frequency, value); break;
+            case 'resonance': this.#smooth(strip.filter.Q, value); break;
+            case 'delaySend':
+                if (strip.delay || value > 0) {
+                    this.#smooth(this.#ensureDelay(strip, mix).send.gain, value);
+                }
+                break;
+            case 'delayBeats':
+                if (strip.delay) {
+                    this.#smooth(strip.delay.delay.delayTime, this.#delaySeconds(value));
+                }
+                break;
+            case 'delayFeedback':
+                if (strip.delay) {
+                    this.#smooth(strip.delay.feedback.gain, value);
+                }
+                break;
+            case 'reverbSend':
+                if (strip.reverb || value > 0) {
+                    this.#smooth(this.#ensureReverb(strip, mix).send.gain, value);
+                }
+                break;
+        }
     }
 
 // Works for sample, drum and MIDI channels, before or during playback.
@@ -998,10 +1024,11 @@ class SequencerEngine {
             return false;
         }
         const clamped = Math.min(spec.max, Math.max(spec.min, value));
-        this.#mixFor(id)[key] = clamped;
+        const mix = this.#mixFor(id);
+        mix[key] = clamped;
         const strip = this.#strip(id);
         if (strip) {
-            this.#smooth(this.#paramNode(strip, key), clamped);
+            this.#applyParam(strip, mix, key, clamped);
         }
         return true;
     }
@@ -1009,33 +1036,61 @@ class SequencerEngine {
     setChannelVolume(id, value) { return this.setChannelParam(id, 'volume', value); }
     setChannelPan(id, value) { return this.setChannelParam(id, 'pan', value); }
 
+// Switching type moves a fully-open cutoff to the new type's open position,
+// so the filter doesn't suddenly start cutting the sound.
+    setChannelFilterType(id, type) {
+        if (!Object.hasOwn(FILTER_TYPES, type) || !this.#isChannel(id)) {
+            return false;
+        }
+        const mix = this.#mixFor(id);
+        const previous = mix.filterType;
+        if (previous === type) {
+            return true;
+        }
+        const wasOpen = mix.cutoff === FILTER_TYPES[previous];
+        mix.filterType = type;
+        const strip = this.#strip(id);
+        if (strip) {
+            strip.filter.type = type;
+        }
+        if (wasOpen) {
+            this.setChannelParam(id, 'cutoff', FILTER_TYPES[type]);
+        }
+        return true;
+    }
+
     resetChannelParam(id, key) {
-        const spec = MIX_PARAMS[key];
-        return spec ? this.setChannelParam(id, key, key === 'volume' ? this.#defaultVolume(id) : spec.def) : false;
+        if (!MIX_PARAMS[key]) {
+            return false;
+        }
+        return this.setChannelParam(id, key, this.#defaultFor(id, key, this.#mix.get(id)));
     }
 
     getChannelMix(id) {
         const mix = this.#mix.get(id);
-        const out = {};
-        for (const [key, spec] of Object.entries(MIX_PARAMS)) {
-            out[key] = mix?.[key] ?? (key === 'volume' ? this.#defaultVolume(id) : spec.def);
+        const out = { filterType: mix?.filterType ?? 'lowpass' };
+        for (const key of Object.keys(MIX_PARAMS)) {
+            out[key] = mix?.[key] ?? this.#defaultFor(id, key, mix);
         }
         return out;
     }
 
-// Applies any recognised keys; ignores the rest, so old saves (volume/pan only) still load.
+// Applies any recognised keys and ignores the rest, so old saves still load.
+// The filter type goes first so a saved cutoff isn't remapped afterwards.
     applyChannelMix(id, mix) {
+        this.setChannelFilterType(id, mix?.filterType);
         for (const key of Object.keys(MIX_PARAMS)) {
             this.setChannelParam(id, key, mix?.[key]);
         }
     }
 
-// Picks just the valid mix numbers out of a saved object.
+// Picks just the valid mix values out of a saved object.
     extractMix(source) {
         const out = {};
         for (const key of Object.keys(MIX_PARAMS)) {
             if (Number.isFinite(source?.[key])) out[key] = source[key];
         }
+        if (Object.hasOwn(FILTER_TYPES, source?.filterType)) out.filterType = source.filterType;
         return out;
     }
 
@@ -1061,32 +1116,87 @@ class SequencerEngine {
         }
     }
 
+// gain -> filter -> pan -> master, plus optional per-channel delay and reverb taps off pan.
     #buildStrip(mix) {
         const ctx = this.audioContext;
         const gain = ctx.createGain();
         const filter = ctx.createBiquadFilter();
         const pan = ctx.createStereoPanner();
-        const delaySend = ctx.createGain();
-        const reverbSend = ctx.createGain();
-        filter.type = 'lowpass';
+        filter.type = mix.filterType;
         gain.gain.value = mix.volume;
         filter.frequency.value = mix.cutoff;
         filter.Q.value = mix.resonance;
         pan.pan.value = mix.pan;
-        delaySend.gain.value = mix.delaySend;
-        reverbSend.gain.value = mix.reverbSend;
         gain.connect(filter);
         filter.connect(pan);
         pan.connect(this.masterGain);
-        pan.connect(delaySend);       // sends are post-fader, post-pan
-        delaySend.connect(this.#fx.delayIn);
-        pan.connect(reverbSend);
-        reverbSend.connect(this.#fx.reverbIn);
-        return { gain, filter, pan, delaySend, reverbSend };
+        const strip = { gain, filter, pan, delay: null, reverb: null };
+        if (mix.delaySend > 0) this.#ensureDelay(strip, mix);
+        if (mix.reverbSend > 0) this.#ensureReverb(strip, mix);
+        return strip;
+    }
+
+// Effects are created the first time their send goes above zero.
+    #ensureDelay(strip, mix) {
+        if (!strip.delay) {
+            const ctx = this.audioContext;
+            const send = ctx.createGain();
+            const delay = ctx.createDelay(MAX_DELAY_SEC);
+            const damp = ctx.createBiquadFilter();
+            const feedback = ctx.createGain();
+            damp.type = 'lowpass';
+            damp.frequency.value = DELAY_DAMP_HZ;
+            send.gain.value = mix.delaySend;
+            delay.delayTime.value = this.#delaySeconds(mix.delayBeats);
+            feedback.gain.value = mix.delayFeedback;
+            strip.pan.connect(send);
+            send.connect(delay);
+            delay.connect(damp);
+            damp.connect(feedback);
+            feedback.connect(delay);   // feedback loop (legal: it contains a DelayNode)
+            damp.connect(this.masterGain);
+            strip.delay = { send, delay, damp, feedback };
+        }
+        return strip.delay;
+    }
+
+    #ensureReverb(strip, mix) {
+        if (!strip.reverb) {
+            const ctx = this.audioContext;
+            const send = ctx.createGain();
+            const convolver = ctx.createConvolver();
+            this.#impulse ??= this.#makeImpulse(REVERB_SECONDS);
+            convolver.buffer = this.#impulse;
+            send.gain.value = mix.reverbSend;
+            strip.pan.connect(send);
+            send.connect(convolver);
+            convolver.connect(this.masterGain);
+            strip.reverb = { send, convolver };
+        }
+        return strip.reverb;
+    }
+
+// Decaying stereo noise: a cheap, file-free reverb impulse.
+    #makeImpulse(seconds) {
+        const ctx = this.audioContext;
+        const length = Math.floor(ctx.sampleRate * seconds);
+        const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+        for (let channel = 0; channel < 2; channel++) {
+            const data = impulse.getChannelData(channel);
+            for (let i = 0; i < length; i++) {
+                data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** 3;
+            }
+        }
+        return impulse;
     }
 
     #disposeStrip(strip) {
-        for (const node of Object.values(strip ?? {})) {
+        if (!strip) {
+            return;
+        }
+        const nodes = [strip.gain, strip.filter, strip.pan,
+            ...Object.values(strip.delay ?? {}), ...Object.values(strip.reverb ?? {})];
+        for (const node of nodes) {
             try { node.disconnect(); } catch (_) {}
         }
     }
@@ -1111,56 +1221,16 @@ class SequencerEngine {
         }
     }
 
-// --- Shared effect buses ---
-    #buildFxBuses() {
-        const ctx = this.audioContext;
-
-        const delayIn = ctx.createGain();
-        const delay = ctx.createDelay(MAX_DELAY_SEC);
-        const damp = ctx.createBiquadFilter();
-        const feedback = ctx.createGain();
-        damp.type = 'lowpass';
-        damp.frequency.value = DELAY_DAMP_HZ;
-        feedback.gain.value = DELAY_FEEDBACK;
-        delayIn.connect(delay);
-        delay.connect(damp);
-        damp.connect(feedback);
-        feedback.connect(delay);      // feedback loop (legal: it contains a DelayNode)
-        damp.connect(this.masterGain);
-
-        const reverbIn = ctx.createGain();
-        const convolver = ctx.createConvolver();
-        convolver.buffer = this.#makeImpulse(REVERB_SECONDS);
-        reverbIn.connect(convolver);
-        convolver.connect(this.masterGain);
-
-        this.#fx = { delayIn, delay, reverbIn };
-    }
-
-// Decaying stereo noise: a cheap, file-free reverb impulse.
-    #makeImpulse(seconds) {
-        const ctx = this.audioContext;
-        const length = Math.floor(ctx.sampleRate * seconds);
-        const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
-        for (let channel = 0; channel < 2; channel++) {
-            const data = impulse.getChannelData(channel);
-            for (let i = 0; i < length; i++) {
-                data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** 3;
-            }
-        }
-        return impulse;
-    }
-
-    #updateDelayTime(immediate = false) {
-        if (!this.#fx) {
+// Delay times are in beats, so a tempo change retimes every active delay.
+    #updateDelayTimes() {
+        if (!this.audioContext) {
             return;
         }
-        const seconds = Math.min(MAX_DELAY_SEC, (60 / this.bpm) * DELAY_BEATS);
-        const param = this.#fx.delay.delayTime;
-        if (immediate) {
-            param.value = seconds;
-        } else {
-            this.#smooth(param, seconds);
+        const strips = [...[...this.tracks].map(([id, track]) => [id, track.strip]), ...this.#midiBuses];
+        for (const [id, strip] of strips) {
+            if (strip?.delay) {
+                this.#smooth(strip.delay.delay.delayTime, this.#delaySeconds(this.getChannelMix(id).delayBeats));
+            }
         }
     }
     // --- UI Event Hook ---

@@ -90,15 +90,15 @@ for (const cancel of ['escape', 'pointer']) {
     });
 }
 
-test('same-position drops do not create history and accessible buttons reorder with one Undo', () => {
+test('same-position drops do not create history after a grip reorder', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.moveTrackUp.onclick();
+    drag(h, 1, 0);
     drag(h, 0, 0);
     undo(h);
     assert.deepEqual(ids(h), ['piano', 'bass', 'strings', 'empty']);
     redo(h);
-    h.elements.moveTrackDown.onclick();
+    drag(h, 0, 2);
     assert.deepEqual(ids(h), ['piano', 'bass', 'strings', 'empty']);
 });
 
@@ -287,7 +287,8 @@ test('note edits and structural transactions share ordered Undo/Redo without inv
     key(h, 'a', { ctrlKey: true });
     h.elements.noteLength.value = '4';
     h.elements.noteLength.onchange();
-    h.elements.moveTrackUp.onclick();
+    h.elements.tracksView.onclick();
+    drag(h, 1, 0);
     h.elements.deleteMidiTrack.onclick();
     h.elements.confirmDeleteTrack.onclick();
     undo(h);
@@ -305,11 +306,11 @@ test('note edits and structural transactions share ordered Undo/Redo without inv
 test('out-of-history added tracks survive order Undo and new order clears Redo', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.moveTrackUp.onclick();
+    drag(h, 1, 0);
     const added = h.engine.addMidiTrack('Later');
     undo(h);
     assert.equal(ids(h).at(-1), added.id);
-    h.elements.moveTrackDown.onclick();
+    drag(h, 1, 3);
     const current = ids(h);
     redo(h);
     assert.deepEqual(ids(h), current);

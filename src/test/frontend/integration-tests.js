@@ -98,6 +98,123 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         h.documentListeners['jukebox:ready'](h.readyEvents[0]);
         assert.equal(h.nodes.filter((node) => node.className === 'synth-panel instrument-panel').length, 1);
     });
+    await test('16-step drum exports use the original hit buffers and enter the rack as independent WAVs', async () => {
+        const h = setup();
+        await h.ready;
+        const drums = h.scope.window.jukeboxDrums;
+        h.engine.setPatternLength(16384);
+        drums.setStep('drum-kick', 0, true);
+        drums.setStep('drum-snare', 4, true);
+        drums.setStep('drum-hat', 15, true);
+        drums.setVolume('drum-kick', 0.25);
+        drums.setVolume('drum-snare', 0.5);
+        drums.setVolume('drum-hat', 0.4);
+        assert.equal(drums.setStep('drum-hat', 16, true), false);
+        assert.equal(drums.stepCount(), 16);
+        await h.activateControl('drumToggle');
+        assert.equal(h.nodes.filter((node) => /^(Kick|Snare|Hi-hat) step /.test(node.getAttribute('aria-label') ?? '')).length, 48);
+        assert.ok(!byLabel(h, 'Next steps'));
+        const rate = h.engine.audioContext.sampleRate;
+        const initial = drums.renderPattern(120);
+        const mix = new DataView(initial);
+        assert.equal(mix.getUint32(64, true) / 2 / rate, 2);
+        assert.ok(Math.abs(new DataView(drums.renderPattern(90)).getUint32(64, true) / 2 / rate - 8 / 3) <= 1 / rate);
+        const sample = (frame) => mix.getInt16(68 + frame * 2, true);
+        for (const [id, step, volume] of [['drum-kick', 0, .25], ['drum-snare', 4, .5], ['drum-hat', 15, .4]]) {
+            const waveform = h.engine.tracks.get(id).buffer.getChannelData(0);
+            assert.equal(sample(step * rate / 8 + 4), Math.round(waveform[4] * volume * 32767));
+        }
+        assert.equal(sample(rate / 2 - 1), 0);
+        assert.equal(sample(2 * rate - 1), 0);
+        const saved = new Map();
+        h.SampleAssetStore.prototype.write = async (id, bytes) => saved.set(id, bytes);
+        h.engine.audioContext.decodeAudioData = async (bytes) => {
+            const view = new DataView(bytes);
+            const buffer = h.engine.audioContext.createBuffer(1, view.getUint32(64, true) / 2, rate);
+            const waveform = buffer.getChannelData(0);
+            for (let frame = 0; frame < waveform.length; frame++) waveform[frame] = view.getInt16(68 + frame * 2, true) / 32768;
+            return buffer;
+        };
+        const copy = h.nodes.find((node) => node.textContent === 'Copy to Sample Rack');
+        await copy.listeners.click();
+        await copy.listeners.click();
+        const assets = [...h.engine.arrangement.assets.values()];
+        assert.deepEqual(assets.map(({ name }) => name), ['Drum Pattern', 'Drum Pattern 2']);
+        assert.notEqual(assets[0].id, assets[1].id);
+        assert.ok(assets.every((asset) => asset.local && saved.has(asset.id) && asset.buffer.duration === 2));
+        assert.equal(h.elements.sampleRack.open, true);
+        assert.equal(h.engine.totalSteps, 16384);
+        const first = assets[0].buffer.getChannelData(0)[4];
+        drums.setStep('drum-kick', 0, false);
+        assert.equal(assets[0].buffer.getChannelData(0)[4], first);
+        await h.engine.play(0);
+        assert.equal(h.engine.audioContext.sources.filter((source) => source.buffer).length, 0);
+        h.engine.stop();
+    });
+
+    await test('Space cannot reactivate controls after rack, clip, drum, lane, or zoom edits', async () => {
+        const h = setup();
+        await h.ready;
+        const { engine, elements } = h;
+        const asset = { id: 'c'.repeat(64), name: 'Test sample', duration: 0.25, buffer: {} };
+        engine.initContext();
+        engine.audioContext.decodeAudioData = async () => ({ duration: 0.25, numberOfChannels: 1, length: 12000 });
+        await elements.rackFiles.onchange({ target: { files: [{ name: asset.name, size: 1, arrayBuffer: async () => new ArrayBuffer(1) }] } });
+        const canvas = elements.pianoCanvas;
+        const spaceAfter = async (target) => {
+            target.focus?.();
+            const before = engine.runId;
+            let swallowed = 0;
+            for (const type of ['keydown', 'keyup']) {
+                h.documentListeners[type]({ type, key: ' ', target,
+                    preventDefault() { swallowed++; }, stopImmediatePropagation() {} });
+            }
+            if (engine.startPromise) await engine.startPromise;
+            assert.equal(swallowed, 2);
+            assert.equal(engine.runId, before + 1);
+            assert.equal(engine.isPlaying, true);
+            elements.stopButton.onclick();
+        };
+        await h.activateControl('drumToggle', 0);
+        await spaceAfter(elements.drumToggle);
+        const kick = byLabel(h, 'Kick step 1');
+        kick.listeners.click();
+        await spaceAfter(kick);
+        assert.equal(h.scope.window.jukeboxDrums.getSteps('drum-kick')[0], true);
+        await h.activateControl('tracksView', 0);
+        await spaceAfter(elements.tracksView);
+        elements.addAudioTrack.onclick();
+        const card = elements.rackAssets.children[0].children[0];
+        await spaceAfter(card);
+        const dataTransfer = { setData() {} };
+        card.listeners.dragstart({ dataTransfer });
+        canvas.listeners.drop({ ...h.pointer(160, 148), dataTransfer });
+        assert.equal(engine.arrangement.clips.size, 1);
+        await spaceAfter(elements.pianoViewport);
+        h.clickAt(155, 148);
+        await spaceAfter(elements.pianoViewport);
+        const mute = elements.laneMuteControls.children[0];
+        mute.onclick();
+        const muted = mute.getAttribute('aria-pressed');
+        await spaceAfter(mute);
+        assert.equal(mute.getAttribute('aria-pressed'), muted);
+        h.clickAt(12, 60);
+        await spaceAfter(elements.pianoViewport);
+        elements.noteSnap.value = 'free';
+        elements.noteSnap.onchange({ target: elements.noteSnap });
+        await spaceAfter(elements.noteSnap);
+        elements.zoom.type = 'range';
+        elements.zoom.tagName = 'INPUT';
+        elements.zoom.value = '125';
+        elements.zoom.oninput();
+        h.animate();
+        await spaceAfter(elements.zoom);
+        await h.activateControl('resetZoom', 0);
+        await spaceAfter(elements.resetZoom);
+        await h.activateControl('pianoRollView', 0);
+        await spaceAfter(elements.pianoRollView);
+    });
+
     await test('database composition loads before ready and instrument restoration retains exact notes, routing, loops and state', async () => {
         const { h, requests } = await databaseHarness();
         assert.equal(requests.length, 1);
@@ -108,7 +225,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         assert.equal(h.scope.window.jukeboxSynth.getSettings('lead-stable').waveform, 'triangle');
         assert.equal(h.scope.window.jukeboxSynth.getSettings('lead-stable').gain, 0.12);
         assert.equal(h.scope.window.jukeboxDrums.getVolume('drum-kick'), 0.35);
-        assert.equal(h.scope.window.jukeboxDrums.getSteps('drum-kick')[19], true);
+        assert.equal(h.scope.window.jukeboxDrums.snapshot().tracks.find(({ id }) => id === 'drum-kick').legacySteps[3], true);
         assert.equal(h.engine.loopStart, 4);
         assert.equal(h.engine.loopEnd, 24);
         assert.equal(h.engine.tracks.size, 3);
@@ -120,7 +237,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         const { h, requests } = await databaseHarness();
         h.scope.window.jukeboxSynth.setParam('lead-stable', 'gain', 0.18);
         h.scope.window.jukeboxDrums.setVolume('drum-hat', 0.65);
-        h.scope.window.jukeboxDrums.setStep('drum-snare', 23, true);
+        h.scope.window.jukeboxDrums.setStep('drum-snare', 7, true);
         await h.elements.saveProject.onclick();
         const payload = JSON.parse(requests.at(-1).body);
         const data = JSON.parse(payload.projectData);
@@ -128,11 +245,38 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         assert.equal(data.instruments.version, 1);
         assert.equal(data.instruments.synth.tracks[0].settings.gain, 0.18);
         assert.equal(data.instruments.drums.tracks.find((track) => track.id === 'drum-hat').volume, 0.65);
-        assert.equal(data.instruments.drums.tracks.find((track) => track.id === 'drum-snare').steps[23], true);
+        assert.equal(data.instruments.drums.tracks.find((track) => track.id === 'drum-snare').steps[7], true);
         assert.equal(h.scope.window.jukeboxSynth.getSettings('lead-stable').gain, 0.18);
         await h.elements.saveProject.onclick();
         assert.equal(JSON.parse(requests.at(-1).body).version, 8);
     });
+    await test('database project save and load preserve edited meters and imported meter maps', async () => {
+        const meterMap = [{ ticks: 0, timeSignature: [3, 4] }, { ticks: 151, timeSignature: [7, 8] }];
+        for (const timeSignatures of [undefined, meterMap]) {
+            const { h, requests } = await databaseHarness({ ...savedData(), timeSignatures });
+            const select = h.elements.timeSignature;
+            assert.equal(select.disabled, Boolean(timeSignatures));
+            if (!timeSignatures) {
+                select.value = '6/8';
+                select.onchange({ target: select });
+            }
+            await h.elements.saveProject.onclick();
+            const data = JSON.parse(JSON.parse(requests.at(-1).body).projectData);
+            assert.deepEqual(data.timeSignatures, timeSignatures ?? [{ ticks: 0, timeSignature: [6, 8] }]);
+            assert.equal(data.notes[0].ticks, 17);
+            assert.equal(data.notes[0].durationTicks, 31);
+            assert.deepEqual([data.loopStart, data.loopEnd], [4, 24]);
+            const { h: restored } = await databaseHarness(data);
+            assert.equal(restored.elements.timeSignature.value, timeSignatures ? 'imported' : '6/8');
+            assert.equal(restored.elements.timeSignature.disabled, Boolean(timeSignatures));
+        }
+        const { h: viewer } = await databaseHarness(savedData(), 'VIEWER');
+        const select = viewer.elements.timeSignature;
+        assert.equal(select.disabled, true);
+        select.onchange({ target: { value: '5/4' } });
+        assert.equal(viewer.engine.sequence.timeSignatures[0].timeSignature.join('/'), '4/4');
+    });
+
     await test('stale saves surface conflicts without retrying or advancing the saved version', async () => {
         const { h, requests } = await databaseHarness(savedData(), 'OWNER', 409);
         await h.elements.saveProject.onclick();
@@ -156,7 +300,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         h.scope.window.jukeboxDrums.restoreState({ stepCount: 999999, tracks: [null,
             { id: 'uploaded', steps: [true] }, { id: 'drum-hat', volume: -5, steps: [true, 'true', false] }] });
         assert.equal(h.scope.window.jukeboxDrums.getVolume('drum-hat'), 0);
-        assert.equal(h.scope.window.jukeboxDrums.getSteps('drum-hat').length, 32);
+        assert.equal(h.scope.window.jukeboxDrums.getSteps('drum-hat').length, 16);
         assert.equal(h.scope.window.jukeboxDrums.getSteps('drum-hat')[1], false);
         assert.deepEqual(snapshot(h), before);
     });
@@ -225,11 +369,11 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         key(h, 'ArrowDown', wave); // Deliberately switching to native keyboard interaction.
         h.documentListeners.change({ target: wave }); h.flushDeferredActions();
         assert.equal(h.activeElement, wave);
-        assert.equal(key(h, ' ', wave), false);
+        assert.equal(key(h, ' ', wave), true);
         assert.equal(key(h, 'Escape', wave), false);
         assert.equal(h.nodes.find((node) => node.className === 'synth-panel instrument-panel').hidden, false);
     });
-    await test('all synth ranges and drum step/preview/page buttons integrate with focus without changing MIDI data', async () => {
+    await test('all synth ranges and drum step and preview buttons integrate with focus without changing MIDI data', async () => {
         const h = setup(); await h.ready;
         h.engine.setPatternLength(32);
         const before = snapshot(h);
@@ -242,10 +386,10 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
             key(h, 'Tab', slider);
             slider.focus();
             assert.equal(key(h, 'ArrowRight', slider), false);
-            assert.equal(key(h, ' ', slider), false);
+            assert.equal(key(h, ' ', slider, { repeat: true }), true);
         }
         await h.activateControl('drumToggle');
-        for (const label of ['Kick step 1', 'Next steps', 'Previous steps']) {
+        for (const label of ['Kick step 1']) {
             const button = byLabel(h, label);
             const event = { target: button, detail: 1 };
             button.focus(); h.documentListeners.click(event); button.listeners.click(event); h.flushDeferredActions();
@@ -262,7 +406,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         const data = savedData(); data.sample = { name: 'missing.wav', steps: [true] };
         const { h } = await databaseHarness(data);
         assert.equal(h.engine.tracks.has('uploaded'), false);
-        assert.match(h.elements.sampleStatus.textContent, /Re-upload/);
+        assert.match(h.elements.legacySampleWarning.textContent, /retained/);
         assert.ok(h.engine.tracks.get('drum-kick').buffer);
         const exported = h.MidiIO.parse(h.MidiIO.encode(h.engine.sequence).bytes).sequence;
         assert.equal(exported.notes[0].ticks, 17);
@@ -313,34 +457,34 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
     await test('instrument snapshot round-trip keeps settings across reload and New Sequence clears project-local state', async () => {
         const { h, requests } = await databaseHarness();
         h.scope.window.jukeboxSynth.setParam('lead-stable', 'waveform', 'sine');
-        h.scope.window.jukeboxDrums.setStep('drum-hat', 30, true);
+        h.scope.window.jukeboxDrums.setStep('drum-hat', 14, true);
         await h.elements.saveProject.onclick();
         const data = JSON.parse(JSON.parse(requests.at(-1).body).projectData);
         const { h: restored } = await databaseHarness(data);
         assert.equal(restored.scope.window.jukeboxSynth.getSettings('lead-stable').waveform, 'sine');
-        assert.equal(restored.scope.window.jukeboxDrums.getSteps('drum-hat')[30], true);
+        assert.equal(restored.scope.window.jukeboxDrums.getSteps('drum-hat')[14], true);
         assert.equal(restored.engine.tracks.size, 3);
         restored.elements.newSequence.onclick();
         assert.equal(restored.engine.tracks.size, 0);
         assert.equal(restored.scope.window.jukeboxSynth.getSettings('piano').waveform, 'sawtooth');
     });
-    await test('sample metadata survives saving without audio and restores trigger positions only after re-upload', async () => {
+    await test('legacy sample metadata survives saving and remains silent', async () => {
         const data = savedData(); data.sample = { name: 'original.wav', steps: [true, false, true] };
         const { h, requests } = await databaseHarness(data);
         await h.elements.saveProject.onclick();
         const saved = JSON.parse(JSON.parse(requests.at(-1).body).projectData);
         assert.equal(saved.sample.audioPersisted, false);
         assert.equal(saved.sample.steps[2], true);
-        await h.elements.audioFile.onchange({ target: { files: [{ name: 'original.wav',
-            arrayBuffer: async () => new ArrayBuffer(8) }] } });
-        assert.ok(h.engine.tracks.get('uploaded').buffer);
-        assert.equal(h.engine.tracks.get('uploaded').steps[2], true);
+        assert.deepEqual(saved.sample.steps, [true, false, true]);
+        assert.equal(h.engine.tracks.has('uploaded'), false);
+        assert.equal(h.elements.legacySampleWarning.hidden, false);
     });
-    await test('keyboard instrument buttons keep native Space/Enter while pointer track selection and Reset release focus', async () => {
+    await test('keyboard instrument buttons send Space to transport and retain Enter', async () => {
         const h = setup(); await h.ready;
         await h.activateControl('synthToggle', 0);
         assert.equal(h.activeElement, h.elements.synthToggle);
-        assert.equal(key(h, ' '), false);
+        assert.equal(await space(h), true);
+        h.engine.stop();
         assert.equal(key(h, 'Enter'), false);
         const trackSelect = byLabel(h, 'Synth track');
         pointerStart(h, trackSelect);

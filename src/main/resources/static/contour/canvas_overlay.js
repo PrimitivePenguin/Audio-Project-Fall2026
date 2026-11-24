@@ -29,7 +29,10 @@ export function createCanvasContour(canvas, { baseAlpha = 1 } = {}) {
         ctx.translate(region.x - view.offsetX, region.y - view.offsetY);
         const localRects = rects.map((rect) => ({ ...rect, x: rect.x - region.x, y: rect.y - region.y }));
         paintContour(ctx, region.paths, args.levels, args.offcolorlist, args.colorlist,
-            { rects: localRects, baseAlpha, lineWidth: args.settings.lineWidth });
+            { rects: localRects.filter((rect) => !rect.opaque), baseAlpha, lineWidth: args.settings.lineWidth });
+        for (const rect of localRects) {
+            if (rect.opaque) ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
+        }
         ctx.restore();
     });
     return {

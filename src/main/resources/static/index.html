@@ -26,6 +26,7 @@
         </div>
         <label class="file-control">Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" aria-label="Import MIDI"></label>
         <button data-daw-controls id="exportMidi" type="button">Export MIDI</button>
+        <button class="export-audio-primary" id="exportAudio" type="button" aria-haspopup="dialog">Export Audio</button>
         <button data-daw-controls id="saveProject" type="button" disabled>Save Project</button>
         <div class="instrument-menus" aria-label="Instruments">
             <div id="synthMenu" data-daw-controls data-daw-pointer-inputs>
@@ -166,6 +167,24 @@
         <p id="compositionInfo">0 notes · 1 musical track</p>
         <span class="cursor-legend"><i></i> Edit cursor <i class="playback-key"></i> Playback</span>
     </footer>
+    <dialog id="audioExportDialog" aria-labelledby="audioExportTitle">
+        <form id="audioExportForm">
+            <h2 id="audioExportTitle">Export Audio</h2>
+            <label for="audioExportName">Filename</label>
+            <input id="audioExportName" type="text" required maxlength="128" autofocus>
+            <label for="audioExportFormat">Format</label>
+            <select id="audioExportFormat">
+                <option value="wav">WAV · 16-bit PCM</option>
+                <option value="mp3">MP3 · 192 kbps</option>
+            </select>
+            <p>Entire Song · 44.1 kHz stereo</p>
+            <p id="audioExportStatus" role="status"></p>
+            <div class="control-group">
+                <button id="closeAudioExport" type="button">Close</button>
+                <button class="export-audio-primary" id="renderAudio" type="submit">Export Complete Song</button>
+            </div>
+        </form>
+    </dialog>
     <dialog id="deleteTrackDialog" aria-labelledby="deleteTrackTitle" aria-describedby="deleteTrackMessage">
         <h2 id="deleteTrackTitle">Delete MIDI Track</h2>
         <p id="deleteTrackMessage"></p>
@@ -191,6 +210,7 @@
 <script src="/js/AudioArrangement.js"></script>
 <script src="/js/SampleAssetStore.js"></script>
 <script src="/js/SequencerEngine.js"></script>
+<script src="/js/AudioExporter.js"></script>
 <script src="/js/midi-io.js"></script>
 <script src="/js/PianoRollEditor.js"></script>
 <script src="/js/TrackOverview.js"></script>

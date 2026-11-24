@@ -247,3 +247,18 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .lane-mute[aria-pressed="true"] { background: var(--steel-300); }
 
 .rack-assets .sample-asset[draggable="true"] { cursor: grab; }
+
+button.export-audio-primary {
+    background: var(--accent-steel);
+    border-color: var(--steel-400);
+    color: white;
+    font-weight: 700;
+    padding-inline: 14px;
+}
+
+button.export-audio-primary:hover { background: var(--steel-700); }
+#audioExportDialog { width: min(420px, calc(100vw - 32px)); }
+#audioExportForm { display: grid; gap: 8px; }
+#audioExportForm h2, #audioExportForm p { margin: 0 0 6px; }
+#audioExportForm input, #audioExportForm select { width: 100%; }
+#audioExportStatus { min-height: 1.5em; }

@@ -60,7 +60,7 @@ body { margin: 0; overflow: hidden; }
     height: 100vh;
     height: 100dvh;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
     min-width: 0;
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
@@ -77,6 +77,8 @@ input, button, select, summary, .button-link { font: inherit; }
 input { border: 1px solid var(--steel-400); border-radius: 4px; padding: 5px; background: var(--field); color: var(--steel-950); }
 input[type=number] { width: 63px; }
 #noteLength { width: 68px; }
+#zoom { width: 88px; padding: 0; accent-color: var(--accent-steel); }
+#zoomPercentage { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 button, summary, .button-link {
     border: 1px solid var(--steel-400);
     border-radius: 4px;
@@ -96,8 +98,11 @@ button:disabled { opacity: .45; cursor: default; }
 #selectionCount { color: var(--warm-dark); font-weight: 600; white-space: nowrap; }
 #cursorPosition { color: var(--accent-steel); font-size: 12px; margin-left: auto; }
 .piano-viewport { position: relative; isolation: isolate; /* keeps the contour overlay's z-index inside, so popups stay on top */ min-width: 0; min-height: 0; overflow: auto; background: var(--steel-50); overscroll-behavior: contain; }
+/* The spacer supplies the scroll extents while the viewport surfaces stay pinned. */
+.piano-content { display: grid; width: max-content; min-width: 100%; min-height: 100%; }
+.piano-content > * { grid-area: 1 / 1; place-self: start; }
 #pianoSpacer { pointer-events: none; }
-#pianoCanvas { position: absolute; display: block; touch-action: none; user-select: none; }
+#pianoCanvas { position: sticky; top: 0; left: 0; display: block; touch-action: none; user-select: none; }
 .statusbar { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; padding: 6px 12px; background: var(--steel-100); border-top: 1px solid var(--border); font-size: 11px; }
 .statusbar p { margin: 0; }
 #status { flex: 1 1 280px; }
@@ -115,14 +120,7 @@ button:disabled { opacity: .45; cursor: default; }
 .popup-content h2 { margin: 14px 0 8px; font-size: 13px; }
 .popup-content h2:first-child { margin-top: 0; }
 .wrap-controls { flex-wrap: wrap; }
-.hint, #sampleStatus { color: var(--steel-600); font-size: 12px; line-height: 1.5; }
-.sample-panel { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 6px; }
-.sample-panel .transport { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.sample-panel input[type=file] { width: 210px; }
-.sample-triggers { max-height: 180px; overflow: auto; padding-left: 24px; }
-.sample-triggers li { padding: 4px; }
-.sample-triggers button { margin-left: 16px; padding: 3px 8px; }
-.sample-triggers .current { background: var(--warm-light); }
+.hint { color: var(--steel-600); font-size: 12px; line-height: 1.5; }
 dialog { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; padding: 24px; border: 1px solid var(--steel-400); border-radius: 10px; color: var(--steel-950); }
 dialog::backdrop { background: var(--backdrop); }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -158,11 +156,10 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 
 #pianoViewport { grid-area: 3 / 1; }
 
-/* lives inside #pianoViewport at the top-left of the scrolled content;
-   width/height follow the visible viewport in index.html */
+/* Viewport-sized sticky surfaces share the piano canvas coordinate system. */
 #canvasMeshContainer,
-#contourCanvas {   /* canvas renderer: viewport-sized, positioned from the scroll position in index.html */
-    position: absolute;
+#contourCanvas {
+    position: sticky;
     top: 0;
     left: 0;
     z-index: 20;
@@ -223,6 +220,26 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .drum-step[aria-pressed=true] { background: #e8a33d; border-color: #e8a33d; }
 .drum-step:disabled { opacity: .4; }
 .drum-volume { width: 70px; margin-left: 10px; flex-shrink: 0; }
-.drum-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
 
 .primary-toolbar { z-index: 10; }
+
+.statusbar { grid-area: 5 / 1; }
+.sample-dock { grid-area: 4 / 1; min-width: 0; border-top: 1px solid var(--steel-400); background: var(--steel-100); }
+.sample-dock summary { border: 0; border-radius: 0; font-weight: 600; }
+.sample-dock-body { padding: 0 12px 8px; max-height: min(32vh, 260px); overflow: auto; }
+.rack-assets { display: flex; gap: 8px; overflow-x: auto; list-style: none; padding: 3px 0 8px; margin: 0; }
+.rack-assets li { flex: 0 0 220px; display: flex; flex-wrap: wrap; gap: 5px; align-content: start;
+    padding: 7px; border: 1px solid var(--steel-400); border-radius: 5px; background: var(--steel-50); }
+.rack-assets span { flex-basis: 100%; overflow-wrap: anywhere; }
+.rack-assets span[draggable="true"] { cursor: grab; font-weight: 600; }
+.rack-assets button { padding: 3px 5px; }
+#sampleRack .control-group { margin-top: 5px; }
+#rackStatus, #audioClipInfo { margin: 5px 0; }
+#sampleRack select, #audioTrackName { max-width: 210px; }
+#clipTools[hidden] { display: none; }
+
+#laneMuteControls { position: sticky; top: 0; left: 0; width: 0; height: 0; z-index: 22; pointer-events: none; }
+.lane-mute { position: absolute; left: 24px; width: 24px; height: 24px; padding: 0; pointer-events: auto; font-size: 13px; }
+.lane-mute[aria-pressed="true"] { background: var(--steel-300); }
+
+.rack-assets .sample-asset { border-left-width: 5px; }

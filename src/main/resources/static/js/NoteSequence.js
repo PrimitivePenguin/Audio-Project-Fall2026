@@ -2,6 +2,9 @@
 class NoteSequence {
     #noteIds = new Set();
     #indexedNotes = null;
+    #meterSource = null;
+    #meterCount = 0;
+    #meterSegments = [];
 
     constructor(stepCount = 16, ppq = 480) {
         if (!Number.isInteger(stepCount) || stepCount < 1 || stepCount > 65536) {
@@ -332,11 +335,11 @@ class NoteSequence {
         return remaining;
     }
 
-    withMidiImport(imported, importId) {
+    withMidiImport(imported, importId, preservePpq = false) {
         // Replacing an import removes only its provenance group, never manual notes.
         const manual = this.withoutMidiImport();
         const gcd = (a, b) => (b ? gcd(b, a % b) : a);
-        const ppq = manual.notes.length
+        const ppq = manual.notes.length || preservePpq
             ? (manual.ppq / gcd(manual.ppq, imported.ppq)) * imported.ppq
             : imported.ppq;
         if (ppq > 32767) {
@@ -456,31 +459,90 @@ class NoteSequence {
         }
         return lastTempoTick + ((seconds - elapsedSeconds) * currentBpm * this.ppq) / 60;
     }
-    // Meter affects labels, not the duration of a quarter note. A meter change starts a new measure.
-    positionAtTick(tick) {
-        let meterStartTick = 0;
-        let measure = 1;
-        let meter = [4, 4];
-        for (const event of this.timeSignatures) {
-            if (event.ticks > tick) {
-                break;
+    #meterIndex(tick) {
+        if (this.#meterSource !== this.timeSignatures || this.#meterCount !== this.timeSignatures.length) {
+            const segments = [{ ticks: 0, meter: [4, 4], measure: 1, beatTicks: this.ppq, measureTicks: this.ppq * 4 }];
+            for (const event of [...this.timeSignatures].sort((a, b) => a.ticks - b.ticks)) {
+                const previous = segments.at(-1);
+                const meter = event.timeSignature;
+                const beatTicks = this.ppq * 4 / meter[1];
+                const measure = previous.measure + Math.ceil((event.ticks - previous.ticks) / previous.measureTicks);
+                const segment = { ticks: event.ticks, meter, measure, beatTicks, measureTicks: beatTicks * meter[0] };
+                if (event.ticks === previous.ticks) segments.pop();
+                segments.push(segment);
             }
-            const measureTicks = (this.ppq * 4 * meter[0]) / meter[1];
-            measure += Math.ceil((event.ticks - meterStartTick) / measureTicks);
-            meterStartTick = event.ticks;
-            meter = event.timeSignature;
+            this.#meterSegments = segments;
+            this.#meterSource = this.timeSignatures;
+            this.#meterCount = this.timeSignatures.length;
         }
-        const beatTicks = (this.ppq * 4) / meter[1];
-        const ticksIntoMeter = tick - meterStartTick;
+        let low = 0;
+        let high = this.#meterSegments.length;
+        while (low + 1 < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (this.#meterSegments[middle].ticks <= tick) low = middle;
+            else high = middle;
+        }
+        return low;
+    }
+
+    // Each event begins a new measure, even when it cuts the preceding measure short.
+    positionAtTick(tick) {
+        const index = this.#meterIndex(tick);
+        const segment = this.#meterSegments[index];
+        const { meter, ticks, beatTicks, measureTicks, measure } = segment;
+        const elapsed = tick - ticks;
+        const beatIndex = Math.floor(elapsed / beatTicks);
         return {
-            measure: measure + Math.floor(ticksIntoMeter / (beatTicks * meter[0])),
-            beat: (Math.floor(ticksIntoMeter / beatTicks) % meter[0]) + 1,
-            onBeat:
-                Math.abs(ticksIntoMeter / beatTicks - Math.round(ticksIntoMeter / beatTicks)) <
-                1e-8,
+            measure: measure + Math.floor(elapsed / measureTicks),
+            beat: beatIndex % meter[0] + 1,
+            onBeat: Math.abs(elapsed / beatTicks - Math.round(elapsed / beatTicks)) < 1e-8,
+            ticksIntoBeat: elapsed - beatIndex * beatTicks,
             meter
         };
     }
+
+    measureFitTicks(count) {
+        const end = this.stepToTick(this.stepCount);
+        const last = this.#meterIndex(end);
+        let longest = 0;
+        for (let i = 0; i <= last; i++) {
+            const segment = this.#meterSegments[i];
+            const next = this.#meterSegments[i + 1]?.ticks ?? end;
+            longest = Math.max(longest, Math.min(segment.measureTicks, Math.min(next, end) - segment.ticks));
+        }
+        // Include a measure of slack so a partial bar at the viewport edge
+        // does not reduce the number of complete bars on long timelines.
+        return Math.min(end, longest * (count + 1));
+    }
+
+    *meterMarks(startTick, endTick, minimumSpacing = 0) {
+        // Seek directly to the visible interval. At dense zoom levels thin the beats
+        // and bars, but always keep meter changes visible.
+        const index = this.#meterIndex(startTick);
+        for (let i = index; i < this.#meterSegments.length; i++) {
+            const { meter, ticks, measure, beatTicks, measureTicks } = this.#meterSegments[i];
+            if (ticks > endTick) break;
+            const nextTick = this.#meterSegments[i + 1]?.ticks ?? Infinity;
+            const stride = Math.max(1, Math.ceil(minimumSpacing / measureTicks));
+            const firstBar = Math.max(0, Math.ceil((startTick - ticks) / measureTicks / stride)) * stride;
+            for (let bar = firstBar; ; bar += stride) {
+                const point = ticks + bar * measureTicks;
+                if (point > endTick || point >= nextTick) break;
+                yield { ticks: point, kind: 'measure', measure: measure + bar };
+            }
+            if (meter[0] === 1 || beatTicks < minimumSpacing) continue;
+            const firstBeat = Math.max(1, Math.ceil((startTick - ticks) / beatTicks));
+            for (let beat = firstBeat; ; beat++) {
+                const point = ticks + beat * beatTicks;
+                if (point > endTick || point >= nextTick) break;
+                const withinBar = beat % meter[0];
+                if (!withinBar) continue;
+                const compound = meter[0] === 6 && meter[1] === 8;
+                yield { ticks: point, kind: compound && withinBar === 3 ? 'group' : compound ? 'subdivision' : 'beat' };
+            }
+        }
+    }
+
     // Runtime getters are omitted; persistence uses canonical integer ticks.
     toJSON() {
         return {

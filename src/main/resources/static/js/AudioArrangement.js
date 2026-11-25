@@ -37,6 +37,25 @@ class AudioArrangement {
         return track;
     }
 
+    deleteTrack(id) {
+        const track = this.tracks.get(id);
+        if (!track) throw new Error('Audio track no longer exists.');
+        const clips = [...this.clips.values()].filter((clip) => clip.trackId === id);
+        for (const clip of clips) this.deleteClip(clip.id);
+        this.tracks.delete(id);
+        return { track: { ...track }, clips: clips.map((clip) => ({ ...clip })) };
+    }
+
+    restoreTrack({ track, clips }) {
+        if (this.tracks.has(track.id) || this.tracks.size >= AudioArrangement.limits.tracks ||
+            this.clips.size + clips.length > AudioArrangement.limits.clips ||
+            clips.some((clip) => this.clips.has(clip.id) || !this.assets.has(clip.assetId))) {
+            throw new Error('There is no room to restore this audio track or its samples are unavailable.');
+        }
+        this.tracks.set(track.id, { ...track });
+        for (const clip of clips) this.setClip(clip);
+    }
+
     orderedTracks(midiTracks) {
         const tracks = new Map([...midiTracks, ...this.tracks.values()].map((track) => [track.id, track]));
         const ordered = [];

@@ -6,7 +6,6 @@ class AudioExporter {
         const { sequence, arrangement, mutedLanes } = engine;
         const { secondsAt } = AudioArrangement.timeMap(sequence);
         const tracks = new Map(sequence.tracks.map((track) => [track.id, track]));
-        const laneGain = (id) => engine.laneGains.get(id)?.gain.value ?? 1;
         const notes = [];
         const clips = [];
         const missing = new Set();
@@ -23,7 +22,7 @@ class AudioExporter {
             const event = { ...note, channel: track.channel, program: track.program, when, duration: noteEnd - when };
             const tail = renderer.endTime(event);
             end = Math.max(end, noteEnd, tail ?? 0);
-            if (tail !== null) notes.push({ event, gain: laneGain(note.trackId) });
+            if (tail !== null) notes.push({ event, mix: engine.getChannelMix(note.trackId) });
         }
 
         for (const clip of arrangement.clips.values()) {
@@ -38,7 +37,7 @@ class AudioExporter {
             if (duration <= 0 || duration + 1 / asset.buffer.sampleRate < clip.playDurationSeconds) {
                 throw new Error(`The source audio for "${asset.name}" is shorter than its clip. Relink the original sample.`);
             }
-            clips.push({ ...clip, when, duration, buffer: asset.buffer, gain: laneGain(clip.trackId) });
+            clips.push({ ...clip, when, duration, buffer: asset.buffer, mix: engine.getChannelMix(clip.trackId) });
             end = Math.max(end, when + duration);
         }
         if (missing.size) {
@@ -66,22 +65,25 @@ class AudioExporter {
         master.gain.value = plan.masterGain;
         master.connect(context.destination);
         const lanes = new Map();
-        function output(id, gain) {
+        function output(id, { volume, pan }) {
             if (!lanes.has(id)) {
                 const node = context.createGain();
-                node.gain.value = gain;
-                node.connect(master);
+                const panner = context.createStereoPanner();
+                node.gain.value = volume;
+                panner.pan.value = pan;
+                node.connect(panner);
+                panner.connect(master);
                 lanes.set(id, node);
             }
             return lanes.get(id);
         }
-        for (const { event, gain } of plan.notes) {
-            plan.renderer.schedule(event, context, output(event.trackId, gain));
+        for (const { event, mix } of plan.notes) {
+            plan.renderer.schedule(event, context, output(event.trackId, mix));
         }
         for (const clip of plan.clips) {
             const source = context.createBufferSource();
             source.buffer = clip.buffer;
-            source.connect(output(clip.trackId, clip.gain));
+            source.connect(output(clip.trackId, clip.mix));
             source.start(clip.when, clip.sourceOffsetSeconds, clip.duration);
         }
         return context.startRendering();

@@ -26,6 +26,7 @@
         </div>
         <label class="file-control">Import MIDI <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" aria-label="Import MIDI"></label>
         <button data-daw-controls id="exportMidi" type="button">Export MIDI</button>
+        <button class="export-audio-primary" id="exportAudio" type="button" aria-haspopup="dialog">Export Audio</button>
         <button data-daw-controls id="saveProject" type="button" disabled>Save Project</button>
         <div class="instrument-menus" aria-label="Instruments">
             <div id="synthMenu" data-daw-controls data-daw-pointer-inputs>
@@ -55,13 +56,23 @@
         </div>
         <label>Active track <select id="activeTrack" aria-label="Active musical track"><option value="">All Notes</option></select></label>
         <div class="control-group" aria-label="Track order and deletion">
-            <button id="moveTrackUp" type="button" disabled aria-label="Move selected MIDI track up" title="Move selected MIDI track up">↑ Track</button>
-            <button id="moveTrackDown" type="button" disabled aria-label="Move selected MIDI track down" title="Move selected MIDI track down">↓ Track</button>
-            <button id="deleteMidiTrack" type="button" disabled>Delete Track</button>
         </div>
         <strong id="activeTrackName">All Notes</strong>
         <label class="ghost-control"><input id="ghostNotes" type="checkbox" disabled> Ghost Notes</label>
-        <div class="control-group">
+        <div class="control-group wrap-controls">
+            <label>Snap <select id="noteSnap" aria-describedby="snapInfo">
+                <option value="sixteenth" selected>1/16</option>
+                <option value="thirty-second">1/32</option>
+                <option value="free">Free</option>
+            </select></label>
+            <span id="snapInfo" class="hint" hidden></span>
+            <label id="zoomControl">Zoom
+                <input id="zoom" type="range" min="0.01" max="250" step="any" value="100" aria-valuetext="100%">
+                <span id="zoomPercentage" aria-hidden="true">100%</span>
+            </label>
+            <button id="resetZoom" type="button">Reset Zoom</button>
+        </div>
+        <div class="control-group wrap-controls">
             <label>Length (steps) <input id="noteLength" type="text" inputmode="decimal" value="1" aria-describedby="lengthHelp"></label>
             <button id="lengthDecrease" type="button" aria-label="Shorten selected notes by one step">−1 step</button>
             <button id="lengthIncrease" type="button" aria-label="Lengthen selected notes by one step">+1 step</button>
@@ -77,23 +88,35 @@
         </div>
         <button id="findNotes" type="button">Find Notes</button>
         <output id="cursorPosition" aria-label="Editing cursor position"></output>
+        <div id="clipTools" class="control-group wrap-controls" hidden>
+            <label>Clip view <select id="clipVisualization"><option value="waveform">Waveform</option><option value="spectrogram">Spectrogram</option></select></label>
+            <button id="clipRazor" type="button" aria-pressed="false" title="Drag down across a clip to split it">✂ Cut Mode</button>
+        </div>
         <button id="shortcutsButton" type="button" aria-haspopup="dialog">Shortcuts</button>
         <details id="workspaceOptions" class="popup-menu workspace-options">
             <summary>Workspace options</summary>
             <div class="popup-content options-content">
                 <h2>Timeline &amp; pitch range</h2>
                 <div class="control-group wrap-controls">
+                    <label>Time Signature <select id="timeSignature" aria-describedby="meterInfo">
+                        <option value="4/4" selected>4/4</option><option value="3/4">3/4</option>
+                        <option value="6/8">6/8</option><option value="5/4">5/4</option>
+                        <option value="7/8">7/8</option><option id="importedMeter" value="imported" hidden></option>
+                    </select></label>
                     <label>Pattern steps <input id="patternSteps" type="number" min="1" max="65536" value="16"></label>
                     <button id="addBar" type="button">+ Measure</button>
                     <button id="removeBar" type="button">− Measure</button>
                     <label>Lowest MIDI <input id="pitchLow" type="number" min="0" max="127" value="36"></label>
                     <label>Highest MIDI <input id="pitchHigh" type="number" min="0" max="127" value="83"></label>
                 </div>
+                <p id="meterInfo" class="hint" hidden></p>
                 <h2>MIDI tracks</h2>
                 <button id="addMidiTrack" type="button" title="Add an empty MIDI track; track management is outside note Undo history">Add MIDI Track</button>
                 <label>Track name <input id="trackName" type="text" maxlength="128" aria-describedby="trackMetadata"></label>
                 <button id="renameMidiTrack" type="button" title="Rename without changing MIDI routing; outside note Undo history" disabled>Rename Track</button>
                 <p id="trackMetadata" class="hint">Select a track to inspect its MIDI identity.</p>
+                <h2>Track mixer</h2>
+                <div id="trackMixer" class="mixer-panel"></div>
                 <h2>Composition</h2>
                 <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
                 <button id="newSequence" type="button">New Sequence</button>
@@ -103,41 +126,69 @@
                 <p id="lengthHelp" class="hint">Length accepts fractional steps and sets all selected notes to that length. Mixed means durations differ. ±1 step (or Arrow Up/Down in Length) changes each selected duration relatively. The minimum is one MIDI tick; edits crossing pattern boundaries are rejected.</p>
                 <p id="tempoInfo" class="hint"></p>
                 <p class="hint">One step is a sixteenth note. Loop endpoints are inclusive. Stop before changing pattern length, loop markers, or MIDI imports. Export excludes sample audio and unsupported MIDI events.</p>
-    <section class="sample-panel" aria-label="Sample compatibility track">
-        <h2>Sample track</h2>
-        <label>Upload audio <input id="audioFile" type="file" accept="audio/*"></label>
-        <button id="removeSample" type="button" disabled>Remove Sample</button>
-        <p id="sampleName">No sample loaded.</p>
-        <div class="transport">
-            <label>Trigger at step <input id="sampleTriggerStep" type="number" min="1" step="1" max="16" value="1"></label>
-            <button id="addSampleTrigger" type="button" disabled>Add Trigger</button>
-        </div>
-        <p id="sampleStatus" role="status">Upload an audio sample, then add trigger steps.</p>
-        <p id="sampleTriggerSummary">No active triggers.</p>
-        <ul id="sampleTriggers" class="sample-triggers" aria-label="Active sample trigger steps"></ul>
-        <button id="samplePreviousPage" type="button" disabled>Previous triggers</button>
-        <button id="sampleNextPage" type="button" disabled>Next triggers</button>
-    </section>
+                <p id="legacySampleWarning" class="hint" role="status" hidden></p>
             </div>
         </details>
     </section>
     
 
     <div id="pianoViewport" class="piano-viewport" tabindex="0" aria-label="Scrollable piano roll">
-        <div id="pianoSpacer"></div>
-        <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
-        <!-- scrolls with the piano roll; sized to #pianoSpacer and filled in by createContourOverlay() -->
-        <svg id="canvasMeshContainer" aria-hidden="true"></svg>
-        <!-- canvas renderer (the default): viewport-sized, follows the scroll position -->
-        <canvas id="contourCanvas" aria-hidden="true"></canvas>
+        <div class="piano-content">
+            <div id="pianoSpacer"></div>
+            <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
+            <div id="laneControls" data-daw-controls role="group" aria-label="Track controls"></div>
+            <svg id="canvasMeshContainer" aria-hidden="true"></svg>
+            <canvas id="contourCanvas" aria-hidden="true"></canvas>
+        </div>
     </div>
+        <details id="sampleRack" class="sample-dock" open hidden>
+            <summary>Sample Rack</summary>
+            <div class="sample-dock-body">
+                <div class="control-group wrap-controls">
+                    <label>Import audio <input id="rackFiles" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" multiple></label>
+                    <button id="addAudioTrack" type="button">Add Audio Track</button>
+                </div>
+                <input id="relinkAudioFile" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" hidden>
+                <p id="rackStatus" class="hint" role="status">Drag a loaded sample onto an audio lane. Audio is stored in this browser when local storage is available.</p>
+                <ul id="rackAssets" class="rack-assets"></ul>
+                <div class="control-group wrap-controls">
+                    <label>Audio lane <select id="audioTrackSelect"></select></label>
+                    <label>Name <input id="audioTrackName" type="text" maxlength="128"></label>
+                    <button id="renameAudioTrack" type="button">Rename</button>
+                </div>
+                <div class="control-group wrap-controls">
+                    <label>Clip <select id="audioClipSelect"></select></label>
+                    <button id="duplicateAudioClip" type="button">Duplicate Clip</button>
+                    <button id="deleteAudioClip" type="button">Delete Clip</button>
+                </div>
+                <p id="audioClipInfo" class="hint"></p>
+            </div>
+        </details>
     <footer class="statusbar">
         <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
         <p id="compositionInfo">0 notes · 1 musical track</p>
         <span class="cursor-legend"><i></i> Edit cursor <i class="playback-key"></i> Playback</span>
     </footer>
+    <dialog id="audioExportDialog" aria-labelledby="audioExportTitle">
+        <form id="audioExportForm">
+            <h2 id="audioExportTitle">Export Audio</h2>
+            <label for="audioExportName">Filename</label>
+            <input id="audioExportName" type="text" required maxlength="128" autofocus>
+            <label for="audioExportFormat">Format</label>
+            <select id="audioExportFormat">
+                <option value="wav">WAV · 16-bit PCM</option>
+                <option value="mp3">MP3 · 192 kbps</option>
+            </select>
+            <p>Entire Song · 44.1 kHz stereo</p>
+            <p id="audioExportStatus" role="status"></p>
+            <div class="control-group">
+                <button id="closeAudioExport" type="button">Close</button>
+                <button class="export-audio-primary" id="renderAudio" type="submit">Export Complete Song</button>
+            </div>
+        </form>
+    </dialog>
     <dialog id="deleteTrackDialog" aria-labelledby="deleteTrackTitle" aria-describedby="deleteTrackMessage">
-        <h2 id="deleteTrackTitle">Delete MIDI Track</h2>
+        <h2 id="deleteTrackTitle">Delete Track</h2>
         <p id="deleteTrackMessage"></p>
         <div class="control-group">
             <button id="cancelDeleteTrack" type="button" autofocus>Cancel</button>
@@ -149,7 +200,7 @@
             <h2 id="shortcutsTitle">Keyboard Shortcuts &amp; Mouse Controls</h2>
             <button id="closeShortcuts" type="button" autofocus>Close</button>
         </div>
-        <p>Use Cmd on macOS or Ctrl on Windows/Linux. Editor shortcuts leave typing fields and open dialogs alone. Space also leaves focused buttons and menus alone.</p>
+        <p>Use Cmd on macOS or Ctrl on Windows/Linux. Editor shortcuts leave typing fields and open dialogs alone. Space controls playback throughout the workspace. Use Enter to activate focused controls.</p>
         <h3>Transport &amp; editing</h3>
         <dl id="keyboardGuide" class="controls-guide"></dl>
         <h3>Mouse &amp; navigation</h3>
@@ -158,10 +209,14 @@
 </main>
 <script src="/js/vendor/tonejs-midi-2.0.28.js"></script>
 <script src="/js/NoteSequence.js"></script>
+<script src="/js/AudioArrangement.js"></script>
+<script src="/js/SampleAssetStore.js"></script>
 <script src="/js/SequencerEngine.js"></script>
+<script src="/js/AudioExporter.js"></script>
 <script src="/js/midi-io.js"></script>
 <script src="/js/PianoRollEditor.js"></script>
 <script src="/js/TrackOverview.js"></script>
+<script src="/js/ArrangementEditor.js"></script>
 <script src="/js/instruments/SynthInstrumentManager.js"></script>
 <script src="/js/InstrumentPanel.js"></script>
 <script src="/js/SynthUI.js"></script>
@@ -195,8 +250,7 @@
     import { createSvgContour } from "/contour/svg_overlay.js"
 
 
-    // Piano: #canvasMeshContainer sits inside the scrolling viewport, so the
-    // contour scrolls with the notes.
+    // The sticky surfaces paint the visible region of the scrolling timeline.
     const piano = document.getElementById("pianoViewport");
     const pianoSvg = document.getElementById("canvasMeshContainer");
     const pianoContourCanvas = document.getElementById("contourCanvas");
@@ -303,13 +357,11 @@
     showNoteRects(noteRects);
     function placePianoContour() {
         const width = piano.clientWidth, height = piano.clientHeight;
-        surface.style.left = `${piano.scrollLeft}px`;
-        surface.style.top = `${piano.scrollTop}px`;
         surface.style.width = `${width}px`;
         surface.style.height = `${height}px`;
         const rightInset = Math.max(0, width - (pianoSpacer.offsetWidth - piano.scrollLeft));
         const bottomInset = Math.max(0, height - (pianoSpacer.offsetHeight - piano.scrollTop));
-        if (useSvg) surface.style.clipPath = `inset(${rulerHeight}px ${rightInset}px ${bottomInset}px ${keyboardWidth}px)`;
+        surface.style.clipPath = `inset(${rulerHeight}px ${rightInset}px ${bottomInset}px ${keyboardWidth}px)`;
         pianoContour.setView({ width, height, offsetX: piano.scrollLeft, offsetY: piano.scrollTop,
             clip: { x: keyboardWidth, y: rulerHeight, width: Math.max(0, width - keyboardWidth - rightInset), height: Math.max(0, height - rulerHeight - bottomInset) } });
     }

@@ -29,16 +29,73 @@
     const pianoViewport = getElement('pianoViewport');
     const pianoCanvas = getElement('pianoCanvas');
     const pianoSpacer = getElement('pianoSpacer');
+    const mixerPanel = getElement('trackMixer');
+    let mixerKey = '';
+    let mixerRows = [];
     const drawingContext = pianoCanvas.getContext('2d');
+    const arrangement = new ArrangementEditor(engine, {
+        canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
+        canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
+        clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
+        tracksChanged: (id) => {
+            syncEditorState();
+            if (id) {
+                const index = overviewTracks().findIndex((track) => track.id === id);
+                const bottom = RULER_HEIGHT + (index + 1) * TrackOverview.laneHeight;
+                pianoViewport.scrollTop = Math.max(pianoViewport.scrollTop, bottom - pianoViewport.clientHeight);
+                getElement('sampleRack').open = true;
+            }
+        },
+        createLane: (below) => {
+            const ids = overviewTracks().map((track) => track.id);
+            const track = engine.arrangement.addTrack();
+            ids.splice(below ? ids.indexOf(below) + 1 : ids.length, 0, track.id);
+            engine.arrangement.laneOrder = ids;
+            syncEditorState();
+            return track.id;
+        },
+        redraw: () => { pendingViewportRender = true; },
+        selectionChanged: updateTrackActions,
+        scrollTop: () => pianoViewport.scrollTop,
+        snap: () => snapMode,
+        laneAt: (point) => overviewTrackAt(point),
+        stepAt: (point) => (point.x + pianoViewport.scrollLeft - KEYBOARD_WIDTH) / STEP_WIDTH,
+        inGrid: (point) => point.x >= KEYBOARD_WIDTH && point.x < pianoViewport.clientWidth &&
+            point.y >= RULER_HEIGHT && point.y < pianoViewport.clientHeight,
+        extendPattern: (endTick) => {
+            const sequence = engine.sequence;
+            if (endTick <= sequence.stepToTick(engine.totalSteps) + 1e-8) return;
+            const existingEnd = engine.arrangement.getIndex(sequence).root?.maxEnd ?? 0;
+            engine.setPatternLength(Math.ceil(sequence.tickToStep(Math.max(endTick, existingEnd)) - 1e-10));
+            syncEditorState();
+        },
+        record: (before, after) => {
+            checkHistory();
+            pushHistory({ kind: 'audio-clip', before, after });
+        },
+        discardAssetHistory: (id) => {
+            for (const stack of [undoStack, redoStack]) {
+                for (let i = stack.length - 1; i >= 0; i--) {
+                    const action = stack[i];
+                    if (action.kind === 'audio-track-delete') {
+                        action.record.clips = action.record.clips.filter((clip) => clip.assetId !== id);
+                    }
+                    if (action.kind === 'audio-clip' &&
+                        (action.before.some((clip) => clip.assetId === id) || action.after.some((clip) => clip.assetId === id))) {
+                        stack.splice(i, 1);
+                    }
+                }
+            }
+        }
+    });
 
     // Grid geometry and editor state. Musical timing stays in NoteSequence.
-    const {
-        rowHeight: ROW_HEIGHT,
-        stepWidth: STEP_WIDTH,
-        keyboardWidth: KEYBOARD_WIDTH,
-        rulerHeight: RULER_HEIGHT
-    } = PianoRollEditor.geometry;
+    const { keyboardWidth: KEYBOARD_WIDTH, rulerHeight: RULER_HEIGHT } = PianoRollEditor.geometry;
+    const baseGeometry = { ...PianoRollEditor.geometry };
+    let { rowHeight: ROW_HEIGHT, stepWidth: STEP_WIDTH } = baseGeometry;
     let workspaceMode = 'piano';
+    let snapMode = 'sixteenth';
+    const supportedMeters = ['4/4', '3/4', '6/8', '5/4', '7/8'];
     let activeTrackId = null;
     let ghostNotesEnabled = false;
     let trackOptionsKey = '';
@@ -69,6 +126,16 @@
     let lastHighlightKey = null;
     let pendingViewportRender = false;
 
+    function overviewTracks() {
+        return engine.arrangement.tracks.size
+            ? engine.arrangement.orderedTracks(engine.sequence.tracks) : engine.sequence.tracks;
+    }
+
+    function overviewTrackAt(point) {
+        const tracks = overviewTracks();
+        return tracks[TrackOverview.laneAt(point, pianoViewport.scrollTop, tracks.length)];
+    }
+
     function invalidateRenderIndex() {
         renderIndex = null;
         renderLanes = null;
@@ -79,7 +146,7 @@
         if (!renderIndex || renderIndexSequence !== sequence || renderIndexNotes !== sequence.notes ||
             renderIndexLength !== sequence.notes.length) {
             renderIndex = new NoteRenderIndex(sequence);
-            renderLanes = TrackOverview.lanes(sequence);
+            renderLanes = TrackOverview.lanes(sequence, overviewTracks());
             renderIndexSequence = sequence;
             renderIndexNotes = sequence.notes;
             renderIndexLength = sequence.notes.length;
@@ -116,17 +183,14 @@
             engine.sequence.tracks[0]?.name ?? 'Piano';
     }
 
+    function canDeleteTrack(track) {
+        return databaseProject?.role !== 'VIEWER' && !isStartingPlayback && !engine.isPlaying &&
+            !engine.isPaused && !engine.startPromise && !trackGesture && !arrangement.deletingAsset &&
+            (track.audio || engine.sequence.tracks.length > 1);
+    }
+
     function updateTrackActions() {
-        const track = activeTrack();
-        const index = engine.sequence.tracks.findIndex((candidate) => candidate.id === activeTrackId);
-        getElement('moveTrackUp').disabled = Boolean(trackGesture) || index <= 0;
-        getElement('moveTrackDown').disabled = Boolean(trackGesture) || index < 0 || index >= engine.sequence.tracks.length - 1;
-        const stopped = !engine.isPlaying && !engine.isPaused && !engine.startPromise && !isStartingPlayback;
-        getElement('deleteMidiTrack').disabled = !track || !stopped || Boolean(trackGesture) || engine.sequence.tracks.length <= 1;
-        getElement('deleteMidiTrack').textContent = track ? `Delete ${track.name}` : 'Delete Track';
-        getElement('deleteMidiTrack').title = track
-            ? `Delete MIDI track '${track.name}'. Press Stop first; the last track is protected.`
-            : 'Select a MIDI track to delete. Press Stop first.';
+        for (const { track, remove } of laneButtons.values()) remove.disabled = !canDeleteTrack(track);
     }
 
     function syncTrackControls() {
@@ -188,6 +252,9 @@
             ? `${track.id} · channel ${track.channel + 1} · program ${track.program} · ${track.importId ? 'imported' : 'manual'} · Delete requires Stop; the last track is protected.`
             : `All Notes: new notes use ${creationTrackName()}. Choose a track to manage it.`;
         const overview = workspaceMode === 'tracks';
+        getElement('sampleRack').hidden = !overview;
+        getElement('clipTools').hidden = !overview;
+        arrangement.refreshInspector();
         pianoViewport.setAttribute('aria-label', overview ? 'Scrollable track overview' : 'Scrollable piano roll');
         for (const id of ['noteLength', 'lengthDecrease', 'lengthIncrease', 'velocity',
             'copyNotes', 'cutNotes', 'pasteNotes', 'duplicateNotes', 'pitchLow', 'pitchHigh']) {
@@ -195,9 +262,10 @@
         }
         updateTrackActions();
         syncMixer();
-        pianoViewport.setAttribute('aria-label', overview ? 'MIDI track overview' : `Piano roll: ${track?.name ?? 'All Notes'}`);
+        pianoViewport.setAttribute('aria-label', overview ? (engine.arrangement.tracks.size ? 'Arrangement timeline' : 'MIDI track overview') : `Piano roll: ${track?.name ?? 'All Notes'}`);
         pianoCanvas.setAttribute('aria-label', overview
-            ? `${engine.sequence.tracks.length} MIDI track lanes. Select a track with the Active track selector, then Piano Roll / Edit Track. Double-click a lane to edit.`
+            ? `${engine.sequence.tracks.length} MIDI track lanes. Select a track with the Active track selector, then Piano Roll / Edit Track. Double-click a lane to edit.` +
+                (engine.arrangement.tracks.size ? ` ${engine.arrangement.tracks.size} audio lanes. Use Sample Rack to place samples and inspect clips.` : '')
             : `Piano roll: ${track?.name ?? 'All Notes'}. Other tracks shown as ghosts cannot be edited.`);
     }
 
@@ -220,6 +288,8 @@
             overviewScrollTop = pianoViewport.scrollTop;
         }
         workspaceMode = mode;
+        if (mode === 'piano') arrangement.selectRackAsset(null);
+        if (mode === 'piano' || trackId) arrangement.select(null);
         activeTrackId = trackId;
         overlapIds = [];
         selectNote(null);
@@ -228,12 +298,12 @@
             expandPitchRange(editableNotes(true));
         }
         syncEditorState();
-        const contentHeight = mode === 'tracks' ? TrackOverview.laneHeight * engine.sequence.tracks.length
+        const contentHeight = mode === 'tracks' ? TrackOverview.laneHeight * overviewTracks().length
             : (highestPitch - lowestPitch + 1) * ROW_HEIGHT;
         const maxTop = Math.max(0, RULER_HEIGHT + contentHeight - pianoViewport.clientHeight);
         pianoViewport.scrollTop = Math.min(maxTop, mode === 'tracks' ? overviewScrollTop : pianoScrollTop);
         if (mode === 'tracks' && trackId !== null) {
-            const index = engine.sequence.tracks.findIndex((candidate) => candidate.id === trackId);
+            const index = overviewTracks().findIndex((candidate) => candidate.id === trackId);
             const top = index * TrackOverview.laneHeight;
             const gridHeight = Math.max(0, pianoViewport.clientHeight - RULER_HEIGHT);
             if (top < pianoViewport.scrollTop) {
@@ -311,7 +381,7 @@
         // Check actual position before every automatic write, not just on scroll-event delivery.
         // Delayed/coalesced events therefore cannot mistake our last applied offset for user input.
         const manuallyScrolled = reconcileHorizontalScroll();
-        if (editGesture || resizeGesture || cursorGesture || trackGesture) {
+        if (editGesture || resizeGesture || cursorGesture || trackGesture || arrangement.gesture) {
             playbackFollow.interrupt();
             return manuallyScrolled;
         }
@@ -352,6 +422,7 @@
             undoStack.length = 0;
             redoStack.length = 0;
             clipboard = null;
+            arrangement.clipboard = [];
             syncEditingCursor();
         }
     }
@@ -361,8 +432,9 @@
     }
 
     function historyWeight(entry) {
-        return Array.isArray(entry) ? entry.length : entry.kind === 'track-order'
-            ? entry.before.length : entry.record.notes.length + 1;
+        if (Array.isArray(entry)) return entry.length;
+        if (entry.kind === 'audio-clip') return entry.before.length + entry.after.length;
+        return entry.kind.endsWith('-order') ? entry.before.length : (entry.record.notes ?? entry.record.clips).length + 1;
     }
 
     function pushHistory(entry) {
@@ -375,7 +447,20 @@
     }
 
     function reorderTrack(id, index) {
+        if (databaseProject?.role === 'VIEWER') return;
         checkHistory();
+        if (workspaceMode === 'tracks' && engine.arrangement.tracks.size) {
+            const before = overviewTracks().map((track) => track.id);
+            const from = before.indexOf(id);
+            if (from < 0 || index < 0 || index >= before.length || from === index) return;
+            const after = [...before];
+            after.splice(index, 0, ...after.splice(from, 1));
+            setArrangementOrder(after);
+            pushHistory({ kind: 'arrangement-order', before, after });
+            syncEditorState();
+            showStatus(`Moved lane to position ${index + 1}.`);
+            return;
+        }
         const before = engine.sequence.tracks.map((track) => track.id);
         if (!engine.reorderMidiTrack(id, index)) {
             return;
@@ -385,12 +470,26 @@
         showStatus(`Moved '${engine.sequence.tracks[index].name}' to track position ${index + 1}.`);
     }
 
+    function setArrangementOrder(ids) {
+        const midiIds = new Set(engine.sequence.tracks.map((track) => track.id));
+        const order = ids.filter((id) => midiIds.delete(id));
+        engine.setMidiTrackOrder([...order, ...midiIds]);
+        engine.arrangement.laneOrder = [...ids];
+    }
+
     function restoreTrackHistory(entry, side) {
         if (entry.kind === 'track-order') {
             const order = entry[side];
             const known = new Set(order);
             const extra = engine.sequence.tracks.filter((track) => !known.has(track.id)).map((track) => track.id);
             engine.setMidiTrackOrder([...order, ...extra]);
+        } else if (entry.kind === 'audio-track-delete') {
+            if (arrangement.deletingAsset) throw new Error('Wait for Sample Rack deletion to finish.');
+            if (side === 'before') engine.restoreAudioTrack(entry.record);
+            else {
+                entry.record = engine.deleteAudioTrack(entry.record.track.id);
+                arrangement.setSelection(arrangement.selected, arrangement.trackId);
+            }
         } else if (side === 'before') {
             engine.restoreMidiTrack(entry.record);
         } else {
@@ -403,14 +502,20 @@
         showStatus(`${side === 'before' ? 'Undo' : 'Redo'}: ${entry.kind === 'track-order' ? 'MIDI track order' : `track '${entry.record.track.name}' deletion`}.`);
     }
 
-    function deleteTrack(id) {
+    function deleteTrack(track) {
         checkHistory();
-        const record = engine.deleteMidiTrack(id);
-        pushHistory({ kind: 'track-delete', record });
-        overlapIds = [];
-        selectNote(null);
+        cancelEditorGesture();
+        arrangement.cancelDrop();
+        const record = track.audio ? engine.deleteAudioTrack(track.id) : engine.deleteMidiTrack(track.id);
+        pushHistory({ kind: track.audio ? 'audio-track-delete' : 'track-delete', record });
+        if (track.audio) arrangement.setSelection(arrangement.selected, arrangement.trackId);
+        else {
+            overlapIds = [];
+            selectNote(null);
+        }
         syncEditorState();
-        showStatus(`Deleted track '${record.track.name}' and ${record.notes.length} notes. Undo restores it.`);
+        const count = track.audio ? record.clips.length : record.notes.length;
+        showStatus(`Deleted track '${track.name}' and ${count} ${track.audio ? 'clips' : 'notes'}. Undo restores it.`);
     }
 
     function recordEdit(before) {
@@ -427,15 +532,27 @@
     }
 
     function restoreHistory(source, destination, side) {
+        if (databaseProject?.role === 'VIEWER') return;
         invalidateRenderIndex();
         cancelEditorGesture();
+        arrangement.cancelDrop();
         checkHistory();
         const entry = source.at(-1);
         if (!entry) {
             return;
         }
         if (!Array.isArray(entry)) {
-            restoreTrackHistory(entry, side);
+            if (entry.kind === 'audio-clip') {
+                if (!arrangement.hooks.canEdit()) throw new Error('Pause or stop before changing audio clips.');
+                if (workspaceMode === 'tracks') arrangement.hooks.clearMidiTrack();
+                arrangement.restoreEdit(entry[side === 'before' ? 'after' : 'before'], entry[side]);
+                showStatus(`${side === 'before' ? 'Undo' : 'Redo'} audio clip edit.`);
+            } else if (entry.kind === 'arrangement-order') {
+                setArrangementOrder(entry[side]);
+                syncEditorState();
+            } else {
+                restoreTrackHistory(entry, side);
+            }
             source.pop();
             destination.push(entry);
             return;
@@ -529,7 +646,6 @@
         refreshNoteControls();
         syncEditorState();
     }
-    let latestAudioUploadId = 0;
     let latestMidiImportId = 0;
     let midiImportController = null;
     let isStartingPlayback = false;
@@ -543,15 +659,10 @@
     let suppressResizeClick = false;
     let overlapIds = [];
     let playRequestId = 0;
-    let sampleTriggerPage = 0;
-    let loadedSampleName = '';
     let unavailableSample = null;
-    let isSampleLoading = false;
     let databaseProject = null;
     let databaseSaveInFlight = false;
     let loadedInstrumentState = null;
-    const SAMPLE_PAGE_SIZE = 50;
-    const EMPTY_SAMPLE_STATUS = 'Upload an audio sample, then add trigger steps.';
 
     // Controls and selected-note details.
     function showStatus(text) {
@@ -559,26 +670,28 @@
     }
 
     function databaseSnapshot() {
-        const sample = engine.tracks.get('uploaded');
         return {
             ...engine.sequence.toJSON(),
+            ...(engine.arrangement.assets.size || engine.arrangement.tracks.size
+                ? { arrangement: engine.arrangement.toJSON() } : {}),
             instruments: {
                 version: 1,
                 synth: window.jukeboxSynth?.snapshot() ?? null,
                 drums: window.jukeboxDrums?.snapshot() ?? null,
                 mixer: engine.snapshotMix()
             },
-// ...
-            sample: sample ? {
-                audioPersisted: false,
-                name: loadedSampleName,
-                steps: sample.steps.map((active) => Boolean(active)),
-                ...engine.getChannelMix('uploaded')   // adds volume + pan
-            } : unavailableSample
+            loopStart: engine.loopStart,
+            loopEnd: engine.loopEnd,
+            sample: unavailableSample,
+            mutedLanes: overviewTracks().filter((track) => engine.mutedLanes.has(track.id)).map((track) => track.id)
         };
     }
 
     async function saveDatabaseProject() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (!databaseProject || databaseProject.role === 'VIEWER' || databaseSaveInFlight) {
             return;
         }
@@ -611,15 +724,14 @@
         if (databaseProject?.role !== 'VIEWER') {
             return;
         }
-        pianoCanvas.style.pointerEvents = 'none';
+        pianoCanvas.style.pointerEvents = workspaceMode === 'tracks' ? '' : 'none';
         [
-            'saveProject', 'bpm', 'loopStart', 'loopEnd', 'patternSteps', 'addBar',
+            'saveProject', 'bpm', 'timeSignature', 'loopStart', 'loopEnd', 'patternSteps', 'addBar',
             'removeBar', 'midiFile', 'newSequence', 'noteLength', 'lengthDecrease',
             'lengthIncrease', 'velocity', 'deleteNote', 'nextOverlap', 'pitchLow',
-            'pitchHigh', 'audioFile', 'removeSample', 'sampleTriggerStep',
-            'addSampleTrigger', 'samplePreviousPage', 'sampleNextPage',
+            'pitchHigh',
             'removeImportedMidi', 'addMidiTrack', 'renameMidiTrack', 'trackName',
-            'moveTrackUp', 'moveTrackDown', 'deleteMidiTrack', 'undoNotes', 'redoNotes',
+            'undoNotes', 'redoNotes',
             'cutNotes', 'pasteNotes', 'duplicateNotes'
         ].forEach((id) => {
             const element = getElement(id);
@@ -649,12 +761,15 @@
         updateTrackActions();
         getElement('renameMidiTrack').disabled = busy || Boolean(trackGesture) || !activeTrack();
         getElement('trackName').disabled = busy || !activeTrack();
-        bpmInput.disabled = engine.sequence.tempos.length > 1;
+        bpmInput.disabled = engine.sequence.tempos.length > 1 || (busy && engine.arrangement.clips.size > 0);
         bpmInput.min = bpmInput.disabled ? '' : '40';
         bpmInput.max = bpmInput.disabled ? '' : '240';
-        getElement('tempoInfo').textContent = bpmInput.disabled
+        getElement('tempoInfo').textContent = engine.sequence.tempos.length > 1
             ? 'Imported tempo map active; BPM editing disabled.'
+            : bpmInput.disabled ? 'Pause or stop before changing BPM with audio clips.'
             : 'BPM edits replace the constant tempo (40–240).';
+        updateMeterControls(busy);
+        arrangement.refreshInspector();
         applyDatabasePermissions();
     }
 
@@ -668,6 +783,102 @@
         getElement('cursorPosition').textContent = PianoRollEditor.cursorLabel(engine.sequence, editingCursorTick);
     }
 
+    function resizePianoContent() {
+        pianoSpacer.style.width = `${KEYBOARD_WIDTH + engine.totalSteps * STEP_WIDTH}px`;
+        const contentHeight = workspaceMode === 'tracks' ? overviewTracks().length * TrackOverview.laneHeight
+            : (highestPitch - lowestPitch + 1) * ROW_HEIGHT;
+        pianoSpacer.style.height = `${RULER_HEIGHT + contentHeight}px`;
+    }
+
+    const zoomInput = getElement('zoom');
+    const zoomPercentage = getElement('zoomPercentage');
+    let zoomPercent = 100;
+    let zoomTarget = zoomPercent;
+    let pendingZoom = null;
+    let pinchStartZoom = null;
+
+    let zoomMin = 50;
+    let zoomFit = null;
+
+    function refreshZoomMinimum() {
+        const sequence = engine.sequence;
+        const width = Math.max(1, pianoViewport.clientWidth - KEYBOARD_WIDTH - 1);
+        if (zoomFit?.sequence === sequence && zoomFit.meters === sequence.timeSignatures &&
+            zoomFit.steps === engine.totalSteps && zoomFit.width === width) return;
+        zoomFit = { sequence, meters: sequence.timeSignatures, steps: engine.totalSteps, width };
+        const pixels = sequence.tickToStep(sequence.measureFitTicks(50)) * baseGeometry.stepWidth;
+        const fit = 100 * width / pixels;
+        zoomMin = Math.min(50, fit >= 0.01 ? Math.floor(fit * 100) / 100 : fit);
+        zoomInput.min = String(zoomMin);
+        zoomInput.title = `Minimum zoom: ${zoomLabel(zoomMin)}`;
+        if (zoomTarget < zoomMin) queueZoom(zoomMin);
+    }
+
+    function zoomLabel(percent) {
+        return `${Number(percent.toPrecision(4))}%`;
+    }
+
+    function queueZoom(percent, point = null) {
+        zoomTarget = Math.max(zoomMin, Math.min(250, percent));
+        pendingZoom = { point };
+    }
+
+    function applyPendingZoom() {
+        const { point: pointer } = pendingZoom;
+        pendingZoom = null;
+        const percent = Math.max(zoomMin, zoomTarget < 50 ? Number(zoomTarget.toPrecision(4)) : Math.round(zoomTarget));
+        if (zoomInput.value !== String(percent)) zoomInput.value = String(percent);
+        if (percent === zoomPercent) return;
+        cancelEditorGesture();
+        const point = pointer ? canvasPoint(pointer) : null;
+        const gridWidth = Math.max(0, pianoViewport.clientWidth - KEYBOARD_WIDTH);
+        const gridHeight = Math.max(0, pianoViewport.clientHeight - RULER_HEIGHT);
+        const anchorX = point ? Math.max(0, Math.min(gridWidth, point.x - KEYBOARD_WIDTH)) : gridWidth / 2;
+        const anchorY = point && workspaceMode === 'piano'
+            ? Math.max(0, Math.min(gridHeight, point.y - RULER_HEIGHT)) : gridHeight / 2;
+        const anchorStep = Math.min(engine.totalSteps, (pianoViewport.scrollLeft + anchorX) / STEP_WIDTH);
+        const pitchScroll = workspaceMode === 'piano' ? pianoViewport.scrollTop : pianoScrollTop;
+        const pitchCount = highestPitch - lowestPitch + 1;
+        const anchorRow = Math.min(pitchCount, (pitchScroll + anchorY) / ROW_HEIGHT);
+
+        zoomPercent = percent;
+        STEP_WIDTH = PianoRollEditor.geometry.stepWidth = baseGeometry.stepWidth * percent / 100;
+        ROW_HEIGHT = PianoRollEditor.geometry.rowHeight = baseGeometry.rowHeight * Math.max(50, percent) / 100;
+        zoomInput.setAttribute('aria-valuetext', zoomLabel(percent));
+        zoomPercentage.textContent = zoomLabel(percent);
+        resizePianoContent();
+        playbackFollow.interrupt();
+        scrollHorizontally(anchorStep * STEP_WIDTH - anchorX);
+        const maxTop = Math.max(0, RULER_HEIGHT + pitchCount * ROW_HEIGHT - pianoViewport.clientHeight);
+        pianoScrollTop = Math.min(maxTop, Math.max(0, anchorRow * ROW_HEIGHT - anchorY));
+        if (workspaceMode === 'piano') pianoViewport.scrollTop = pianoScrollTop;
+        pendingViewportRender = true;
+    }
+
+    function zoomPointer(event) {
+        const { clientX, clientY } = event;
+        return Number.isFinite(clientX) && Number.isFinite(clientY) ? { clientX, clientY } : null;
+    }
+
+    function zoomFromWheel(event, point = null) {
+        // Line-mode wheels typically send three lines per notch. Pixel-mode
+        // trackpads send many smaller events, so retain fractional changes.
+        const { deltaMode, deltaY } = event;
+        if (!Number.isFinite(deltaY) || deltaY === 0) return false;
+        event.preventDefault();
+        if (pinchStartZoom === null) {
+            const units = deltaMode === 1 ? 3 : deltaMode === 2 ? 1 : 100;
+            const delta = Math.max(-40, Math.min(40, deltaY * 35 / units));
+            queueZoom(zoomTarget - delta * (zoomTarget < 50 ? zoomTarget / 50 : 1), point);
+        }
+        return true;
+    }
+
+    zoomInput.value = String(zoomPercent);
+    zoomInput.oninput = () => queueZoom(Number(zoomInput.value));
+    getElement('resetZoom').onclick = () => queueZoom(100);
+    getElement('zoomControl').addEventListener('wheel', (event) => zoomFromWheel(event), { passive: false });
+
     function syncEditorState() {
         invalidateRenderIndex();
         syncTrackControls();
@@ -677,13 +888,10 @@
         loopStartInput.value = engine.loopStart + 1;
         loopEndInput.value = engine.loopEnd;
         bpmInput.value = engine.bpm;
-        pianoSpacer.style.width = `${KEYBOARD_WIDTH + engine.totalSteps * STEP_WIDTH}px`;
-        const contentHeight = workspaceMode === 'tracks' ? engine.sequence.tracks.length * TrackOverview.laneHeight
-            : (highestPitch - lowestPitch + 1) * ROW_HEIGHT;
-        pianoSpacer.style.height = `${RULER_HEIGHT + contentHeight}px`;
+        resizePianoContent();
         updateTransportControls();
+        updateSnapInfo();
         updateCompositionSummary();
-        renderSampleEditor();
         refreshNoteControls();
         applyDatabasePermissions();
         renderPianoRoll();
@@ -727,7 +935,7 @@
             (selected.id === selectedNoteId ? preview?.durationTicks : null) ?? selected.durationTicks);
         const mixed = durations.some((duration) => duration !== durations[0]);
         if (!note) {
-            getElement('noteLength').value = String(newNoteLengthSteps);
+            getElement('noteLength').value = PianoRollEditor.formatDuration(engine.sequence, newNoteDurationTicks());
             getElement('velocity').value = newNoteVelocity;
             getElement('noteInfo').textContent =
                 `${activeTrack()?.name ?? 'All Notes'} view. New notes use ${creationTrackName()}. ` +
@@ -735,7 +943,7 @@
             return;
         }
         if (preview?.deleteNote) {
-            getElement('noteLength').value = String(note.durationSteps);
+            getElement('noteLength').value = PianoRollEditor.formatDuration(engine.sequence, note.durationTicks);
             getElement('noteInfo').textContent =
                 'Release to delete this note. Drag back to keep resizing; Escape cancels.';
             return;
@@ -743,7 +951,7 @@
         const ticks = preview?.ticks ?? note.ticks;
         const durationTicks = preview?.durationTicks ?? note.durationTicks;
         const track = engine.sequence.tracks.find((candidate) => candidate.id === note.trackId);
-        lengthInput.value = mixed ? '' : String(engine.sequence.tickToStep(durationTicks));
+        lengthInput.value = mixed ? '' : PianoRollEditor.formatDuration(engine.sequence, durationTicks);
         lengthInput.placeholder = mixed ? 'Mixed' : '';
         getElement('velocity').value = note.velocityMidi;
         getElement('noteInfo').textContent =
@@ -752,7 +960,7 @@
             `${note.id} · start ${ticks}, duration ${durationTicks} ticks at ${engine.sequence.ppq} PPQ` +
             (note.importId ? ' · imported' : ' · manual') +
             (preview?.limited
-                ? ' · extend the pattern for whole-step resizing'
+                ? ' · extend the pattern to resize'
                 : preview
                   ? ' · edit preview'
                   : '');
@@ -810,7 +1018,6 @@
         scrollHorizontally(Math.min(maxLeft, target.scrollLeft));
         pianoViewport.scrollTop = Math.min(maxTop, target.scrollTop);
         renderPianoRoll();
-        renderSampleEditor();
     }
 
     getElement('findNotes').onclick = () => findNotes();
@@ -818,20 +1025,26 @@
     // Canvas rendering: keep the original layer order and drawing state.
     function renderPianoRoll() {
         pendingViewportRender = false;
+        refreshZoomMinimum();
         const width = pianoViewport.clientWidth;
         const height = pianoViewport.clientHeight;
         const scrollLeft = pianoViewport.scrollLeft;
         const scrollTop = pianoViewport.scrollTop;
-        prepareCanvas(width, height, scrollLeft, scrollTop);
+        prepareCanvas(width, height);
         let noteRects = [];
         const first = Math.max(0, Math.floor(scrollLeft / STEP_WIDTH));
-        const last = Math.min(engine.totalSteps, Math.ceil((scrollLeft + width) / STEP_WIDTH));
+        const endStep = Math.min(engine.totalSteps, (scrollLeft + Math.max(0, width - KEYBOARD_WIDTH)) / STEP_WIDTH);
+        const last = Math.ceil(endStep);
+        const sequence = engine.sequence;
+        const meterMarks = [...sequence.meterMarks(sequence.stepToTick(scrollLeft / STEP_WIDTH),
+            sequence.stepToTick(endStep), sequence.stepToTick(4 / STEP_WIDTH))].filter((mark) => STEP_WIDTH >= 4 || mark.kind === 'measure');
 
         if (workspaceMode === 'tracks') {
-            drawTrackOverview(width, height, first, last, scrollLeft, scrollTop);
+            noteRects = drawTrackOverview(width, height, first, last, scrollLeft, scrollTop, meterMarks);
         } else {
+            if (laneButtons.size) renderLaneControls([], height, scrollTop);
             drawPitchRows(width, height, scrollTop);
-            drawTimingGrid(first, last, height, scrollLeft);
+            drawTimingGrid(first, last, height, scrollLeft, meterMarks);
             drawLoopRegion(width, height, scrollLeft);
             noteRects = drawNoteBlocks(width, height, scrollLeft, scrollTop);
         }
@@ -848,7 +1061,7 @@
         if (workspaceMode === 'piano') {
             drawPianoKeys(height, scrollTop);
         }
-        drawMeasureRuler(first, last, width, scrollLeft);
+        drawMeasureRuler(first, last, width, scrollLeft, meterMarks);
         const cursorX = KEYBOARD_WIDTH + engine.sequence.tickToStep(editingCursorTick) * STEP_WIDTH - scrollLeft;
         if (cursorX >= KEYBOARD_WIDTH && cursorX <= width) {
             drawingContext.fillStyle = ROLL.cursor;
@@ -867,7 +1080,7 @@
         }
     }
 
-    function prepareCanvas(width, height, scrollLeft, scrollTop) {
+    function prepareCanvas(width, height) {
         // One viewport-sized canvas regardless of composition length; no per-cell DOM.
         const size = `${width}:${height}:${window.devicePixelRatio || 1}`;
         if (size !== canvasSizeKey) {
@@ -879,8 +1092,6 @@
             drawingContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
             canvasSizeKey = size;
         }
-        pianoCanvas.style.left = `${scrollLeft}px`;
-        pianoCanvas.style.top = `${scrollTop}px`;
         drawingContext.fillStyle = ROLL.bg;
         drawingContext.fillRect(0, 0, width, height);
     }
@@ -905,21 +1116,34 @@
         }
     }
 
-    function drawTimingGrid(first, last, height, scrollLeft) {
-        for (let step = first; step <= last; step++) {
-            const x = KEYBOARD_WIDTH + step * STEP_WIDTH - scrollLeft;
-            if (x < KEYBOARD_WIDTH) {
-                continue;
-            }
-            const position = engine.sequence.positionAtTick(engine.sequence.stepToTick(step));
-            drawingContext.strokeStyle = position.onBeat ? ROLL.beatLine : ROLL.rowLine;
-            drawingContext.lineWidth = position.onBeat && position.beat === 1 ? 2 : 1;
+    function drawTimingGrid(first, last, height, scrollLeft, meterMarks) {
+        function drawLine(x, color, weight) {
+            if (x < KEYBOARD_WIDTH) return;
+            drawingContext.strokeStyle = color;
+            drawingContext.lineWidth = weight;
             drawingContext.beginPath();
             drawingContext.moveTo(x, RULER_HEIGHT);
             drawingContext.lineTo(x, height);
             drawingContext.stroke();
-            drawingContext.lineWidth = 1;
         }
+
+        const subdivision = snapMode === 'thirty-second' ? 0.5 : 1;
+        drawingContext.strokeStyle = ROLL.rowLine;
+        drawingContext.lineWidth = 1;
+        drawingContext.beginPath();
+        for (let step = first; STEP_WIDTH * subdivision >= 5 && step <= last; step += subdivision) {
+            const x = KEYBOARD_WIDTH + step * STEP_WIDTH - scrollLeft;
+            if (x < KEYBOARD_WIDTH) continue;
+            drawingContext.moveTo(x, RULER_HEIGHT);
+            drawingContext.lineTo(x, height);
+        }
+        drawingContext.stroke();
+        for (const mark of meterMarks) {
+            const x = KEYBOARD_WIDTH + engine.sequence.tickToStep(mark.ticks) * STEP_WIDTH - scrollLeft;
+            const weight = mark.kind === 'measure' ? 2 : mark.kind === 'group' ? 1.5 : 1;
+            drawLine(x, mark.kind === 'subdivision' ? ROLL.rowLine : ROLL.beatLine, weight);
+        }
+        drawingContext.lineWidth = 1;
     }
 
     function drawLoopRegion(width, height, scrollLeft) {
@@ -962,16 +1186,15 @@
                 : note.durationSteps;
             const x = KEYBOARD_WIDTH + startStep * STEP_WIDTH - scrollLeft;
             const y = RULER_HEIGHT + (highestPitch - (preview?.midi ?? note.midi)) * ROW_HEIGHT - scrollTop;
-            const noteWidth = durationSteps * STEP_WIDTH;
+            const displayWidth = Math.max(8, durationSteps * STEP_WIDTH);
             if (
-                x + noteWidth < KEYBOARD_WIDTH ||
+                x + displayWidth < KEYBOARD_WIDTH ||
                 x > width ||
                 y + ROW_HEIGHT < RULER_HEIGHT ||
                 y > height
             ) {
                 return;
             }
-            const displayWidth = Math.max(8, noteWidth);
             drawingContext.fillStyle = preview?.deleteNote
                 ? ROLL.noteDelete
                 : selected
@@ -1051,19 +1274,77 @@
         }
     }
 
-    function drawTrackOverview(width, height, first, last, scrollLeft, scrollTop) {
+    const laneControls = getElement('laneControls');
+    const laneButtons = new Map();
+
+    function renderLaneControls(lanes, height, scrollTop) {
+        const kept = new Set();
+        for (const { track, index } of lanes) {
+            const top = RULER_HEIGHT + (index + 1) * TrackOverview.laneHeight - scrollTop - 28;
+            if (top < RULER_HEIGHT || top + 24 > height) continue;
+            kept.add(track.id);
+            let controls = laneButtons.get(track.id);
+            if (!controls) {
+                const mute = document.createElement('button');
+                mute.type = 'button';
+                mute.className = 'lane-control lane-mute';
+                mute.onclick = () => {
+                    if (databaseProject?.role === 'VIEWER') return;
+                    engine.setLaneMuted(track.id, !engine.mutedLanes.has(track.id));
+                    renderPianoRoll();
+                };
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'lane-control lane-delete';
+                remove.textContent = '🗑';
+                remove.onclick = () => runEditorAction(() => requestTrackDeletion(track.id));
+                for (const button of [mute, remove]) {
+                    button.addEventListener('pointerdown', (event) => event.stopPropagation());
+                }
+                controls = { track, mute, remove };
+                laneButtons.set(track.id, controls);
+                laneControls.append(mute, remove);
+            }
+            const { mute, remove } = controls;
+            controls.track = track;
+            const muted = engine.mutedLanes.has(track.id);
+            mute.disabled = databaseProject?.role === 'VIEWER';
+            remove.disabled = !canDeleteTrack(track);
+            mute.style.top = remove.style.top = `${top}px`;
+            const label = `Mute ${track.name}`;
+            if (mute.getAttribute('aria-label') !== label) mute.setAttribute('aria-label', label);
+            if (mute.getAttribute('aria-pressed') !== String(muted)) {
+                mute.setAttribute('aria-pressed', String(muted));
+                mute.textContent = muted ? '🔇' : '🔊';
+            }
+            mute.title = `${muted ? 'Unmute' : 'Mute'} ${track.name}`;
+            const deleteLabel = `Delete track ${track.name}`;
+            if (remove.getAttribute('aria-label') !== deleteLabel) remove.setAttribute('aria-label', deleteLabel);
+            remove.title = !track.audio && engine.sequence.tracks.length <= 1
+                ? 'The last MIDI track is protected.' : deleteLabel;
+        }
+        for (const [id, { mute, remove }] of laneButtons) {
+            if (kept.has(id)) continue;
+            mute.remove();
+            remove.remove();
+            laneButtons.delete(id);
+        }
+    }
+
+    function drawTrackOverview(width, height, first, last, scrollLeft, scrollTop, meterMarks) {
         getRenderIndex();
         const lanes = renderLanes;
         const visible = lanes.filter((lane) => {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             return y + TrackOverview.laneHeight > RULER_HEIGHT && y < height;
         });
+        renderLaneControls(visible, height, scrollTop);
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
-            drawingContext.fillStyle = lane.track.id === activeTrackId ? ROLL.laneActive : lane.index % 2 ? ROLL.laneAlt : ROLL.bg;
+            drawingContext.fillStyle = lane.track.id === (activeTrackId ?? arrangement.trackId) ? ROLL.laneActive : lane.index % 2 ? ROLL.laneAlt : ROLL.bg;
             drawingContext.fillRect(KEYBOARD_WIDTH, y, width - KEYBOARD_WIDTH, TrackOverview.laneHeight - 1);
         }
-        drawTimingGrid(first, last, height, scrollLeft);
+        drawTimingGrid(first, last, height, scrollLeft, meterMarks);
         drawLoopRegion(width, height, scrollLeft);
         drawingContext.save();
         drawingContext.beginPath();
@@ -1073,9 +1354,25 @@
         for (const note of visibleRenderNotes(width, height, scrollLeft, scrollTop, true)) {
             visibleByTrack.get(note.trackId)?.push(note);
         }
+        const sequence = engine.sequence;
+        const clipsByLane = new Map(visible.filter((lane) => lane.track.audio).map((lane) => [lane.track.id, []]));
+        const clipMasks = [];
+        if (clipsByLane.size) {
+            const from = sequence.stepToTick((scrollLeft - 8) / STEP_WIDTH);
+            const to = sequence.stepToTick((scrollLeft + width - KEYBOARD_WIDTH) / STEP_WIDTH);
+            for (const entry of engine.arrangement.query(sequence, from, to, true)) {
+                clipsByLane.get(entry.clip.trackId)?.push(entry);
+            }
+        }
         for (const lane of visible) {
+            const muted = engine.mutedLanes.has(lane.track.id);
+            drawingContext.globalAlpha = muted ? 0.55 : 1;
+            if (lane.track.audio) {
+                arrangement.draw(drawingContext, lane, { width, height, scrollLeft, scrollTop, clipsByLane, clipMasks });
+                continue;
+            }
             drawingContext.fillStyle = noteColor(lane.track.id);
-            drawingContext.globalAlpha = lane.track.hidden || lane.track.visible === false ? 0.35 : 1;
+            drawingContext.globalAlpha = lane.track.hidden || lane.track.visible === false ? 0.35 : muted ? 0.55 : 1;
             for (const note of visibleByTrack.get(lane.track.id)) {
                 const bounds = TrackOverview.rectangle(note, lane, engine.sequence, { scrollLeft, scrollTop });
                 if (bounds.x + Math.max(2, bounds.width) < KEYBOARD_WIDTH || bounds.x > width) {
@@ -1096,19 +1393,21 @@
         drawingContext.textAlign = 'left';
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
-            drawingContext.fillStyle = lane.track.id === activeTrackId ? ROLL.laneHeaderActive : ROLL.laneHeader;
+            drawingContext.fillStyle = lane.track.id === (activeTrackId ?? arrangement.trackId) ? ROLL.laneHeaderActive : ROLL.laneHeader;
             drawingContext.fillRect(0, y, KEYBOARD_WIDTH, TrackOverview.laneHeight - 1);
             drawingContext.fillStyle = noteColor(lane.track.id);
             drawingContext.fillRect(0, y, 5, TrackOverview.laneHeight - 1);
             drawingContext.fillStyle = ROLL.text;
             const label = lane.track.name.length > 10 ? lane.track.name.slice(0, 9) + '…' : lane.track.name;
             for (const x of [10, 16]) {
-                for (const offset of [24, 30, 36]) {
+                for (const offset of [12, 18, 24]) {
                     drawingContext.fillRect(x, y + offset, 2, 2);
                 }
             }
-            drawingContext.fillText(label, 28, y + 28);
-            drawingContext.fillText(`${lane.notes.length} notes`, 28, y + 48);
+            drawingContext.fillText(label, 28, y + 28, 69);
+            const count = lane.track.audio ? engine.arrangement.getIndex(sequence).counts.get(lane.track.id) ?? 0 : lane.notes.length;
+            const noun = lane.track.audio ? 'clip' : 'note';
+            drawingContext.fillText(`${count} ${noun}${count === 1 ? '' : 's'}`, 28, y + 48);
         }
         drawingContext.restore();
         if (trackGesture) {
@@ -1124,13 +1423,24 @@
                 }
             }
         }
+        const destination = arrangement.dropPreview;
+        if (destination && !destination.trackId) {
+            const index = destination.below ? lanes.findIndex(({ track }) => track.id === destination.below) + 1 : lanes.length;
+            const y = Math.max(RULER_HEIGHT, Math.min(height - 4,
+                RULER_HEIGHT + index * TrackOverview.laneHeight - scrollTop));
+            const x = Math.max(KEYBOARD_WIDTH, KEYBOARD_WIDTH + sequence.tickToStep(destination.startTick) * STEP_WIDTH - scrollLeft);
+            drawingContext.fillStyle = ROLL.marquee;
+            drawingContext.fillRect(KEYBOARD_WIDTH, y, width - KEYBOARD_WIDTH, 3);
+            drawingContext.fillRect(x, y - 8, 3, 11);
+        }
+        return clipMasks;
     }
 
     function drawPianoKeys(height, scrollTop) {
         // Sticky keyboard and ruler are drawn last.
         drawingContext.fillStyle = ROLL.keyWhite;
         drawingContext.fillRect(0, RULER_HEIGHT, KEYBOARD_WIDTH, height);
-        drawingContext.font = '11px system-ui';
+        drawingContext.font = `${Math.min(11, ROW_HEIGHT - 2)}px system-ui`;
         drawingContext.textAlign = 'right';
         for (
             let row = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT));
@@ -1140,34 +1450,43 @@
         ) {
             const midi = highestPitch - row;
             const y = RULER_HEIGHT + row * ROW_HEIGHT - scrollTop;
-            if (y < RULER_HEIGHT) {
-                continue;
-            }
             const isBlackKey = [1, 3, 6, 8, 10].includes(midi % 12);
             drawingContext.fillStyle = isBlackKey ? ROLL.keyBlack : ROLL.keyWhite;
             drawingContext.fillRect(0, y, KEYBOARD_WIDTH, ROW_HEIGHT - 1);
             drawingContext.fillStyle = isBlackKey ? ROLL.keyLabelOnBlack : ROLL.keyLabel;
-            drawingContext.fillText(NoteSequence.pitchName(midi), KEYBOARD_WIDTH - 8, y + 16);
+            drawingContext.fillText(NoteSequence.pitchName(midi), KEYBOARD_WIDTH - 8, y + ROW_HEIGHT / 2 + 4);
         }
     }
 
-    function drawMeasureRuler(first, last, width, scrollLeft) {
+    function drawMeasureRuler(first, last, width, scrollLeft, meterMarks) {
         drawingContext.fillStyle = ROLL.rulerBg;
         drawingContext.fillRect(0, 0, width, RULER_HEIGHT);
         drawingContext.textAlign = 'left';
+        drawingContext.font = '11px system-ui';
         drawingContext.fillStyle = ROLL.text;
         drawingContext.fillText(workspaceMode === 'tracks' ? 'Tracks / Time' : 'Pitch / Measure', 4, 20);
-        for (let step = first; step < last; step++) {
-            const x = KEYBOARD_WIDTH + step * STEP_WIDTH - scrollLeft;
-            if (x < KEYBOARD_WIDTH) {
-                continue;
+        const bars = meterMarks.filter((mark) => mark.kind === 'measure');
+        if (STEP_WIDTH < 18) first = last;
+        let barIndex = 0;
+        let labelEnd = KEYBOARD_WIDTH;
+        for (let step = first; step < last || barIndex < bars.length;) {
+            const bar = bars[barIndex];
+            const barStep = bar ? engine.sequence.tickToStep(bar.ticks) : Infinity;
+            const isBar = barStep <= step || step >= last;
+            const x = KEYBOARD_WIDTH + (isBar ? barStep : step) * STEP_WIDTH - scrollLeft;
+            const label = isBar ? `M${bar.measure}` : String(step + 1);
+            if (isBar) {
+                barIndex++;
+                if (barStep === step) step++;
+            } else {
+                step++;
             }
-            const position = engine.sequence.positionAtTick(engine.sequence.stepToTick(step));
-            drawingContext.fillText(
-                position.onBeat && position.beat === 1 ? `M${position.measure}` : String(step + 1),
-                x + 3,
-                20
-            );
+            const labelWidth = 7 * label.length + 5;
+            const nextBarX = KEYBOARD_WIDTH + barStep * STEP_WIDTH - scrollLeft;
+            if (x + 1e-8 >= labelEnd && x + 3 < width && (isBar || x + labelWidth <= nextBarX)) {
+                drawingContext.fillText(label, x + 3, 20);
+                labelEnd = x + labelWidth;
+            }
         }
     }
 
@@ -1182,7 +1501,17 @@
     }
 
     function candidatesAt(point) {
-        return PianoRollEditor.notesAtPoint(editableNotes(), point, currentView());
+        if (point.x < KEYBOARD_WIDTH || point.y < RULER_HEIGHT) return [];
+        const view = currentView();
+        const pitch = highestPitch - Math.floor((point.y + view.scrollTop - RULER_HEIGHT) / ROW_HEIGHT);
+        if (pitch < lowestPitch || pitch > highestPitch) return [];
+        const sequence = engine.sequence;
+        const tracks = new Set(sequence.tracks.filter((track) => !track.hidden && track.visible !== false &&
+            (activeTrackId === null || activeTrackId === track.id)).map((track) => track.id));
+        const contentX = point.x + view.scrollLeft - KEYBOARD_WIDTH;
+        const notes = getRenderIndex().query(sequence.stepToTick((contentX - 8) / STEP_WIDTH),
+            sequence.stepToTick(contentX / STEP_WIDTH), pitch, pitch, (note) => tracks.has(note.trackId));
+        return PianoRollEditor.notesAtPoint(notes, point, view);
     }
 
     function cycleOverlap() {
@@ -1199,7 +1528,6 @@
             // The cursor's last integer tick represents the end of a fractional-tick pattern.
             engine.seekPaused(ticks === Math.floor(compositionEnd) ? compositionEnd : ticks);
             displayedStep = engine.sequence.tickToStep(engine.getPlaybackTick());
-            renderSampleEditor();
         }
         getElement('cursorPosition').textContent = PianoRollEditor.cursorLabel(engine.sequence, ticks);
         renderPianoRoll();
@@ -1229,9 +1557,17 @@
             return;
         }
         if (workspaceMode === 'tracks') {
-            const index = TrackOverview.laneAt(point, pianoViewport.scrollTop, engine.sequence.tracks.length);
-            if (index >= 0) {
-                setWorkspace('tracks', engine.sequence.tracks[index].id);
+            const track = overviewTrackAt(point);
+            if (track?.audio) {
+                arrangement.hooks.clearMidiTrack();
+                const hit = arrangement.clipAt(point, track);
+                arrangement.select(track.id, hit?.clip.id, event.shiftKey && Boolean(hit));
+                updateTrackActions();
+            } else if (track) {
+                arrangement.select(null);
+                setWorkspace('tracks', track.id);
+            } else {
+                arrangement.select(null);
             }
             return;
         }
@@ -1269,11 +1605,8 @@
                 return;
             }
             try {
-                const ticks = Math.round(engine.sequence.stepToTick(Math.floor(step)));
-                const durationTicks = PianoRollEditor.durationTicks(
-                    engine.sequence,
-                    newNoteLengthSteps
-                );
+                const ticks = PianoRollEditor.snappedTicks(engine.sequence, step, snapMode, true);
+                const durationTicks = newNoteDurationTicks();
                 if (
                     ticks + durationTicks >
                     Math.floor(engine.sequence.stepToTick(engine.totalSteps))
@@ -1343,6 +1676,28 @@
         }
     }
 
+    function newNoteDurationTicks() {
+        return Math.max(1, Math.round(engine.sequence.stepToTick(newNoteLengthSteps)));
+    }
+
+    function dragThreshold() {
+        return snapMode === 'free' ? Math.min(3, STEP_WIDTH * engine.sequence.tickToStep(0.5)) : 3;
+    }
+
+    function updateSnapInfo() {
+        const info = getElement('snapInfo');
+        const interval = PianoRollEditor.snapInterval(snapMode);
+        info.hidden = !interval || Number.isInteger(engine.sequence.stepToTick(interval));
+        info.textContent = info.hidden ? '' : `${engine.sequence.ppq} PPQ: grid positions round to the nearest MIDI tick.`;
+    }
+
+    getElement('noteSnap').onchange = (event) => {
+        cancelEditorGesture();
+        snapMode = event.target.value;
+        updateSnapInfo();
+        renderPianoRoll();
+    };
+
     function changeLength() {
         try {
             const durationTicks = PianoRollEditor.durationTicks(
@@ -1366,7 +1721,7 @@
                     return selectedIds.size === 1 ? Math.max(1, ticks) : ticks;
                 });
             } else {
-                const durationTicks = PianoRollEditor.durationTicks(engine.sequence, newNoteLengthSteps);
+                const durationTicks = newNoteDurationTicks();
                 applyLengthTicks(PianoRollEditor.adjustedLength(engine.sequence, durationTicks, direction));
             }
         } catch (error) {
@@ -1457,7 +1812,7 @@
             resizeGesture.startX +
             pianoViewport.scrollLeft -
             resizeGesture.startScrollLeft;
-        if (Math.abs(distance) < 3 && !resizeGesture.moved) {
+        if (Math.abs(distance) < dragThreshold() && !resizeGesture.moved) {
             return;
         }
         const point = canvasPoint(event);
@@ -1470,7 +1825,7 @@
                 const requested = resizeGesture.edge === 'right'
                     ? step - sequence.tickToStep(resizeGesture.original.ticks + resizeGesture.original.durationTicks)
                     : sequence.tickToStep(resizeGesture.original.ticks) - step;
-                resizeGesture.previews = PianoRollEditor.resizedGroup(sequence, originals, requested);
+                resizeGesture.previews = PianoRollEditor.resizedGroup(sequence, originals, requested, snapMode);
                 resizeGesture.preview = resizeGesture.previews.get(resizeGesture.noteId);
             } else {
                 resizeGesture.preview = PianoRollEditor.resizedTiming(
@@ -1478,7 +1833,8 @@
                     resizeGesture.original,
                     resizeGesture.edge,
                     step,
-                    pointerStep
+                    pointerStep,
+                    snapMode
                 );
             }
             resizeGesture.moved = true;
@@ -1541,6 +1897,7 @@
     }
 
     function cancelEditorGesture() {
+        arrangement.cancelGesture();
         if (trackGesture) {
             const pointerId = trackGesture.pointerId;
             trackGesture = null;
@@ -1558,7 +1915,6 @@
                 displayedStep = engine.sequence.tickToStep(engine.getPlaybackTick());
             }
             setEditingCursor(gesture.originalTick, false);
-            renderSampleEditor();
             releasePointer(gesture.pointerId);
         }
         if (editGesture) {
@@ -1598,7 +1954,7 @@
         trackGesture.clientY = event.clientY;
         const point = canvasPoint(event);
         const drop = TrackOverview.dropPosition(point.y, pianoViewport.scrollTop,
-            engine.sequence.tracks.length, trackGesture.fromIndex);
+            overviewTracks().length, trackGesture.fromIndex);
         trackGesture.boundary = drop.boundary;
         trackGesture.toIndex = drop.index;
         trackGesture.valid = point.y >= RULER_HEIGHT && point.y <= pianoViewport.clientHeight &&
@@ -1615,7 +1971,7 @@
         const elapsed = trackGesture.lastFrameTime === null ? 16 : Math.min(50, Math.max(0, timestamp - trackGesture.lastFrameTime));
         trackGesture.lastFrameTime = timestamp;
         const direction = y < RULER_HEIGHT + 24 ? -1 : y > pianoViewport.clientHeight - 24 ? 1 : 0;
-        const maximum = Math.max(0, RULER_HEIGHT + engine.sequence.tracks.length * TrackOverview.laneHeight - pianoViewport.clientHeight);
+        const maximum = Math.max(0, RULER_HEIGHT + overviewTracks().length * TrackOverview.laneHeight - pianoViewport.clientHeight);
         const top = Math.max(0, Math.min(maximum, pianoViewport.scrollTop + direction * elapsed * 0.6));
         if (top === pianoViewport.scrollTop) {
             return false;
@@ -1628,9 +1984,10 @@
     }
 
     function beginGesture(event) {
-        if (editGesture || resizeGesture || cursorGesture || trackGesture || event.button !== 0) {
+        if (editGesture || resizeGesture || cursorGesture || trackGesture || arrangement.gesture || event.button !== 0) {
             return;
         }
+        arrangement.selectRackAsset(null);
         checkHistory();
         pianoViewport.focus({ preventScroll: true });
         const initialPoint = canvasPoint(event);
@@ -1650,17 +2007,18 @@
             return;
         }
         if (workspaceMode === 'tracks') {
-            const index = TrackOverview.laneAt(initialPoint, pianoViewport.scrollTop, engine.sequence.tracks.length);
-            if (index >= 0 && initialPoint.x >= 6 && initialPoint.x < 24) {
+            const tracks = overviewTracks();
+            const index = TrackOverview.laneAt(initialPoint, pianoViewport.scrollTop, tracks.length);
+            if (index >= 0 && initialPoint.x >= 6 && initialPoint.x < 24 && databaseProject?.role !== 'VIEWER') {
                 trackGesture = {
                     pointerId: event.pointerId,
                     sequence: engine.sequence,
-                    id: engine.sequence.tracks[index].id,
+                    id: tracks[index].id,
                     fromIndex: index,
                     toIndex: index,
                     boundary: index,
                     valid: true,
-                    order: engine.sequence.tracks.map((track) => track.id),
+                    order: tracks.map((track) => track.id),
                     clientX: event.clientX,
                     clientY: event.clientY,
                     lastFrameTime: null
@@ -1676,6 +2034,11 @@
             } else {
                 suppressTrackOpen = false;
                 suppressResizeClick = false;
+                if (tracks[index]?.audio && initialPoint.x >= KEYBOARD_WIDTH) {
+                    arrangement.begin(event, initialPoint, tracks[index]);
+                    suppressResizeClick = true;
+                    updateTrackActions();
+                }
             }
             return;
         }
@@ -1706,6 +2069,7 @@
     }
 
     function moveGesture(event) {
+        if (arrangement.gesture) { arrangement.move(event); return; }
         if (trackGesture) {
             if (trackGesture.pointerId === event.pointerId) {
                 moveTrackGesture(event);
@@ -1720,9 +2084,12 @@
         }
         if (!editGesture) {
             if (workspaceMode === 'tracks') {
-                pianoCanvas.style.cursor = canvasPoint(event).x >= 6 && canvasPoint(event).x < 24 ? 'grab' : 'pointer';
-                const index = TrackOverview.laneAt(canvasPoint(event), pianoViewport.scrollTop, engine.sequence.tracks.length);
-                pianoCanvas.title = index >= 0 ? engine.sequence.tracks[index].name + ' — drag the grip to reorder; double-click the lane to edit' : '';
+                const point = canvasPoint(event);
+                const lane = overviewTrackAt(point);
+                const hit = lane?.audio && arrangement.clipAt(point, lane);
+                pianoCanvas.style.cursor = hit && arrangement.razor && arrangement.hooks.canEdit() ? 'crosshair'
+                    : hit ? 'move' : lane && point.x >= 6 && point.x < 24 ? 'grab' : 'pointer';
+                pianoCanvas.title = lane ? lane.name : '';
                 return;
             }
             movePointer(event);
@@ -1735,7 +2102,7 @@
         gesture.point = contentPoint(event);
         const dx = gesture.point.x - gesture.start.x;
         const dy = gesture.point.y - gesture.start.y;
-        if (!gesture.moved && Math.hypot(dx, dy) < 3) {
+        if (!gesture.moved && Math.hypot(dx, dy) < (gesture.kind === 'marquee' ? 3 : dragThreshold())) {
             return;
         }
         if (!gesture.moved && gesture.note && !selectedIds.has(gesture.note.id)) {
@@ -1756,7 +2123,7 @@
             selectedNoteId = [...selectedIds][0] ?? null;
         } else {
             const notes = [...gesture.before.values()].filter((note) => selectedIds.has(note.id));
-            gesture.previews = PianoRollEditor.movedNotes(engine.sequence, notes, dx, dy);
+            gesture.previews = PianoRollEditor.movedNotes(engine.sequence, notes, dx, dy, snapMode);
             if (!gesture.previews) {
                 showStatus('Extend the pattern before moving notes with tails beyond its end.');
             }
@@ -1766,6 +2133,13 @@
     }
 
     function finishGesture(event) {
+        if (arrangement.gesture) {
+            if (arrangement.gesture.pointerId === event.pointerId) {
+                arrangement.finish(event);
+                suppressResizeClick = true;
+            }
+            return;
+        }
         if (trackGesture) {
             if (trackGesture.pointerId !== event.pointerId) {
                 return;
@@ -1775,9 +2149,9 @@
             trackGesture = null;
             suppressResizeClick = true;
             releasePointer(event.pointerId);
+            const tracks = overviewTracks();
             const unchanged = gesture.sequence === engine.sequence &&
-                gesture.order.length === engine.sequence.tracks.length &&
-                gesture.order.every((id, index) => id === engine.sequence.tracks[index].id);
+                gesture.order.length === tracks.length && gesture.order.every((id, index) => id === tracks[index].id);
             if (gesture.valid && unchanged) {
                 runEditorAction(() => reorderTrack(gesture.id, gesture.toIndex));
             } else {
@@ -1826,10 +2200,8 @@
         if (workspaceMode !== 'tracks' || trackGesture || suppressTrackOpen || canvasPoint(event).x < 24) {
             return;
         }
-        const index = TrackOverview.laneAt(canvasPoint(event), pianoViewport.scrollTop, engine.sequence.tracks.length);
-        if (index >= 0) {
-            runEditorAction(() => setWorkspace('piano', engine.sequence.tracks[index].id));
-        }
+        const track = overviewTrackAt(canvasPoint(event));
+        if (track && !track.audio) runEditorAction(() => setWorkspace('piano', track.id));
     };
     getElement('tracksView').onclick = () => {
         runEditorAction(() => setWorkspace('tracks'));
@@ -1861,7 +2233,7 @@
     pianoCanvas.onpointermove = moveGesture;
     pianoCanvas.onpointerup = finishGesture;
     pianoCanvas.onpointercancel = (event) => {
-        if (editGesture?.pointerId === event.pointerId) {
+        if (editGesture?.pointerId === event.pointerId || arrangement.gesture?.pointerId === event.pointerId) {
             cancelEditorGesture();
         } else {
             cancelPointerGesture(event);
@@ -1875,49 +2247,43 @@
         pianoViewport.focus({ preventScroll: true });
     }
 
-    function requestTrackDeletion() {
-        if (trackGesture) {
-            return;
-        }
+    function trackContents(track) {
+        const items = track.audio ? engine.arrangement.clips.values() : engine.sequence.notes;
+        return [...items].filter((item) => item.trackId === track.id);
+    }
+
+    function requestTrackDeletion(id) {
+        const track = overviewTracks().find((candidate) => candidate.id === id);
+        if (!track || !canDeleteTrack(track)) return;
         engine.assertTrackDeletionStopped();
-        const track = activeTrack();
-        if (!track || engine.sequence.tracks.length <= 1) {
-            throw new Error('Select a MIDI track; the last track cannot be deleted.');
-        }
-        const notes = engine.sequence.notes.filter((note) => note.trackId === track.id);
-        if (!notes.length) {
-            deleteTrack(track.id);
+        const items = trackContents(track);
+        if (!items.length) {
+            deleteTrack(track);
             return;
         }
-        pendingTrackDeletion = { sequence: engine.sequence, id: track.id, name: track.name, noteIds: new Set(notes.map((note) => note.id)) };
-        getElement('deleteTrackMessage').textContent = `Delete track '${track.name}' and its ${notes.length} MIDI notes? Undo can restore it.`;
+        pendingTrackDeletion = { sequence: engine.sequence, id, name: track.name, itemIds: new Set(items.map((item) => item.id)) };
+        const noun = track.audio ? 'audio clip' : 'MIDI note';
+        getElement('deleteTrackMessage').textContent =
+            `Delete track '${track.name}' and its ${items.length} ${noun}${items.length === 1 ? '' : 's'}? Undo can restore it.`;
         deleteTrackDialog.showModal();
         getElement('cancelDeleteTrack').focus();
     }
 
-    getElement('moveTrackUp').onclick = () => runEditorAction(() => {
-        if (!trackGesture) {
-            reorderTrack(activeTrackId, engine.sequence.tracks.findIndex((track) => track.id === activeTrackId) - 1);
-        }
-    });
-    getElement('moveTrackDown').onclick = () => runEditorAction(() => {
-        if (!trackGesture) {
-            reorderTrack(activeTrackId, engine.sequence.tracks.findIndex((track) => track.id === activeTrackId) + 1);
-        }
-    });
-    getElement('deleteMidiTrack').onclick = () => runEditorAction(requestTrackDeletion);
     getElement('cancelDeleteTrack').onclick = closeTrackDeletion;
     getElement('confirmDeleteTrack').onclick = () => runEditorAction(() => {
         const request = pendingTrackDeletion;
-        const track = engine.sequence.tracks.find((candidate) => candidate.id === request?.id);
-        const notes = engine.sequence.notes.filter((note) => note.trackId === request?.id);
+        const track = overviewTracks().find((candidate) => candidate.id === request?.id);
+        const items = track ? trackContents(track) : [];
         if (!request || request.sequence !== engine.sequence || track?.name !== request.name ||
-            notes.length !== request.noteIds.size || notes.some((note) => !request.noteIds.has(note.id))) {
+            items.length !== request.itemIds.size || items.some((item) => !request.itemIds.has(item.id))) {
             closeTrackDeletion();
             throw new Error('The track changed. Request deletion again.');
         }
-        engine.assertTrackDeletionStopped();
-        deleteTrack(request.id);
+        if (!canDeleteTrack(track)) {
+            closeTrackDeletion();
+            return;
+        }
+        deleteTrack(track);
         closeTrackDeletion();
     });
     deleteTrackDialog.addEventListener('cancel', (event) => {
@@ -1934,19 +2300,14 @@
     function clearSelectionOrCancel() {
         if (resizeGesture || editGesture || cursorGesture || trackGesture) {
             cancelEditorGesture();
+        } else if (workspaceMode === 'tracks') {
+            arrangement.select(arrangement.trackId);
         } else {
             selectNote(null);
         }
     }
 
     const editorShortcuts = [
-        {
-            key: ' ',
-            label: 'Space',
-            description: 'Play from edit cursor, then repeat the full loop / Pause / Resume from saved or explicitly sought position',
-            button: 'playButton',
-            action: togglePlayback
-        },
         {
             key: 'a',
             modifier: true,
@@ -1958,7 +2319,7 @@
             key: 'c',
             modifier: true,
             label: 'Cmd/Ctrl+C',
-            description: 'Copy selected notes',
+            description: 'Copy selected notes or audio clips',
             button: 'copyNotes',
             action: () => clipboardEdit('copy')
         },
@@ -1966,7 +2327,7 @@
             key: 'x',
             modifier: true,
             label: 'Cmd/Ctrl+X',
-            description: 'Cut selected notes',
+            description: 'Cut selected notes or audio clips',
             button: 'cutNotes',
             action: () => clipboardEdit('cut')
         },
@@ -1990,7 +2351,7 @@
             key: 'z',
             modifier: true,
             label: 'Cmd/Ctrl+Z',
-            description: 'Undo a note edit',
+            description: 'Undo an editor action',
             button: 'undoNotes',
             action: () => restoreHistory(undoStack, redoStack, 'before')
         },
@@ -1999,7 +2360,7 @@
             modifier: true,
             shift: true,
             label: 'Cmd/Ctrl+Shift+Z',
-            description: 'Redo a note edit',
+            description: 'Redo an editor action',
             button: 'redoNotes',
             action: () => restoreHistory(redoStack, undoStack, 'after')
         },
@@ -2061,19 +2422,21 @@
         }
     ];
     const mouseControls = [
-        ['Track order / deletion', 'Drag the left grip in Tracks to an insertion line; release to reorder. Escape or pointer cancellation cancels. Up/Down Track buttons are the keyboard alternative. Delete names the active track, confirms nonempty tracks, requires Stop and protects the last track. Track order and deletion support Undo/Redo.'],
+        ['Track order / deletion', 'Drag the left grip in Tracks to an insertion line; release to reorder. Escape or pointer cancellation cancels. Delete names the active track, confirms nonempty tracks, requires Stop and protects the last track. Track order and deletion support Undo/Redo.'],
         ['Tracks / Piano Roll', 'Switch perspectives without resetting playback or the cursor. Click a lane to select it; double-click a lane or choose Piano Roll / Edit Track to edit. The Active track selector also supports keyboard selection and All Notes.'],
         ['Ghost Notes', 'In a focused piano roll, show other tracks as faded, non-interactive references. New notes and Paste target the active track. All Notes paste preserves source track identities.'],
         ['Click empty grid space', 'Clear the selection without creating a note. With nothing selected, create a note on the active track (All Notes uses Piano, or the first surviving track) with the current length and velocity.'],
         ['Click a note', 'Select it. Repeated clicks cycle independent overlapping notes.'],
         ['Shift-click a note', 'Add or remove that note from selection.'],
+        ['Cut Mode in Tracks', 'Drag down across an audio clip to split it at the snapped position. Escape cancels.'],
+        ['Shift-click an audio clip', 'Add or remove the clip from the arrangement selection.'],
         ['Drag empty grid space', 'Marquee-select intersecting notes; Shift adds to the selection.'],
         ['Drag note body', 'Move in time and pitch. Dragging a selected note moves the selected group.'],
         ['Drag note edge', 'Resize the note. A selected group shares a duration change and keeps every start fixed.'],
         ['Cross the opposite edge', 'Single-note resizing previews deletion; release deletes. Group resizing never deletes.'],
         ['Playback follow', 'The orange playhead locks to the musical-grid midpoint only after crossing from the left. Horizontal navigation releases it; scrolling ahead rearms a later crossing. Pause, wraps and resizing reassess readiness without recentering.'],
-        ['Synth / Drums', 'Open instrument menus from the top toolbar; Close or Escape dismisses them. Pointer-operated sliders release focus on completion and native selects after an option change, so Space controls transport. Tab-focused controls retain native keyboard behavior.'],
-        ['Toolbar focus', 'Mouse-activated DAW buttons and Workspace Options return focus to the visible workspace so Space controls transport. Tab-focused controls retain native Space/Enter activation. Inputs and dialogs keep their focus.'],
+        ['Synth / Drums', 'Open instrument menus from the top toolbar; Close or Escape dismisses them. Pointer-operated sliders release focus on completion and native selects after an option change, so Space controls transport. Enter activates focused controls.'],
+        ['Toolbar focus', 'Mouse-activated DAW buttons and Workspace Options return focus to the visible workspace so Space controls transport. Enter activates focused controls. Space controls playback. Inputs and dialogs keep their focus.'],
         ['Play button / Space', 'Before or inside the loop, audition from the cursor to loop end; at or beyond loop end, audition to composition end. Then repeat the configured full loop. A cursor at composition end starts at loop start.'],
         ['Click or drag timeline ruler', 'Position the edit/paste cursor to the nearest MIDI tick without grid snapping. Escape or pointer cancellation restores its original position. While paused, moving it also seeks Resume; during playback it does not seek.'],
         ['Scroll / horizontal scroll', 'Explore pitches vertically and measures horizontally using scrollbars or your trackpad.'],
@@ -2089,6 +2452,7 @@
         container.append(term, definition);
     }
 
+    appendGuideEntry(getElement('keyboardGuide'), 'Space', 'Play, pause, or resume the transport.');
     for (const shortcut of editorShortcuts) {
         appendGuideEntry(getElement('keyboardGuide'), shortcut.label, shortcut.description);
         if (shortcut.button) {
@@ -2189,7 +2553,34 @@
             Boolean(shortcut.shift) === Boolean(event.shiftKey) && !event.altKey;
     }
 
+    // Capture both ends of the key press. Native buttons and summaries can
+    // activate on keyup even when a different control held focus at keydown.
+    let transportSpaceDown = false;
+    const isSpace = (event) => event.key === ' ' || event.code === 'Space';
+    function handleTransportSpace(event) {
+        if (!isSpace(event)) return false;
+        const target = event.target;
+        const typing = target?.isContentEditable || target?.closest?.('textarea, [role="textbox"], [contenteditable="true"]') ||
+            target?.tagName === 'TEXTAREA' ||
+            (target?.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'file'].includes(target.type));
+        if (!transportSpaceDown && (event.type === 'keyup' || event.altKey || event.ctrlKey || event.metaKey ||
+            typing || deleteTrackDialog.open || shortcutsDialog.open ||
+            document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'))) return false;
+        event.preventDefault();
+        event.stopImmediatePropagation?.();
+        if (event.type === 'keyup') transportSpaceDown = false;
+        else if (!event.repeat && !transportSpaceDown) {
+            transportSpaceDown = true;
+            togglePlayback();
+        }
+        return true;
+    }
+
+    document.addEventListener('keyup', (event) => handleTransportSpace(event), true);
+    window.addEventListener('blur', () => { transportSpaceDown = false; });
+
     document.addEventListener('keydown', (event) => {
+        if (handleTransportSpace(event)) return;
         focusPolicyRevision++;
         pointerInput = null;
         if (deleteTrackDialog.open) {
@@ -2209,7 +2600,7 @@
         if (document.querySelector?.('dialog[open], [role="dialog"][aria-modal="true"]')) {
             return;
         }
-        if (event.key === 'Escape' && (resizeGesture || editGesture || cursorGesture || trackGesture)) {
+        if (event.key === 'Escape' && (resizeGesture || editGesture || cursorGesture || trackGesture || arrangement.gesture)) {
             event.preventDefault();
             cancelEditorGesture();
             return;
@@ -2224,18 +2615,49 @@
             ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName)) {
             return;
         }
+        if (workspaceMode === 'tracks' && arrangement.rackAssetId &&
+            (event.key === 'Delete' || event.key === 'Backspace') &&
+            !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+            event.preventDefault();
+            if (!event.repeat) return arrangement.deleteRackAsset();
+            return;
+        }
+        if (workspaceMode === 'tracks' && !arrangement.gesture && !trackGesture && !cursorGesture &&
+            !['BUTTON', 'A', 'SUMMARY'].includes(target?.tagName) &&
+            !target?.closest?.('button, a, summary') && !event.altKey && !event.shiftKey) {
+            const key = event.key.toLowerCase();
+            const command = event.metaKey || event.ctrlKey;
+            checkHistory();
+            const editable = arrangement.hooks.canEdit();
+            let action;
+            if (command && key === 'c' && arrangement.clipId) action = () => arrangement.copySelected();
+            if (editable) {
+                if (command && key === 'v' && arrangement.clipboard.length) {
+                    action = () => arrangement.pasteClips(arrangement.clipboard, editingCursorTick);
+                } else if (arrangement.clipId) {
+                    if (command && key === 'd') action = () => arrangement.duplicateSelected();
+                    if (command && key === 'x') action = () => arrangement.copySelected(true);
+                    if (!command && (key === 'delete' || key === 'backspace')) action = () => arrangement.deleteSelected();
+                }
+            }
+            if (action) {
+                event.preventDefault();
+                runEditorAction(action);
+                return;
+            }
+        }
         const shortcut = editorShortcuts.find((entry) => !entry.local && matchesShortcut(entry, event));
         if (!shortcut || resizeGesture || editGesture || cursorGesture || trackGesture) {
             return;
         }
-        if ((shortcut.key === ' ' || shortcut.navigation) &&
+        if (shortcut.navigation &&
             (target?.closest?.('button, a, summary, [role="button"], [role="menuitem"], [role="menu"], [role="tab"], [role="slider"], [role="radio"], [role="listbox"], [role="tree"], [role="checkbox"], [role="switch"], [role="combobox"], [role="spinbutton"], [role="textbox"]') ||
             ['BUTTON', 'A', 'SUMMARY'].includes(target?.tagName))) {
             return;
         }
         if (databaseProject?.role === 'VIEWER' && !shortcut.navigation &&
-            ![' ', 'escape', 'a', 'c'].includes(shortcut.key)) return;
-        if (workspaceMode === 'tracks' && ![' ', 'z', 'escape'].includes(shortcut.key)) {
+            !['escape', 'a', 'c'].includes(shortcut.key)) return;
+        if (workspaceMode === 'tracks' && !['z', 'escape'].includes(shortcut.key)) {
             return;
         }
         if (shortcut.navigation && !directionalTarget(shortcut.navigation)) {
@@ -2245,11 +2667,8 @@
             return;
         }
         event.preventDefault();
-        if (shortcut.key === ' ' && event.repeat) {
-            return;
-        }
         runEditorAction(shortcut.action);
-    });
+    }, true);
     getElement('nextOverlap').onclick = cycleOverlap;
     getElement('deleteNote').onclick = deleteSelectedNote;
     getElement('saveProject').onclick = saveDatabaseProject;
@@ -2304,15 +2723,47 @@
 
     getElement('patternSteps').onchange = () =>
         resizePattern(Number(getElement('patternSteps').value));
-    const getStepsPerMeasure = () => {
-        const position = engine.sequence.positionAtTick(
-            engine.sequence.stepToTick(engine.totalSteps - 1)
-        );
-        return Math.max(1, Math.round((16 * position.meter[0]) / position.meter[1]));
+    function meterSelection() {
+        const sequence = engine.sequence;
+        const signature = sequence.positionAtTick(0).meter.join('/');
+        const hasMap = sequence.timeSignatures.length > 1 ||
+            sequence.timeSignatures.some((event) => event.ticks !== 0);
+        return { signature, hasMap, editable: !hasMap && supportedMeters.includes(signature) };
+    }
+
+    function updateMeterControls(busy) {
+        const { signature, hasMap, editable } = meterSelection();
+        const select = getElement('timeSignature');
+        const info = getElement('meterInfo');
+        getElement('importedMeter').textContent = hasMap ? `${signature} · meter changes` : signature;
+        select.value = editable ? signature : 'imported';
+        select.disabled = busy || !editable;
+        info.hidden = editable;
+        info.textContent = editable ? '' : hasMap
+            ? 'This composition has a meter map. The timeline preserves each meter change.'
+            : 'This meter is read-only. The timeline displays the saved signature.';
+    }
+
+    getElement('timeSignature').onchange = (event) => {
+        const value = event.target.value;
+        if (!meterSelection().editable || !supportedMeters.includes(value) ||
+            databaseProject?.role === 'VIEWER' || engine.isPlaying || engine.startPromise) return;
+        engine.sequence.timeSignatures = [{ ticks: 0, timeSignature: value.split('/').map(Number) }];
+        syncEditingCursor();
+        updateMeterControls(false);
+        renderPianoRoll();
     };
 
-    getElement('addBar').onclick = () => resizePattern(engine.totalSteps + getStepsPerMeasure());
-    getElement('removeBar').onclick = () => resizePattern(engine.totalSteps - getStepsPerMeasure());
+    function changeMeasureLength(direction) {
+        const sequence = engine.sequence;
+        const endTick = sequence.stepToTick(engine.totalSteps);
+        const { meter } = sequence.positionAtTick(direction > 0 ? endTick : Math.ceil(endTick) - 1);
+        const steps = Math.max(1, Math.round(16 * meter[0] / meter[1]));
+        resizePattern(engine.totalSteps + direction * steps);
+    }
+
+    getElement('addBar').onclick = () => changeMeasureLength(1);
+    getElement('removeBar').onclick = () => changeMeasureLength(-1);
     loopStartInput.onchange = loopEndInput.onchange = () => {
         try {
             if (!loopStartInput.value || !loopEndInput.value) {
@@ -2331,6 +2782,7 @@
                 throw new Error('Enter a BPM from 40 to 240.');
             }
             engine.setBpm(Number(bpmInput.value));
+            pendingViewportRender = true;
             showStatus(`Tempo: ${engine.bpm} BPM.`);
         } catch (error) {
             showStatus(error.message);
@@ -2338,6 +2790,10 @@
         bpmInput.value = engine.bpm;
     };
     async function togglePlayback() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (isStartingPlayback || engine.isPlaying || engine.startPromise) {
             playRequestId++;
             engine.pause();
@@ -2346,7 +2802,6 @@
             displayedStep = engine.sequence.tickToStep(engine.getPlaybackTick());
             updateTransportControls();
             renderPianoRoll();
-            renderSampleEditor();
             showStatus('Paused. Space or Resume continues from this position.');
             return;
         }
@@ -2379,10 +2834,10 @@
         updateTransportControls();
         displayedStep = null;
         renderPianoRoll();
-        renderSampleEditor();
         showStatus('Stopped. Position reset to loop start.');
     }
 
+    playButton.onclick = togglePlayback;
     getElement('stopButton').onclick = stopPlayback;
     engine.onError = (error, details) => {
         if (details?.fatal !== false) {
@@ -2390,273 +2845,112 @@
         }
         showStatus(`Audio ${details?.fatal === false ? 'warning' : 'failure'}: ${error.message}`);
     };
-    // Only active sample triggers are listed, with a bounded number of controls per page.
-    function renderSampleEditor() {
-        const track = engine.tracks.get('uploaded');
-        const triggers = [];
-        track?.steps.forEach((active, step) => {
-            if (active) {
-                triggers.push(step);
+
+    // ---- Per-channel mixer (volume, pan, filter, effect sends) ----
+    const formatPct = (value) => `${Math.round(value * 100)}%`;
+    const formatPan = (value) =>
+        Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
+    const formatHz = (hz) => (hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)));
+    const CUTOFF_RATIO = 1000; // cutoff slider spans 20 Hz–20 kHz logarithmically
+
+    const MIX_CONTROLS = [
+        { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
+        { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
+        { key: 'filterType', label: 'Filter', select: [['lowpass', 'Low-pass'], ['highpass', 'High-pass']] },
+        { key: 'cutoff', label: 'Cutoff', min: 0, max: 1, step: 0.001, format: formatHz,
+            toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
+            fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
+        { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
+        { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
+        { key: 'delayBeats', label: 'Time', min: 0.125, max: 2, step: 0.125, format: (v) => `${+v.toFixed(3)} beat` },
+        { key: 'delayFeedback', label: 'Fdbk', min: 0, max: 0.9, step: 0.01, format: formatPct },
+        { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
+    ];
+
+    function createMixRow({ id, name }) {
+        const row = document.createElement('div');
+        row.className = 'mix-row';
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', name);
+        row.dataset.trackId = id;
+        // Opts into the "release focus after pointer use" policy so Space still controls transport.
+        row.setAttribute('data-daw-pointer-inputs', '');
+
+        const heading = document.createElement('span');
+        heading.className = 'mix-title';
+        heading.textContent = name;
+        row.append(heading);
+
+        const controls = MIX_CONTROLS.map((control) => {
+            const wrapper = document.createElement('label');
+            const text = document.createElement('span');
+            text.textContent = control.label;
+
+            if (control.select) {
+                const input = document.createElement('select');
+                for (const [value, label] of control.select) input.append(new Option(label, value));
+                wrapper.append(text, input);
+                row.append(wrapper);
+                input.addEventListener('change', () => {
+                    if (!input.disabled) engine.setChannelFilterType(id, input.value);
+                    refresh();
+                });
+                return { control, input };
             }
+
+            const toSlider = control.toSlider ?? ((value) => value);
+            const fromSlider = control.fromSlider ?? ((value) => value);
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = String(control.min);
+            input.max = String(control.max);
+            input.step = String(control.step);
+            input.title = 'Double-click to reset';
+            const readout = document.createElement('output');
+            wrapper.append(text, input, readout);
+            row.append(wrapper);
+
+            input.addEventListener('input', () => {
+                if (!input.disabled) engine.setChannelParam(id, control.key, fromSlider(input.valueAsNumber));
+                refresh();
+            });
+            input.addEventListener('dblclick', () => {
+                if (!input.disabled) engine.resetChannelParam(id, control.key);
+                refresh();
+            });
+            return { control, input, readout, toSlider };
         });
-        const lastPage = Math.max(0, Math.ceil(triggers.length / SAMPLE_PAGE_SIZE) - 1);
-        sampleTriggerPage = Math.min(sampleTriggerPage, lastPage);
-        const first = sampleTriggerPage * SAMPLE_PAGE_SIZE;
-        const container = getElement('sampleTriggers');
-        container.replaceChildren();
-        triggers.slice(first, first + SAMPLE_PAGE_SIZE).forEach((step) => {
-            const item = document.createElement('li');
-            item.dataset.step = String(step);
-            item.classList.toggle('current', displayedStep !== null && step === Math.floor(displayedStep));
-            const label = document.createElement('span');
-            label.textContent = `Step ${step + 1}`;
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.textContent = 'Remove';
-            remove.setAttribute('aria-label', `Remove sample trigger at step ${step + 1}`);
-            remove.onclick = () => {
-                engine.setStep('uploaded', step, false);
-                renderSampleEditor();
-                getElement('sampleStatus').textContent = `Removed trigger at step ${step + 1}.`;
-            };
-            item.append(label);
-            item.append(remove);
-            container.append(item);
-        });
-        getElement('sampleTriggerStep').max = engine.totalSteps;
-        getElement('sampleTriggerStep').disabled = !track;
-        getElement('addSampleTrigger').disabled = !track;
-        getElement('removeSample').disabled = !track && !isSampleLoading && !unavailableSample;
-        getElement('samplePreviousPage').disabled = sampleTriggerPage === 0;
-        getElement('sampleNextPage').disabled = sampleTriggerPage === lastPage;
-        getElement('sampleName').textContent = track
-            ? `Sample: ${loadedSampleName || 'uploaded audio'}`
-            : unavailableSample ? `Audio unavailable: ${unavailableSample.name || 'uploaded sample'} — re-upload to restore triggers.`
-                : 'No sample loaded.';
-        getElement('sampleTriggerSummary').textContent = triggers.length
-            ? `Active triggers ${first + 1}–${Math.min(first + SAMPLE_PAGE_SIZE, triggers.length)} of ${triggers.length}.`
-            : 'No active triggers.';
-        syncMixer();
+
+        function refresh() {
+            const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
+            const mix = engine.getChannelMix(id);
+            for (const { control, input, readout, toSlider } of controls) {
+                input.disabled = locked;
+                const focused = document.activeElement === input;
+                if (control.select) {
+                    if (!focused) input.value = mix.filterType;
+                    continue;
+                }
+                if (!focused) input.value = String(toSlider(mix[control.key]));
+                readout.textContent = control.format(mix[control.key]);
+            }
+        }
+
+        return { row, refresh };
     }
 
-    function addSampleTrigger() {
-        const track = engine.tracks.get('uploaded');
-        const stepNumber = Number(getElement('sampleTriggerStep').value);
-        if (
-            !track ||
-            !Number.isInteger(stepNumber) ||
-            stepNumber < 1 ||
-            stepNumber > engine.totalSteps
-        ) {
-            getElement('sampleStatus').textContent =
-                `Load a sample and enter an integer step from 1 to ${engine.totalSteps}.`;
-            return;
+    // Rebuilds rows only when tracks are added, removed, renamed or reordered;
+    // otherwise just refreshes slider values so dragging isn't interrupted.
+    function syncMixer() {
+        const tracks = overviewTracks();
+        const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
+        if (key !== mixerKey) {
+            mixerKey = key;
+            mixerRows = tracks.map(createMixRow);
+            mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
         }
-        const step = stepNumber - 1;
-        if (track.steps[step]) {
-            getElement('sampleStatus').textContent = `Step ${stepNumber} already has a trigger.`;
-            return;
-        }
-        engine.setStep('uploaded', step, true);
-        const position = track.steps.slice(0, step).filter(Boolean).length;
-        sampleTriggerPage = Math.floor(position / SAMPLE_PAGE_SIZE);
-        renderSampleEditor();
-        getElement('sampleStatus').textContent = `Added trigger at step ${stepNumber}.`;
+        mixerRows.forEach((mix) => mix.refresh());
     }
-
-    function removeSample() {
-        latestAudioUploadId++;
-        isSampleLoading = false;
-        engine.removeTrack('uploaded');
-        engine.resetChannelMix('uploaded');
-        loadedSampleName = '';
-        unavailableSample = null;
-        sampleTriggerPage = 0;
-        getElement('audioFile').value = '';
-        getElement('sampleTriggerStep').value = '1';
-        getElement('sampleStatus').textContent = EMPTY_SAMPLE_STATUS;
-        renderSampleEditor();
-    }
-
-    getElement('addSampleTrigger').onclick = addSampleTrigger;
-    getElement('removeSample').onclick = removeSample;
-    getElement('sampleTriggerStep').onkeydown = (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            addSampleTrigger();
-        }
-    };
-    getElement('samplePreviousPage').onclick = () => {
-        sampleTriggerPage = Math.max(0, sampleTriggerPage - 1);
-        renderSampleEditor();
-    };
-    getElement('sampleNextPage').onclick = () => {
-        sampleTriggerPage++;
-        renderSampleEditor();
-    };
-
-// ---- Per-channel mixer (volume, pan, filter, effect sends) ----
-     const formatPct = (value) => `${Math.round(value * 100)}%`;
-     const formatPan = (value) =>
-         Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
-     const formatHz = (hz) => (hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)));
-     const CUTOFF_RATIO = 1000; // cutoff slider spans 20 Hz–20 kHz logarithmically
-
-     const MIX_CONTROLS = [
-         { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
-         { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
-         { key: 'filterType', label: 'Filter', select: [['lowpass', 'Low-pass'], ['highpass', 'High-pass']] },
-         { key: 'cutoff', label: 'Cutoff', min: 0, max: 1, step: 0.001, format: formatHz,
-             toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
-             fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
-         { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
-         { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
-         { key: 'delayBeats', label: 'Time', min: 0.125, max: 2, step: 0.125, format: (v) => `${+v.toFixed(3)} beat` },
-         { key: 'delayFeedback', label: 'Fdbk', min: 0, max: 0.9, step: 0.01, format: formatPct },
-         { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
-     ];
-     function createMixRow(title, id) {
-         const row = document.createElement('div');
-         row.className = 'mix-row';
-         row.setAttribute('role', 'group');
-         row.setAttribute('aria-label', `${title} mix`);
-         // Opts into the "release focus after pointer use" policy so Space still controls transport.
-         row.setAttribute('data-daw-pointer-inputs', '');
-
-         const heading = document.createElement('span');
-         heading.className = 'mix-title';
-         heading.textContent = title;
-         row.append(heading);
-
-         const controls = MIX_CONTROLS.map((control) => {
-             const wrapper = document.createElement('label');
-             const text = document.createElement('span');
-             text.textContent = control.label;
-
-             if (control.select) {
-                 const input = document.createElement('select');
-                 for (const [value, label] of control.select) {
-                     input.append(new Option(label, value));
-                 }
-                 wrapper.append(text, input);
-                 row.append(wrapper);
-                 input.addEventListener('change', () => {
-                     engine.setChannelFilterType(id, input.value);
-                     refresh();
-                 });
-                 return { control, input };
-             }
-
-             const toSlider = control.toSlider ?? ((value) => value);
-             const fromSlider = control.fromSlider ?? ((value) => value);
-             const input = document.createElement('input');
-             input.type = 'range';
-             input.min = String(control.min);
-             input.max = String(control.max);
-             input.step = String(control.step);
-             input.title = 'Double-click to reset';
-             const readout = document.createElement('output');
-             wrapper.append(text, input, readout);
-             row.append(wrapper);
-
-             input.addEventListener('input', () => {
-                 engine.setChannelParam(id, control.key, fromSlider(input.valueAsNumber));
-                 refresh();
-             });
-             input.addEventListener('dblclick', () => {
-                 engine.resetChannelParam(id, control.key);
-                 refresh();
-             });
-             return { control, input, readout, toSlider };
-         });
-
-         function refresh() {
-             const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
-             const mix = engine.getChannelMix(id);
-             for (const { control, input, readout, toSlider } of controls) {
-                 input.disabled = locked;
-                 const focused = document.activeElement === input;
-                 if (control.select) {
-                     if (!focused) input.value = mix.filterType;
-                     continue;
-                 }
-                 if (!focused) input.value = String(toSlider(mix[control.key]));
-                 readout.textContent = control.format(mix[control.key]);
-             }
-         }
-
-         return { row, refresh };
-     }
-
-     const mixerPanel = document.createElement('div');
-     mixerPanel.className = 'mixer-panel';
-     getElement('trackMetadata').after(mixerPanel);
-     let mixerKey = '';
-     let mixerRows = [];
-
-     function mixChannels() {
-         const channels = engine.sequence.tracks.map((track) => ({ id: track.id, name: track.name }));
-         channels.push({ id: 'uploaded', name: 'Sample' });
-         for (const drum of window.jukeboxDrums?.KIT ?? []) {
-             channels.push({ id: drum.id, name: drum.label });
-         }
-         return channels;
-     }
-
-// Rebuilds rows only when the channel list changes; otherwise just refreshes values.
-     function syncMixer() {
-         const channels = mixChannels();
-         const key = JSON.stringify(channels);
-         if (key !== mixerKey) {
-             mixerKey = key;
-             mixerRows = channels.map(({ id, name }) => createMixRow(name, id));
-             mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
-         }
-         mixerRows.forEach((mix) => mix.refresh());
-     }
-// Drum and sample channels appear/disappear outside the editor sync, so poll lightly.
-     setInterval(syncMixer, 500);
-
-    // Audio and MIDI loading use separate tokens to ignore stale async results.
-    getElement('audioFile').onchange = async (event) => {
-        const file = event.target.files[0];
-        if (!file) {
-            return;
-        }
-        const token = ++latestAudioUploadId;
-        isSampleLoading = true;
-        getElement('sampleStatus').textContent = `Loading ${file.name || 'audio sample'}…`;
-        renderSampleEditor();
-        try {
-            engine.initContext();
-            const buffer = await engine.audioContext.decodeAudioData(await file.arrayBuffer());
-            if (token !== latestAudioUploadId) {
-                return;
-            }
-            const steps = engine.tracks.get('uploaded')?.steps.slice() ?? unavailableSample?.steps;
-            const restoredMix = unavailableSample;
-            engine.addTrack('uploaded', buffer);
-            if (restoredMix) {
-                engine.applyChannelMix('uploaded', restoredMix);
-            }
-            loadedSampleName = file.name || 'uploaded audio';
-            unavailableSample = null;
-            steps?.forEach((active, step) => engine.setStep('uploaded', step, active));
-            renderSampleEditor();
-            getElement('sampleStatus').textContent = `Loaded: ${file.name}`;
-        } catch (error) {
-            if (token === latestAudioUploadId) {
-                getElement('sampleStatus').textContent =
-                    `Could not load audio: ${error.message}. Previous sample retained.`;
-            }
-        } finally {
-            if (token === latestAudioUploadId) {
-                isSampleLoading = false;
-                renderSampleEditor();
-            }
-        }
-    };
-
     getElement('midiFile').onchange = async (event) => {
         const file = event.target.files[0];
         if (!file) {
@@ -2738,22 +3032,24 @@
     }
 
     function startNewSequence() {
+        if (arrangement.deletingAsset) {
+            showStatus('Wait for the sample deletion to finish.');
+            return;
+        }
         if (
             !window.confirm(
-                'Start a new sequence? This removes all notes, imported MIDI, and uploaded samples.'
+                'Start a new sequence? This clears this arrangement, MIDI notes, and legacy sample triggers.'
             )
         ) {
             return;
         }
         latestMidiImportId++;
         midiImportController?.abort();
-        latestAudioUploadId++;
-        isSampleLoading = false;
-        loadedSampleName = '';
         unavailableSample = null;
-        sampleTriggerPage = 0;
+        getElement('legacySampleWarning').hidden = true;
         stopPlayback();
         engine.newSequence();
+        arrangement.reset();
         window.jukeboxSynth?.restoreState(null);
         window.jukeboxDrums?.restoreState(null);
         databaseProject = null;
@@ -2761,9 +3057,6 @@
         newNoteLengthSteps = 1;
         newNoteVelocity = 89;
         getElement('midiFile').value = '';
-        getElement('audioFile').value = '';
-        getElement('sampleStatus').textContent = EMPTY_SAMPLE_STATUS;
-        getElement('sampleTriggerStep').value = '1';
         resetEditorSelection();
         resetPitchViewport();
         showStatus('New sequence. Add notes, then press Play.');
@@ -2838,21 +3131,20 @@
                 version: saved.version
             };
             getElement('saveProject').disabled = databaseProject.role === 'VIEWER';
+            engine.arrangement = new AudioArrangement(data.arrangement);
+            arrangement.restoreAssets();
             loadedInstrumentState = data.instruments?.version === 1 ? data.instruments : null;
             engine.restoreMix(loadedInstrumentState?.mixer);
-            // The existing JSON carries metadata only, not a playable AudioBuffer.
+            engine.mutedLanes = new Set(Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []);
             if (data.sample && typeof data.sample === 'object') {
-                unavailableSample = {
-                    audioPersisted: false,
-                    name: typeof data.sample.name === 'string' ? data.sample.name : '',
-                    steps: Array.from({ length: engine.totalSteps }, (_, step) => data.sample.steps?.[step] === true),
-                    ...engine.extractMix(data.sample)
-                };
-                getElement('sampleStatus').textContent = 'Uploaded audio was not stored. Re-upload the original sample to play it.';
+              unavailableSample = { ...data.sample, audioPersisted: false };
+              const warning = getElement('legacySampleWarning');
+              warning.hidden = false;
+              warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
             }
             resetEditorSelection();
             resetPitchViewport();
-            showStatus(`Loaded "${sequence.name}" from the database.`);
+            showStatus(`Loaded "${sequence.name}" from the database.${unavailableSample ? ' Legacy sample triggers are archived and silent.' : ''}`);
             applyDatabasePermissions();
         } catch (error) {
             showStatus(`Could not load database project: ${error.message}`);
@@ -2876,12 +3168,89 @@
             showStatus(`Export failed: ${error.message}`);
         }
     };
+    const exportButton = getElement('exportAudio');
+    if (exportButton) {
+        const dialog = getElement('audioExportDialog');
+        const form = getElement('audioExportForm');
+        const filename = getElement('audioExportName');
+        const format = getElement('audioExportFormat');
+        const close = getElement('closeAudioExport');
+        const submit = getElement('renderAudio');
+        const status = getElement('audioExportStatus');
+        let exporting = false;
+        exportButton.onclick = () => {
+            if (exporting) return;
+            filename.value = databaseProject?.name || engine.sequence.name || 'JukeBox Song';
+            format.value = 'wav';
+            status.textContent = '';
+            dialog.showModal();
+        };
+        close.onclick = () => dialog.close();
+        dialog.addEventListener('cancel', (event) => {
+            if (exporting) event.preventDefault();
+        });
+        form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (exporting) return;
+            const type = format.value;
+            const base = filename.value.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+                .trim().replace(/\.(wav|mp3)$/i, '').replace(/[. ]+$/, '') || 'JukeBox Song';
+            exporting = true;
+            for (const control of [filename, format, close, submit]) control.disabled = true;
+            status.textContent = 'Preparing arrangement…';
+            try {
+                const plan = AudioExporter.snapshot(engine);
+                AudioExporter.checkBudget(plan);
+                const seconds = (plan.frames / AudioExporter.sampleRate).toFixed(1);
+                status.textContent = `Rendering ${seconds} seconds of audio…`;
+                // Give the dialog a chance to paint before allocating the offline graph.
+                await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+                const rendered = await AudioExporter.render(plan);
+                status.textContent = `Encoding ${type.toUpperCase()}…`;
+                const blob = await AudioExporter.encode(rendered, type, (progress) => {
+                    status.textContent = `Encoding MP3… ${Math.floor(progress * 100)}%`;
+                });
+                const url = URL.createObjectURL(blob);
+                try {
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `${base}.${type}`;
+                    link.click();
+                    status.textContent = `Download started for ${link.download}.`;
+                } finally {
+                    setTimeout(() => URL.revokeObjectURL(url), 30000);
+                }
+            } catch (error) {
+                status.textContent = `Audio export failed: ${error.message}`;
+            } finally {
+                exporting = false;
+                for (const control of [filename, format, close, submit]) control.disabled = false;
+                close.focus();
+            }
+        };
+    }
     // Browser lifecycle and audio-clock playhead updates.
     pianoViewport.addEventListener('wheel', (event) => {
+        if ((event.ctrlKey || event.metaKey) && zoomFromWheel(event, zoomPointer(event))) return;
         if (event.deltaX || (event.shiftKey && event.deltaY)) {
             playbackFollow.interrupt();
         }
-    }, { passive: true });
+    }, { passive: false });
+    // Some browsers expose trackpad pinch as Ctrl+wheel, others via GestureEvent.
+    pianoViewport.addEventListener('gesturestart', (event) => {
+        event.preventDefault();
+        pinchStartZoom = zoomTarget;
+    }, { passive: false });
+    pianoViewport.addEventListener('gesturechange', (event) => {
+        if (pinchStartZoom === null || !Number.isFinite(event.scale) || event.scale <= 0) return;
+        event.preventDefault();
+        queueZoom(pinchStartZoom * event.scale ** 2.5, zoomPointer(event));
+    }, { passive: false });
+    pianoViewport.addEventListener('gestureend', (event) => {
+        if (pinchStartZoom === null) return;
+        event.preventDefault();
+        pinchStartZoom = null;
+    }, { passive: false });
     pianoViewport.addEventListener('pointerdown', (event) => {
         const bounds = pianoViewport.getBoundingClientRect();
         if (event.clientY >= bounds.top + pianoViewport.clientHeight) {
@@ -2890,9 +3259,6 @@
     });
     pianoViewport.addEventListener('scroll', () => {
         reconcileHorizontalScroll();
-        // Reposition the viewport canvas before mapping the captured screen coordinate.
-        pianoCanvas.style.left = `${pianoViewport.scrollLeft}px`;
-        pianoCanvas.style.top = `${pianoViewport.scrollTop}px`;
         pendingViewportRender = true;
         if (cursorGesture) {
             moveCursor(cursorGesture);
@@ -2900,6 +3266,7 @@
         if (trackGesture) {
             moveTrackGesture(trackGesture);
         }
+        if (arrangement.gesture) arrangement.move(arrangement.gesture);
     });
     function requestViewportRender() {
         pendingViewportRender = true;
@@ -2919,6 +3286,7 @@
         stopPlayback();
     });
     function updatePlayhead(timestamp = 0) {
+        if (pendingZoom) applyPendingZoom();
         const trackScrolled = updateTrackDragScroll(timestamp);
         const position = engine.audioContext && (engine.isPlaying || engine.isPaused)
             ? engine.getPlaybackPosition() : null;
@@ -2932,9 +3300,6 @@
             pendingViewportRender = false;
             displayedStep = step;
             renderPianoRoll();
-            Array.from(getElement('sampleTriggers').children).forEach((item) => {
-                item.classList.toggle('current', step !== null && Number(item.dataset.step) === Math.floor(step));
-            });
         }
         requestAnimationFrame(updatePlayhead);
     }
@@ -2943,12 +3308,26 @@
         await loadPendingDatabaseProject();
     }
     selectNote(null);
+    if (!engine.arrangement.assets.size) arrangement.refreshRack();
     syncEditorState();
     pianoViewport.scrollTop = Math.max(0, RULER_HEIGHT + (highestPitch - 60) * ROW_HEIGHT - 288);
     renderPianoRoll();
     updatePlayhead();
     // Teammates register against this instance, without adding a global transport.
     const editor = Object.freeze({
+        async addDrumSample(bytes, bpm) {
+            if (databaseProject?.role === 'VIEWER') return;
+            const model = engine.arrangement;
+            const names = new Set([...model.assets.values()].map(({ name }) => name));
+            let number = 1;
+            let name = 'Drum Pattern';
+            while (names.has(name)) name = `Drum Pattern ${++number}`;
+            const added = await arrangement.importFiles([{ name, size: bytes.byteLength, arrayBuffer: async () => bytes }]);
+            if (engine.arrangement !== model || !added?.length) return;
+            setWorkspace('tracks', null);
+            getElement('sampleRack').open = true;
+            showStatus(`${name} added to Sample Rack at ${Number(bpm.toFixed(3))} BPM.`);
+        },
         getState: () => ({ mode: workspaceMode, activeTrackId, ghostNotes: ghostNotesEnabled, editingCursorTick, readOnly: databaseProject?.role === 'VIEWER' }),
         setWorkspace,
         setGhostNotes,

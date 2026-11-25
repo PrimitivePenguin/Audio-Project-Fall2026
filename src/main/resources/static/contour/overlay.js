@@ -69,14 +69,14 @@ export function setClipRects(overlay, rects) {
   overlay.hi.setAttribute("clip-path", `url(#${clip.id})`);
   overlay.base.setAttribute("mask", `url(#${mask.id})`);
 
-  for (const { x, y, width, height } of rects) {
+  for (const { x, y, width, height, opaque } of rects) {
     const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     r.setAttribute("x", x);
     r.setAttribute("y", y);
     r.setAttribute("width", width);
     r.setAttribute("height", height);
     r.dataset.area = "";
-    overlay.clip.appendChild(r);
+    if (!opaque) overlay.clip.appendChild(r);
     const hole = r.cloneNode();
     hole.setAttribute("fill", "black");   // black in a mask = hidden
     overlay.mask.appendChild(hole);
@@ -102,7 +102,7 @@ export function attachSurface(root, { mode = "plain", overlay = null } = {}) {
     r.setAttribute("width", k.width);
     r.setAttribute("height", k.height);
     r.dataset.id = id;
-    overlay.clip.appendChild(r);
+    if (!opaque) overlay.clip.appendChild(r);
   }
 
   const off = onChange((type, id, el) => {

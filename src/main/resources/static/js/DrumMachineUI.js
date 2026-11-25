@@ -85,22 +85,58 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
             copy.disabled = editor.getState().readOnly;
         }
     });
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'drum-pattern-preview';
+    const previewLabel = '▶ Preview Pattern';
+    preview.textContent = previewLabel;
+    let previewing = false;
+    preview.addEventListener('click', () => {
+        if (previewing) {
+            engine.stopPatternPreview();
+            return;
+        }
+        if (engine.isPlaying || engine.startPromise) {
+            info.textContent = 'Pause or stop playback before previewing the drum pattern.';
+            return;
+        }
+        try {
+            previewing = drums.previewPattern(tempo(), () => {
+                previewing = false;
+                preview.textContent = previewLabel;
+            });
+            if (previewing) {
+                preview.textContent = '■ Stop Preview';
+                info.textContent = info.dataset.tempo;
+            } else {
+                info.textContent = 'Enable a drum step to preview the pattern.';
+            }
+        } catch (error) {
+            info.textContent = error.message;
+        }
+    });
+    const actions = document.createElement('div');
+    actions.className = 'drum-actions';
+    actions.append(preview, copy);
     const panel = document.createElement('div');
     panel.className = 'drum-panel';
     panel.hidden = true;
     panel.setAttribute('role', 'group');
     panel.setAttribute('aria-label', 'Drum machine');
-    panel.append(...rows.map((r) => r.el), copy, info, archived);
+    panel.append(...rows.map((r) => r.el), actions, info, archived);
 
     InstrumentPanel.attach('drumMenu', 'drumToggle', panel, 'Drum machine', () => {
         render(true);
         clearInterval(pollTimer);
         pollTimer = setInterval(() => render(), 300);
-    }, () => clearInterval(pollTimer));
+    }, () => {
+        clearInterval(pollTimer);
+        engine.stopPatternPreview();
+    });
 
     function render(force = false) {
         const bpm = tempo();
-        const label = engine.sequence.tempos.length > 1 ? 'Tempo at editing cursor' : 'Export tempo';
+        const label = engine.sequence.tempos.length > 1 ? 'Tempo at editing cursor' : 'Pattern tempo';
         const message = `${label} · ${Number(bpm.toFixed(3))} BPM. Preview individual drums using their names.`;
         if (!exporting && info.dataset.tempo !== message) {
             info.dataset.tempo = message;

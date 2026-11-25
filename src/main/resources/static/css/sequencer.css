@@ -152,7 +152,6 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 .ghost-control { color: var(--steel-600); }
 .ghost-control input { accent-color: var(--accent-steel); }
 
-#deleteMidiTrack { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 
 #pianoViewport { grid-area: 3 / 1; }
 
@@ -257,8 +256,10 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 #sampleRack select, #audioTrackName { max-width: 210px; }
 #clipTools[hidden] { display: none; }
 
-#laneMuteControls { position: sticky; top: 0; left: 0; width: 0; height: 0; z-index: 22; pointer-events: none; }
-.lane-mute { position: absolute; left: 8px; width: 24px; height: 24px; padding: 0; pointer-events: auto; font-size: 13px; }
+#laneControls { position: sticky; top: 0; left: 0; width: 0; height: 0; z-index: 22; pointer-events: none; }
+.lane-control { position: absolute; width: 24px; height: 24px; padding: 0; pointer-events: auto; font-size: 13px; }
+.lane-mute { left: 8px; }
+.lane-delete { left: 68px; }
 .lane-mute[aria-pressed="true"] { background: var(--steel-300); }
 
 .rack-assets .sample-asset[draggable="true"] { cursor: grab; }
@@ -277,3 +278,6 @@ button.export-audio-primary:hover { background: var(--steel-700); }
 #audioExportForm h2, #audioExportForm p { margin: 0 0 6px; }
 #audioExportForm input, #audioExportForm select { width: 100%; }
 #audioExportStatus { min-height: 1.5em; }
+
+.drum-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.drum-pattern-preview { font-weight: 600; }

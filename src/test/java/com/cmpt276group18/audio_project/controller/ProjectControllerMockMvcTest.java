@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.cmpt276group18.audio_project.service.ProjectService;
+import com.cmpt276group18.audio_project.service.R2StorageService;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectAccessException;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectVersionConflictException;
 
@@ -30,12 +31,15 @@ class ProjectControllerMockMvcTest {
 
     @Mock
     private ProjectService projectService;
+    
+    @Mock 
+    private R2StorageService r2StorageService;
 
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService)).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService, r2StorageService)).build();
     }
 
     @Test

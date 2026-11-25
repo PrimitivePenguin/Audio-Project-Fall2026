@@ -186,6 +186,7 @@ class ArrangementEditor {
                 this.hooks.discardAssetHistory(id);
                 if (this.rackAssetId === id) this.selectRackAsset(null);
                 this.setSelection(this.selected, this.trackId);
+                this.hooks.onMutate?.('AUDIO_SYNC', id);
                 status.textContent = `Deleted ${asset.name}.`;
             } catch (error) {
                 status.textContent = `Could not delete ${asset.name}: ${error.message}`;
@@ -278,6 +279,7 @@ class ArrangementEditor {
                     if (this.model !== model) return;
                     this.preview(asset, model);
                     this.refreshRack();
+                    this.hooks.onMutate?.('AUDIO_SYNC', id);
                 } catch (error) {
                     failures.push(`${file.name}: ${error.message}`);
                 }
@@ -354,6 +356,7 @@ class ArrangementEditor {
         }
         this.restoreEdit(before, after);
         this.hooks.record(before, after);
+        this.hooks.onMutate?.('AUDIO_SYNC', (after[0] ?? before[0])?.id ?? 'arrangement');
     }
 
     restoreEdit(previous, next) {

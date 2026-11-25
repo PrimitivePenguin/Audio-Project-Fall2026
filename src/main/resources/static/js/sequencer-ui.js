@@ -256,6 +256,7 @@
             getElement(id).disabled = overview;
         }
         updateTrackActions();
+        syncMixer();
         pianoViewport.setAttribute('aria-label', overview ? (engine.arrangement.tracks.size ? 'Arrangement timeline' : 'MIDI track overview') : `Piano roll: ${track?.name ?? 'All Notes'}`);
         pianoCanvas.setAttribute('aria-label', overview
             ? `${engine.sequence.tracks.length} MIDI track lanes. Select a track with the Active track selector, then Piano Roll / Edit Track. Double-click a lane to edit.` +
@@ -656,7 +657,8 @@
             instruments: {
                 version: 1,
                 synth: window.jukeboxSynth?.snapshot() ?? null,
-                drums: window.jukeboxDrums?.snapshot() ?? null
+                drums: window.jukeboxDrums?.snapshot() ?? null,
+                mixer: engine.snapshotMix()
             },
             loopStart: engine.loopStart,
             loopEnd: engine.loopEnd,
@@ -2803,7 +2805,98 @@
         }
         showStatus(`Audio ${details?.fatal === false ? 'warning' : 'failure'}: ${error.message}`);
     };
+   
+     // ---- Per-channel mix controls (volume + pan) ----
+     const formatVolume = (value) => `${Math.round(value * 100)}%`;
+     const formatPan = (value) =>
+         Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
 
+     function createMixRow(title, getChannelId, isChannelAvailable) {
+         const row = document.createElement('div');
+         row.className = 'mix-row';
+         row.setAttribute('role', 'group');
+         row.setAttribute('aria-label', title);
+         // Opts into the "release focus after pointer use" policy so Space still controls transport.
+         row.setAttribute('data-daw-pointer-inputs', '');
+
+         const heading = document.createElement('span');
+         heading.className = 'mix-title';
+         heading.textContent = title;
+         row.append(heading);
+
+         const makeSlider = (label, min, max, step, format) => {
+             const wrapper = document.createElement('label');
+             const text = document.createElement('span');
+             text.textContent = label;
+             const input = document.createElement('input');
+             input.type = 'range';
+             input.min = String(min);
+             input.max = String(max);
+             input.step = String(step);
+             const readout = document.createElement('output');
+             wrapper.append(text, input, readout);
+             row.append(wrapper);
+             return { input, readout, format };
+         };
+         const volume = makeSlider('Vol', 0, 1.5, 0.01, formatVolume);
+         const pan = makeSlider('Pan', -1, 1, 0.01, formatPan);
+         pan.input.title = 'Pan (double-click to center)';
+
+         function refresh() {
+             const id = getChannelId();
+             const available = id !== null && isChannelAvailable(id);
+             const mix = available ? engine.getChannelMix(id) : { volume: 1, pan: 0 };
+             const locked = !available || databaseProject?.role === 'VIEWER';
+             volume.input.disabled = pan.input.disabled = locked;
+             // Don't fight the user's thumb while they're dragging.
+             if (document.activeElement !== volume.input) volume.input.value = String(mix.volume);
+             if (document.activeElement !== pan.input) pan.input.value = String(mix.pan);
+             volume.readout.textContent = volume.format(Number(volume.input.value));
+             pan.readout.textContent = pan.format(Number(pan.input.value));
+         }
+
+         volume.input.addEventListener('input', () => {
+             const id = getChannelId();
+             if (id !== null) engine.setChannelVolume(id, volume.input.valueAsNumber);
+             refresh();
+         });
+         pan.input.addEventListener('input', () => {
+             const id = getChannelId();
+             if (id !== null) engine.setChannelPan(id, pan.input.valueAsNumber);
+             refresh();
+         });
+         pan.input.addEventListener('dblclick', () => {
+             const id = getChannelId();
+             if (id !== null && !pan.input.disabled) engine.setChannelPan(id, 0);
+             pan.input.value = '0';
+             refresh();
+         });
+
+         return { row, refresh };
+     }
+     const mixerPanel = document.createElement('div');
+     mixerPanel.className = 'mixer-panel';
+     getElement('trackMetadata').after(mixerPanel);
+     let mixerKey = '';
+     let mixerRows = [];
+     
+// Rebuilds rows only when tracks are added, removed, renamed or reordered;
+// otherwise just refreshes slider values so dragging isn't interrupted.
+     function syncMixer() {
+         const tracks = engine.sequence.tracks;
+         const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
+         if (key !== mixerKey) {
+             mixerKey = key;
+             mixerRows = tracks.map((track) =>
+                 createMixRow(track.name, () => track.id,
+                     (id) => engine.sequence.tracks.some((candidate) => candidate.id === id)));
+             mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
+         }
+         mixerRows.forEach((mix) => mix.refresh());
+     }
+     
+
+   
 
     getElement('midiFile').onchange = async (event) => {
         const file = event.target.files[0];
@@ -2988,12 +3081,13 @@
             engine.arrangement = new AudioArrangement(data.arrangement);
             arrangement.restoreAssets();
             loadedInstrumentState = data.instruments?.version === 1 ? data.instruments : null;
+            engine.restoreMix(loadedInstrumentState?.mixer);
             engine.mutedLanes = new Set(Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []);
             if (data.sample && typeof data.sample === 'object') {
-                unavailableSample = { ...data.sample, audioPersisted: false };
-                const warning = getElement('legacySampleWarning');
-                warning.hidden = false;
-                warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
+              unavailableSample = { ...data.sample, audioPersisted: false };
+              const warning = getElement('legacySampleWarning');
+              warning.hidden = false;
+              warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
             }
             resetEditorSelection();
             resetPitchViewport();

@@ -44,7 +44,22 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
         slider.addEventListener('input', () => drums.setVolume(id, Number(slider.value)));
         el.appendChild(slider);
 
-        return { id, label, el, cells, slider };
+        const pan = document.createElement('input');
+        pan.type = 'range';
+        pan.className = 'drum-pan';
+        pan.min = '-1';
+        pan.max = '1';
+        pan.step = '0.05';
+        pan.title = 'Pan (double-click to center)';
+        pan.setAttribute('aria-label', `${label} pan`);
+        pan.addEventListener('input', () => drums.setPan(id, Number(pan.value)));
+        pan.addEventListener('dblclick', () => {
+            pan.value = '0';
+            drums.setPan(id, 0);
+        });
+        el.appendChild(pan);
+
+        return { id, label, el, cells, slider, pan };
     });
 
     const copy = document.createElement('button');
@@ -95,7 +110,8 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
         copy.disabled = exporting || editor.getState().readOnly;
         const data = rows.map((r) => drums.getSteps(r.id));
         const volumes = rows.map((r) => drums.getVolume(r.id).toFixed(2)).join(',');
-        const signature = `${volumes}|` +
+        const pans = rows.map((r) => drums.getPan(r.id).toFixed(2)).join(',');
+        const signature = `${volumes}|${pans}|` +
             data.map((d) => d.map(Number).join('')).join('/');
         if (!force && signature === lastSignature) return;
         lastSignature = signature;
@@ -110,6 +126,10 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
             row.slider.disabled = Boolean(editor?.getState?.().readOnly);
             if (document.activeElement !== row.slider) {
                 row.slider.value = String(drums.getVolume(row.id));
+            }
+            row.pan.disabled = Boolean(editor?.getState?.().readOnly);
+            if (document.activeElement !== row.pan) {
+                row.pan.value = String(drums.getPan(row.id));
             }
         });
 

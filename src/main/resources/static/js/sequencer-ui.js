@@ -31,7 +31,7 @@
     const pianoSpacer = getElement('pianoSpacer');
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
-        canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
+        projectId: () => databaseProject?.id ?? null, canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
         canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
         tracksChanged: (id) => {
@@ -675,6 +675,7 @@
         }
         databaseSaveInFlight = true;
         try {
+            await arrangement.ensureAssetsUploaded();
             const response = await fetch(`/api/projects/${databaseProject.id}`, {
                 method: 'PUT',
                 credentials: 'same-origin',

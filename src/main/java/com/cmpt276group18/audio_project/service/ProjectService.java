@@ -229,4 +229,10 @@ public class ProjectService {
     public static class ProjectVersionConflictException extends RuntimeException {
         public ProjectVersionConflictException(String message) { super(message); }
     }
+
+    // For R2
+    public void assertEditor(UUID projectId, Integer userId) {
+        requireProject(projectId);
+        requireEditor(projectId, userId);
+    }
 }

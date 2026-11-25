@@ -21,7 +21,14 @@ class AudioArrangement {
             if (this.assets.size >= AudioArrangement.limits.assets) break;
             if (!item || !/^[a-f0-9]{64}$/.test(item.id) || typeof item.name !== 'string' ||
                 !(item.duration > 0 && item.duration <= AudioArrangement.limits.duration)) continue;
-            this.assets.set(item.id, { id: item.id, name: item.name.slice(0, 255), duration: item.duration });
+            // this.assets.set(item.id, { id: item.id, name: item.name.slice(0, 255), duration: item.duration });
+            const url = typeof item.url === 'string' && /^https?:\/\/[^\s]+$/i.test(item.url) ? item.url : null;
+            this.assets.set(item.id, {
+                id: item.id,
+                name: item.name.slice(0, 255),
+                duration: item.duration,
+                ...(url ? { url } : {})
+            });
         }
         for (const item of Array.isArray(data.clips) ? data.clips : []) {
             if (this.clips.size >= AudioArrangement.limits.clips) break;
@@ -203,7 +210,9 @@ class AudioArrangement {
         return {
             version: 1, laneOrder: [...this.laneOrder],
             tracks: [...this.tracks.values()].map(({ id, name }) => ({ id, name })),
-            assets: [...this.assets.values()].map(({ id, name, duration }) => ({ id, name, duration })),
+            assets: [...this.assets.values()].map(({ id, name, duration, url }) => ({
+                id, name, duration, ...(url ? { url } : {})
+            })),
             clips: [...this.clips.values()].map((clip) => ({ ...clip }))
         };
     }

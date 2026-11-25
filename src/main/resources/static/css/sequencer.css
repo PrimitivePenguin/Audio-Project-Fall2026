@@ -222,6 +222,21 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .drum-volume { width: 70px; margin-left: 10px; flex-shrink: 0; }
 
 .primary-toolbar { z-index: 10; }
+.mix-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin: 0.5rem 0;
+}
+.mix-row label { display: flex; align-items: center; gap: 0.4rem; }
+.mix-row output { min-width: 3.2ch; font-variant-numeric: tabular-nums; }
+.mix-row input[type="range"] { width: 8rem; }
+.mixer-panel {
+    max-height: 12rem;
+    overflow-y: auto;
+}
+.drum-pan { width: 5rem; }
 
 .statusbar { grid-area: 5 / 1; }
 .sample-dock { grid-area: 4 / 1; min-width: 0; border-top: 1px solid var(--steel-400); background: var(--steel-100); }

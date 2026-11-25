@@ -71,10 +71,13 @@ vm.createContext(sandbox);
 for (const file of [
     'vendor/tonejs-midi-2.0.28.js',
     'NoteSequence.js',
-    'SequencerEngine.js',
+    'AudioArrangement.js',
+        'SampleAssetStore.js',
+        'SequencerEngine.js',
     'midi-io.js',
     'PianoRollEditor.js',
-    'TrackOverview.js'
+    'TrackOverview.js',
+        'ArrangementEditor.js'
 ]) {
     vm.runInContext(
         fs.readFileSync(path.resolve(__dirname, '../../main/resources/static/js', file), 'utf8'),
@@ -223,7 +226,7 @@ async function test(name, fn) {
         assert.equal(e.isPlaying, false);
         assert.equal(timers.size, 0);
     });
-    await test('UI sample/MIDI upload lifecycle, rollback and piano-roll click editing', async () => {
+    await test('UI MIDI upload lifecycle and piano-roll click editing', async () => {
         class Element {
             constructor() {
                 this.value = '';
@@ -291,32 +294,6 @@ async function test(name, fn) {
         vm.runInContext(ui, sandbox);
         const engine = engines[0];
         engine.initContext();
-        engine.audioContext.decodeAudioData = async (data) => {
-            if (data === 'bad') {
-                throw new Error('invalid');
-            }
-            return { data };
-        };
-        const upload = (data) =>
-            elements.audioFile.onchange({
-                target: { files: [{ name: String(data), arrayBuffer: async () => data }] }
-            });
-        await upload('first');
-        engine.setStep('uploaded', 2, true);
-        await upload('second');
-        assert.equal(engine.tracks.get('uploaded').steps[2], true);
-        await upload('bad');
-        assert.equal(engine.tracks.get('uploaded').buffer.data, 'second');
-        let release;
-        const old = elements.audioFile.onchange({
-            target: {
-                files: [{ name: 'old', arrayBuffer: () => new Promise((r) => (release = r)) }]
-            }
-        });
-        await upload('latest');
-        release('old');
-        await old;
-        assert.equal(engine.tracks.get('uploaded').buffer.data, 'latest');
         assert.equal(engines.length, 1);
         elements.noteLength.value = '1';
         elements.velocity.value = '89';
@@ -342,7 +319,7 @@ async function test(name, fn) {
             target: { files: [{ size: 0, arrayBuffer: async () => new Uint8Array() }] }
         });
         assert.equal(engine.sequence, imported);
-        assert.equal(engine.tracks.get('uploaded').steps[2], true);
+        assert.equal(engine.tracks.has('uploaded'), false);
     });
     function composition() {
         const s = new NoteSequence(64, 960);

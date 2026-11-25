@@ -12,8 +12,8 @@ class TrackOverview {
         return palette[hash % palette.length];
     }
 
-    static lanes(sequence) {
-        const lanes = sequence.tracks.map((track, index) => ({
+    static lanes(sequence, tracks = sequence.tracks) {
+        const lanes = tracks.map((track, index) => ({
             track,
             index,
             notes: [],

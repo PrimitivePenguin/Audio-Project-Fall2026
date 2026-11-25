@@ -75,6 +75,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             children.forEach((child) => { child.parentElement = this; });
             this.children.push(...children);
         }
+        remove() {
+            if (this.parentElement) {
+                this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+                this.parentElement = null;
+            }
+        }
         appendChild(child) { this.append(child); return child; }
         prepend(...children) {
             children.forEach((child) => { child.parentElement = this; });
@@ -129,10 +135,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         constructor() {
             this.frequency = { value: 0 };
         }
-        connect() { return this; }
+        connect(destination) { this.destination = destination; return this; }
         disconnect() {}
-        start(time) {
+        start(time, offset, duration) {
             this.startTime = time;
+            this.offset = offset;
+            this.duration = duration;
         }
         stop(time = 0) {
             this.stopTime = time;
@@ -153,12 +161,14 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             return data;
         }
         createBuffer(channels, length, sampleRate) {
-            return { length, sampleRate, copyToChannel() {} };
+            const pcm = Array.from({ length: channels }, () => new Float32Array(length));
+            return { length, sampleRate, duration: length / sampleRate, numberOfChannels: channels,
+                copyToChannel(data, channel) { pcm[channel].set(data); }, getChannelData(channel) { return pcm[channel]; } };
         }
         createBiquadFilter() { return new AudioSource(); }
         createGain() {
             return {
-                gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} },
+                gain: { value: 0, setValueAtTime(value) { this.value = value; }, linearRampToValueAtTime(value) { this.value = value; }, cancelScheduledValues() {} },
                 connect() { return this; },
                 disconnect() {}
             };
@@ -201,7 +211,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 documentListeners[name] = (event) => {
                     const handlers = [...documentHandlers[name]];
                     documentHandlers[name] = handlers.filter((entry) => !entry.once);
+                    const legacyPress = name === 'keydown' && !event.type && event.key === ' ';
                     handlers.forEach((entry) => entry.callback(event));
+                    if (legacyPress) documentListeners.keyup?.({ ...event, type: 'keyup' });
                 };
             },
             dispatchEvent(event) {
@@ -231,6 +243,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             }
         },
         AbortController,
+        crypto: require('node:crypto').webcrypto,
         CustomEvent: class {
             constructor(type, options) {
                 this.type = type;
@@ -263,15 +276,18 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     for (const file of [
         'vendor/tonejs-midi-2.0.28.js',
         'NoteSequence.js',
+        'AudioArrangement.js',
+        'SampleAssetStore.js',
         'SequencerEngine.js',
         'midi-io.js',
         'PianoRollEditor.js',
-        'TrackOverview.js'
+        'TrackOverview.js',
+        'ArrangementEditor.js'
     ]) {
         vm.runInContext(fs.readFileSync(path.join(directory, file), 'utf8'), scope);
     }
     const api = vm.runInContext(
-        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
+        '({ AudioArrangement, ArrangementEditor, SampleAssetStore, NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
         scope
     );
     scope.CapturedEngine = class extends api.SequencerEngine {

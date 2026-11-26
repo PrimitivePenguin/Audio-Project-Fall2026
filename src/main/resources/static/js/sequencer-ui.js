@@ -29,6 +29,9 @@
     const pianoViewport = getElement('pianoViewport');
     const pianoCanvas = getElement('pianoCanvas');
     const pianoSpacer = getElement('pianoSpacer');
+    const mixerPanel = getElement('trackMixer');
+    let mixerKey = '';
+    let mixerRows = [];
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
         onMutate: (type, targetId) => broadcastSync(type, targetId),
@@ -76,6 +79,9 @@
             for (const stack of [undoStack, redoStack]) {
                 for (let i = stack.length - 1; i >= 0; i--) {
                     const action = stack[i];
+                    if (action.kind === 'audio-track-delete') {
+                        action.record.clips = action.record.clips.filter((clip) => clip.assetId !== id);
+                    }
                     if (action.kind === 'audio-clip' &&
                         (action.before.some((clip) => clip.assetId === id) || action.after.some((clip) => clip.assetId === id))) {
                         stack.splice(i, 1);
@@ -179,15 +185,14 @@
             engine.sequence.tracks[0]?.name ?? 'Piano';
     }
 
+    function canDeleteTrack(track) {
+        return databaseProject?.role !== 'VIEWER' && !isStartingPlayback && !engine.isPlaying &&
+            !engine.isPaused && !engine.startPromise && !trackGesture && !arrangement.deletingAsset &&
+            (track.audio || engine.sequence.tracks.length > 1);
+    }
+
     function updateTrackActions() {
-        const track = activeTrack();
-        const readOnly = databaseProject?.role === 'VIEWER';
-        const stopped = !engine.isPlaying && !engine.isPaused && !engine.startPromise && !isStartingPlayback;
-        getElement('deleteMidiTrack').disabled = readOnly || !track || !stopped || Boolean(trackGesture) || engine.sequence.tracks.length <= 1;
-        getElement('deleteMidiTrack').textContent = track ? `Delete ${track.name}` : 'Delete Track';
-        getElement('deleteMidiTrack').title = track
-            ? `Delete MIDI track '${track.name}'. Press Stop first; the last track is protected.`
-            : 'Select a MIDI track to delete. Press Stop first.';
+        for (const { track, remove } of laneButtons.values()) remove.disabled = !canDeleteTrack(track);
     }
 
     function syncTrackControls() {
@@ -258,6 +263,7 @@
             getElement(id).disabled = overview;
         }
         updateTrackActions();
+        syncMixer();
         pianoViewport.setAttribute('aria-label', overview ? (engine.arrangement.tracks.size ? 'Arrangement timeline' : 'MIDI track overview') : `Piano roll: ${track?.name ?? 'All Notes'}`);
         pianoCanvas.setAttribute('aria-label', overview
             ? `${engine.sequence.tracks.length} MIDI track lanes. Select a track with the Active track selector, then Piano Roll / Edit Track. Double-click a lane to edit.` +
@@ -430,7 +436,7 @@
     function historyWeight(entry) {
         if (Array.isArray(entry)) return entry.length;
         if (entry.kind === 'audio-clip') return entry.before.length + entry.after.length;
-        return entry.kind.endsWith('-order') ? entry.before.length : entry.record.notes.length + 1;
+        return entry.kind.endsWith('-order') ? entry.before.length : (entry.record.notes ?? entry.record.clips).length + 1;
     }
 
     function pushHistory(entry) {
@@ -481,6 +487,13 @@
             const known = new Set(order);
             const extra = engine.sequence.tracks.filter((track) => !known.has(track.id)).map((track) => track.id);
             engine.setMidiTrackOrder([...order, ...extra]);
+        } else if (entry.kind === 'audio-track-delete') {
+            if (arrangement.deletingAsset) throw new Error('Wait for Sample Rack deletion to finish.');
+            if (side === 'before') engine.restoreAudioTrack(entry.record);
+            else {
+                entry.record = engine.deleteAudioTrack(entry.record.track.id);
+                arrangement.setSelection(arrangement.selected, arrangement.trackId);
+            }
         } else if (side === 'before') {
             engine.restoreMidiTrack(entry.record);
         } else {
@@ -493,15 +506,21 @@
         showStatus(`${side === 'before' ? 'Undo' : 'Redo'}: ${entry.kind === 'track-order' ? 'MIDI track order' : `track '${entry.record.track.name}' deletion`}.`);
     }
 
-    function deleteTrack(id) {
+    function deleteTrack(track) {
         checkHistory();
-        const record = engine.deleteMidiTrack(id);
-        pushHistory({ kind: 'track-delete', record });
-        overlapIds = [];
-        selectNote(null);
+        cancelEditorGesture();
+        arrangement.cancelDrop();
+        const record = track.audio ? engine.deleteAudioTrack(track.id) : engine.deleteMidiTrack(track.id);
+        pushHistory({ kind: track.audio ? 'audio-track-delete' : 'track-delete', record });
+        if (track.audio) arrangement.setSelection(arrangement.selected, arrangement.trackId);
+        else {
+            overlapIds = [];
+            selectNote(null);
+        }
         syncEditorState();
         broadcastSync('TRACKS_SYNC', id);
-        showStatus(`Deleted track '${record.track.name}' and ${record.notes.length} notes. Undo restores it.`);
+        const count = track.audio ? record.clips.length : record.notes.length;
+        showStatus(`Deleted track '${track.name}' and ${count} ${track.audio ? 'clips' : 'notes'}. Undo restores it.`);
     }
 
     function recordEdit(before) {
@@ -519,8 +538,10 @@
     }
 
     function restoreHistory(source, destination, side) {
+        if (databaseProject?.role === 'VIEWER') return;
         invalidateRenderIndex();
         cancelEditorGesture();
+        arrangement.cancelDrop();
         checkHistory();
         const entry = source.at(-1);
         if (!entry) {
@@ -861,7 +882,8 @@ let isApplyingRemote = false;
             instruments: {
                 version: 1,
                 synth: window.jukeboxSynth?.snapshot() ?? null,
-                drums: window.jukeboxDrums?.snapshot() ?? null
+                drums: window.jukeboxDrums?.snapshot() ?? null,
+                mixer: engine.snapshotMix()
             },
             loopStart: engine.loopStart,
             loopEnd: engine.loopEnd,
@@ -914,7 +936,7 @@ let isApplyingRemote = false;
             'lengthIncrease', 'velocity', 'deleteNote', 'nextOverlap', 'pitchLow',
             'pitchHigh',
             'removeImportedMidi', 'addMidiTrack', 'renameMidiTrack', 'trackName',
-            'deleteMidiTrack', 'undoNotes', 'redoNotes',
+            'undoNotes', 'redoNotes',
             'cutNotes', 'pasteNotes', 'duplicateNotes'
         ].forEach((id) => {
             const element = getElement(id);
@@ -1225,7 +1247,7 @@ let isApplyingRemote = false;
         if (workspaceMode === 'tracks') {
             noteRects = drawTrackOverview(width, height, first, last, scrollLeft, scrollTop, meterMarks);
         } else {
-            if (muteButtons.size) renderMuteControls([], height, scrollTop);
+            if (laneButtons.size) renderLaneControls([], height, scrollTop);
             drawPitchRows(width, height, scrollTop);
             drawTimingGrid(first, last, height, scrollLeft, meterMarks);
             drawLoopRegion(width, height, scrollLeft);
@@ -1457,45 +1479,61 @@ let isApplyingRemote = false;
         }
     }
 
-    const muteControls = getElement('laneMuteControls');
-    const muteButtons = new Map();
+    const laneControls = getElement('laneControls');
+    const laneButtons = new Map();
 
-    function renderMuteControls(lanes, height, scrollTop) {
+    function renderLaneControls(lanes, height, scrollTop) {
         const kept = new Set();
-        for (const lane of lanes) {
-            const { track, index } = lane;
-            const top = RULER_HEIGHT + index * TrackOverview.laneHeight - scrollTop + TrackOverview.laneHeight - 28;
+        for (const { track, index } of lanes) {
+            const top = RULER_HEIGHT + (index + 1) * TrackOverview.laneHeight - scrollTop - 28;
             if (top < RULER_HEIGHT || top + 24 > height) continue;
             kept.add(track.id);
-            let button = muteButtons.get(track.id);
-            if (!button) {
-                button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'lane-mute';
-                button.onclick = () => {
+            let controls = laneButtons.get(track.id);
+            if (!controls) {
+                const mute = document.createElement('button');
+                mute.type = 'button';
+                mute.className = 'lane-control lane-mute';
+                mute.onclick = () => {
                     if (databaseProject?.role === 'VIEWER') return;
                     engine.setLaneMuted(track.id, !engine.mutedLanes.has(track.id));
                     renderPianoRoll();
                     broadcastSync('SETTINGS_SYNC', track.id);
                 };
-                muteButtons.set(track.id, button);
-                muteControls.append(button);
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'lane-control lane-delete';
+                remove.textContent = '🗑';
+                remove.onclick = () => runEditorAction(() => requestTrackDeletion(track.id));
+                for (const button of [mute, remove]) {
+                    button.addEventListener('pointerdown', (event) => event.stopPropagation());
+                }
+                controls = { track, mute, remove };
+                laneButtons.set(track.id, controls);
+                laneControls.append(mute, remove);
             }
+            const { mute, remove } = controls;
+            controls.track = track;
             const muted = engine.mutedLanes.has(track.id);
-            button.disabled = databaseProject?.role === 'VIEWER';
-            button.style.top = `${top}px`;
+            mute.disabled = databaseProject?.role === 'VIEWER';
+            remove.disabled = !canDeleteTrack(track);
+            mute.style.top = remove.style.top = `${top}px`;
             const label = `Mute ${track.name}`;
-            if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
-            if (button.getAttribute('aria-pressed') !== String(muted)) {
-                button.setAttribute('aria-pressed', String(muted));
-                button.textContent = muted ? '🔇' : '🔊';
+            if (mute.getAttribute('aria-label') !== label) mute.setAttribute('aria-label', label);
+            if (mute.getAttribute('aria-pressed') !== String(muted)) {
+                mute.setAttribute('aria-pressed', String(muted));
+                mute.textContent = muted ? '🔇' : '🔊';
             }
-            button.title = `${muted ? 'Unmute' : 'Mute'} ${track.name}`;
+            mute.title = `${muted ? 'Unmute' : 'Mute'} ${track.name}`;
+            const deleteLabel = `Delete track ${track.name}`;
+            if (remove.getAttribute('aria-label') !== deleteLabel) remove.setAttribute('aria-label', deleteLabel);
+            remove.title = !track.audio && engine.sequence.tracks.length <= 1
+                ? 'The last MIDI track is protected.' : deleteLabel;
         }
-        for (const [id, button] of muteButtons) {
+        for (const [id, { mute, remove }] of laneButtons) {
             if (kept.has(id)) continue;
-            button.remove();
-            muteButtons.delete(id);
+            mute.remove();
+            remove.remove();
+            laneButtons.delete(id);
         }
     }
 
@@ -1506,7 +1544,7 @@ let isApplyingRemote = false;
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             return y + TrackOverview.laneHeight > RULER_HEIGHT && y < height;
         });
-        renderMuteControls(visible, height, scrollTop);
+        renderLaneControls(visible, height, scrollTop);
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             drawingContext.fillStyle = lane.track.id === (activeTrackId ?? arrangement.trackId) ? ROLL.laneActive : lane.index % 2 ? ROLL.laneAlt : ROLL.bg;
@@ -1568,7 +1606,7 @@ let isApplyingRemote = false;
             drawingContext.fillStyle = ROLL.text;
             const label = lane.track.name.length > 10 ? lane.track.name.slice(0, 9) + '…' : lane.track.name;
             for (const x of [10, 16]) {
-                for (const offset of [24, 30, 36]) {
+                for (const offset of [12, 18, 24]) {
                     drawingContext.fillRect(x, y + offset, 2, 2);
                 }
             }
@@ -2417,39 +2455,43 @@ let isApplyingRemote = false;
         pianoViewport.focus({ preventScroll: true });
     }
 
-    function requestTrackDeletion() {
-        if (trackGesture) {
-            return;
-        }
+    function trackContents(track) {
+        const items = track.audio ? engine.arrangement.clips.values() : engine.sequence.notes;
+        return [...items].filter((item) => item.trackId === track.id);
+    }
+
+    function requestTrackDeletion(id) {
+        const track = overviewTracks().find((candidate) => candidate.id === id);
+        if (!track || !canDeleteTrack(track)) return;
         engine.assertTrackDeletionStopped();
-        const track = activeTrack();
-        if (!track || engine.sequence.tracks.length <= 1) {
-            throw new Error('Select a MIDI track; the last track cannot be deleted.');
-        }
-        const notes = engine.sequence.notes.filter((note) => note.trackId === track.id);
-        if (!notes.length) {
-            deleteTrack(track.id);
+        const items = trackContents(track);
+        if (!items.length) {
+            deleteTrack(track);
             return;
         }
-        pendingTrackDeletion = { sequence: engine.sequence, id: track.id, name: track.name, noteIds: new Set(notes.map((note) => note.id)) };
-        getElement('deleteTrackMessage').textContent = `Delete track '${track.name}' and its ${notes.length} MIDI notes? Undo can restore it.`;
+        pendingTrackDeletion = { sequence: engine.sequence, id, name: track.name, itemIds: new Set(items.map((item) => item.id)) };
+        const noun = track.audio ? 'audio clip' : 'MIDI note';
+        getElement('deleteTrackMessage').textContent =
+            `Delete track '${track.name}' and its ${items.length} ${noun}${items.length === 1 ? '' : 's'}? Undo can restore it.`;
         deleteTrackDialog.showModal();
         getElement('cancelDeleteTrack').focus();
     }
 
-    getElement('deleteMidiTrack').onclick = () => runEditorAction(requestTrackDeletion);
     getElement('cancelDeleteTrack').onclick = closeTrackDeletion;
     getElement('confirmDeleteTrack').onclick = () => runEditorAction(() => {
         const request = pendingTrackDeletion;
-        const track = engine.sequence.tracks.find((candidate) => candidate.id === request?.id);
-        const notes = engine.sequence.notes.filter((note) => note.trackId === request?.id);
+        const track = overviewTracks().find((candidate) => candidate.id === request?.id);
+        const items = track ? trackContents(track) : [];
         if (!request || request.sequence !== engine.sequence || track?.name !== request.name ||
-            notes.length !== request.noteIds.size || notes.some((note) => !request.noteIds.has(note.id))) {
+            items.length !== request.itemIds.size || items.some((item) => !request.itemIds.has(item.id))) {
             closeTrackDeletion();
             throw new Error('The track changed. Request deletion again.');
         }
-        engine.assertTrackDeletionStopped();
-        deleteTrack(request.id);
+        if (!canDeleteTrack(track)) {
+            closeTrackDeletion();
+            return;
+        }
+        deleteTrack(track);
         closeTrackDeletion();
     });
     deleteTrackDialog.addEventListener('cancel', (event) => {
@@ -3016,6 +3058,82 @@ let isApplyingRemote = false;
         showStatus(`Audio ${details?.fatal === false ? 'warning' : 'failure'}: ${error.message}`);
     };
 
+    // ---- Per-channel mix controls (volume + pan) ----
+    const formatVolume = (value) => `${Math.round(value * 100)}%`;
+    const formatPan = (value) =>
+        Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
+
+    function createMixRow({ id, name }) {
+        const row = document.createElement('div');
+        row.className = 'mix-row';
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', name);
+        row.dataset.trackId = id;
+        // Opts into the "release focus after pointer use" policy so Space still controls transport.
+        row.setAttribute('data-daw-pointer-inputs', '');
+
+        const heading = document.createElement('span');
+        heading.className = 'mix-title';
+        heading.textContent = name;
+        row.append(heading);
+
+        const makeSlider = (label, min, max, step, format) => {
+            const wrapper = document.createElement('label');
+            const text = document.createElement('span');
+            text.textContent = label;
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = String(min);
+            input.max = String(max);
+            input.step = String(step);
+            const readout = document.createElement('output');
+            wrapper.append(text, input, readout);
+            row.append(wrapper);
+            return { input, readout, format };
+        };
+        const volume = makeSlider('Volume', 0, 1.5, 0.01, formatVolume);
+        const pan = makeSlider('Pan', -1, 1, 0.01, formatPan);
+        pan.input.title = 'Pan (double-click to center)';
+
+        function refresh() {
+            const mix = engine.getChannelMix(id);
+            const locked = databaseProject?.role === 'VIEWER';
+            volume.input.disabled = pan.input.disabled = locked;
+            // Don't fight the user's thumb while they're dragging.
+            if (document.activeElement !== volume.input) volume.input.value = String(mix.volume);
+            if (document.activeElement !== pan.input) pan.input.value = String(mix.pan);
+            volume.readout.textContent = volume.format(Number(volume.input.value));
+            pan.readout.textContent = pan.format(Number(pan.input.value));
+        }
+
+        volume.input.addEventListener('input', () => {
+            if (!volume.input.disabled) engine.setChannelVolume(id, volume.input.valueAsNumber);
+            refresh();
+        });
+        pan.input.addEventListener('input', () => {
+            if (!pan.input.disabled) engine.setChannelPan(id, pan.input.valueAsNumber);
+            refresh();
+        });
+        pan.input.addEventListener('dblclick', () => {
+            if (!pan.input.disabled) engine.setChannelPan(id, 0);
+            pan.input.value = '0';
+            refresh();
+        });
+
+        return { row, refresh };
+    }
+    // Rebuilds rows only when tracks are added, removed, renamed or reordered;
+    // otherwise just refreshes slider values so dragging isn't interrupted.
+    function syncMixer() {
+        const tracks = overviewTracks();
+        const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
+        if (key !== mixerKey) {
+            mixerKey = key;
+            mixerRows = tracks.map(createMixRow);
+            mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
+        }
+        mixerRows.forEach((mix) => mix.refresh());
+    }
 
     getElement('midiFile').onchange = async (event) => {
         const file = event.target.files[0];
@@ -3203,12 +3321,13 @@ let isApplyingRemote = false;
             engine.arrangement = new AudioArrangement(data.arrangement);
             arrangement.restoreAssets();
             loadedInstrumentState = data.instruments?.version === 1 ? data.instruments : null;
+            engine.restoreMix(loadedInstrumentState?.mixer);
             engine.mutedLanes = new Set(Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []);
             if (data.sample && typeof data.sample === 'object') {
-                unavailableSample = { ...data.sample, audioPersisted: false };
-                const warning = getElement('legacySampleWarning');
-                warning.hidden = false;
-                warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
+              unavailableSample = { ...data.sample, audioPersisted: false };
+              const warning = getElement('legacySampleWarning');
+              warning.hidden = false;
+              warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
             }
             resetEditorSelection();
             resetPitchViewport();

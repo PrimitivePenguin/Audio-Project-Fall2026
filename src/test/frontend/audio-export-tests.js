@@ -42,6 +42,9 @@ class OfflineGraph {
         this.gains.push(node);
         return node;
     }
+    createStereoPanner() {
+        return { ...this.node(), pan: { value: 0 } };
+    }
     createOscillator() {
         const node = { ...this.node(), frequency: {} };
         this.oscillators.push(node);
@@ -78,11 +81,14 @@ async function main() {
         sequence.addNote({ trackId, midi: 69, ticks: 240, durationTicks: 480, velocity: 0.8 });
     }
     engine.setLaneMuted(muted.id, true);
-    engine.laneGains.set(triangle.id, { gain: { value: 0.6 } });
+    engine.setChannelVolume(triangle.id, 0.6);
+    engine.setChannelPan(triangle.id, -0.3);
     engine.masterGain = { gain: { value: 0.4 } };
 
     const arrangement = engine.arrangement;
     const lane = arrangement.addTrack();
+    engine.setChannelVolume(lane.id, 0.25);
+    engine.setChannelPan(lane.id, 0.8);
     const silentLane = arrangement.addTrack();
     const buffer = { duration: 5, sampleRate: 44100, length: 220500, numberOfChannels: 1 };
     arrangement.assets.set('drum', { name: 'Drum Pattern', duration: 5, buffer });
@@ -113,10 +119,16 @@ async function main() {
     assert.equal(graph.filters[1].frequency.value, 444);
     assert.deepEqual(graph.filters[1].target.gain.envelope[1], [0.05 * 102 / 127, 0.5]);
     assert.equal(graph.filters[1].target.target.gain.value, 0.6);
+    assert.equal(graph.filters[1].target.target.target.pan.value, -0.3);
     assert.equal(graph.gains[0].gain.value, 0.4);
     assert.deepEqual(graph.buffers.map((source) => source.startArgs),
         [[0.25, 1, 0.75], [1, 1.75, 1.25], [0.5, 1, 2]]);
     assert(graph.buffers.every((source) => source.buffer === buffer));
+    const clipInput = graph.buffers[0].target;
+    assert(graph.buffers.every((source) => source.target === clipInput));
+    assert.equal(clipInput.gain.value, 0.25);
+    assert.equal(clipInput.target.pan.value, 0.8);
+    assert.equal(clipInput.target.target, graph.gains[0]);
     assert.equal(JSON.stringify({ sequence, clips: [...arrangement.clips], paused: engine.pausedTick }), before);
     assert.equal(engine.audioContext, null);
     console.log('PASS Offline graph preserves tempo, included lanes, trims, splits, overlaps, live synth settings and transport');

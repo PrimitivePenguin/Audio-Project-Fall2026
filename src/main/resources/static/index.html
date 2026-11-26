@@ -35,6 +35,7 @@
             <div id="drumMenu" data-daw-controls data-daw-pointer-inputs>
                 <button id="drumToggle" type="button" aria-expanded="false" aria-controls="drumPanel">Drums</button>
             </div>
+
         </div>
         <a class="button-link" href="/dashboard">Project Dashboard</a>
         <details class="account-menu popup-menu">
@@ -55,7 +56,6 @@
         </div>
         <label>Active track <select id="activeTrack" aria-label="Active musical track"><option value="">All Notes</option></select></label>
         <div class="control-group" aria-label="Track order and deletion">
-            <button id="deleteMidiTrack" type="button" disabled>Delete Track</button>
         </div>
         <strong id="activeTrackName">All Notes</strong>
         <label class="ghost-control"><input id="ghostNotes" type="checkbox" disabled> Ghost Notes</label>
@@ -115,6 +115,8 @@
                 <label>Track name <input id="trackName" type="text" maxlength="128" aria-describedby="trackMetadata"></label>
                 <button id="renameMidiTrack" type="button" title="Rename without changing MIDI routing; outside note Undo history" disabled>Rename Track</button>
                 <p id="trackMetadata" class="hint">Select a track to inspect its MIDI identity.</p>
+                <h2>Track mixer</h2>
+                <div id="trackMixer" class="mixer-panel"></div>
                 <h2>Composition</h2>
                 <button id="removeImportedMidi" type="button" disabled>Remove Imported MIDI</button>
                 <button id="newSequence" type="button">New Sequence</button>
@@ -134,7 +136,7 @@
         <div class="piano-content">
             <div id="pianoSpacer"></div>
             <canvas id="pianoCanvas" aria-label="All Notes piano roll. Click or drag the ruler to set the precise paste and playback-start cursor. Click empty space to clear selection, or add a note when nothing is selected; click a note to select; Shift-click to toggle selection. Drag empty space to select, a note body to move, or an edge to resize."></canvas>
-            <div id="laneMuteControls" aria-label="Track mute controls"></div>
+            <div id="laneControls" data-daw-controls role="group" aria-label="Track controls"></div>
             <svg id="canvasMeshContainer" aria-hidden="true"></svg>
             <canvas id="contourCanvas" aria-hidden="true"></canvas>
         </div>
@@ -186,7 +188,7 @@
         </form>
     </dialog>
     <dialog id="deleteTrackDialog" aria-labelledby="deleteTrackTitle" aria-describedby="deleteTrackMessage">
-        <h2 id="deleteTrackTitle">Delete MIDI Track</h2>
+        <h2 id="deleteTrackTitle">Delete Track</h2>
         <p id="deleteTrackMessage"></p>
         <div class="control-group">
             <button id="cancelDeleteTrack" type="button" autofocus>Cancel</button>

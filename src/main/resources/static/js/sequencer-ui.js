@@ -29,9 +29,14 @@
     const pianoViewport = getElement('pianoViewport');
     const pianoCanvas = getElement('pianoCanvas');
     const pianoSpacer = getElement('pianoSpacer');
+    const mixerPanel = getElement('trackMixer');
+    let mixerKey = '';
+    let mixerRows = [];
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
-        projectId: () => databaseProject?.id ?? null, canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
+        onMutate: (type, targetId) => broadcastSync(type, targetId),
+        projectId: () => databaseProject?.id ?? null,
+        canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
         canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
         tracksChanged: (id) => {
@@ -42,6 +47,7 @@
                 pianoViewport.scrollTop = Math.max(pianoViewport.scrollTop, bottom - pianoViewport.clientHeight);
                 getElement('sampleRack').open = true;
             }
+            broadcastSync('TRACKS_SYNC', id ?? 'tracks');
         },
         createLane: (below) => {
             const ids = overviewTracks().map((track) => track.id);
@@ -74,6 +80,9 @@
             for (const stack of [undoStack, redoStack]) {
                 for (let i = stack.length - 1; i >= 0; i--) {
                     const action = stack[i];
+                    if (action.kind === 'audio-track-delete') {
+                        action.record.clips = action.record.clips.filter((clip) => clip.assetId !== id);
+                    }
                     if (action.kind === 'audio-clip' &&
                         (action.before.some((clip) => clip.assetId === id) || action.after.some((clip) => clip.assetId === id))) {
                         stack.splice(i, 1);
@@ -177,15 +186,14 @@
             engine.sequence.tracks[0]?.name ?? 'Piano';
     }
 
+    function canDeleteTrack(track) {
+        return databaseProject?.role !== 'VIEWER' && !isStartingPlayback && !engine.isPlaying &&
+            !engine.isPaused && !engine.startPromise && !trackGesture && !arrangement.deletingAsset &&
+            (track.audio || engine.sequence.tracks.length > 1);
+    }
+
     function updateTrackActions() {
-        const track = activeTrack();
-        const readOnly = databaseProject?.role === 'VIEWER';
-        const stopped = !engine.isPlaying && !engine.isPaused && !engine.startPromise && !isStartingPlayback;
-        getElement('deleteMidiTrack').disabled = readOnly || !track || !stopped || Boolean(trackGesture) || engine.sequence.tracks.length <= 1;
-        getElement('deleteMidiTrack').textContent = track ? `Delete ${track.name}` : 'Delete Track';
-        getElement('deleteMidiTrack').title = track
-            ? `Delete MIDI track '${track.name}'. Press Stop first; the last track is protected.`
-            : 'Select a MIDI track to delete. Press Stop first.';
+        for (const { track, remove } of laneButtons.values()) remove.disabled = !canDeleteTrack(track);
     }
 
     function syncTrackControls() {
@@ -256,6 +264,7 @@
             getElement(id).disabled = overview;
         }
         updateTrackActions();
+        syncMixer();
         pianoViewport.setAttribute('aria-label', overview ? (engine.arrangement.tracks.size ? 'Arrangement timeline' : 'MIDI track overview') : `Piano roll: ${track?.name ?? 'All Notes'}`);
         pianoCanvas.setAttribute('aria-label', overview
             ? `${engine.sequence.tracks.length} MIDI track lanes. Select a track with the Active track selector, then Piano Roll / Edit Track. Double-click a lane to edit.` +
@@ -428,7 +437,7 @@
     function historyWeight(entry) {
         if (Array.isArray(entry)) return entry.length;
         if (entry.kind === 'audio-clip') return entry.before.length + entry.after.length;
-        return entry.kind.endsWith('-order') ? entry.before.length : entry.record.notes.length + 1;
+        return entry.kind.endsWith('-order') ? entry.before.length : (entry.record.notes ?? entry.record.clips).length + 1;
     }
 
     function pushHistory(entry) {
@@ -453,6 +462,7 @@
             pushHistory({ kind: 'arrangement-order', before, after });
             syncEditorState();
             showStatus(`Moved lane to position ${index + 1}.`);
+            broadcastSync('TRACKS_SYNC', id);
             return;
         }
         const before = engine.sequence.tracks.map((track) => track.id);
@@ -462,6 +472,7 @@
         pushHistory({ kind: 'track-order', before, after: engine.sequence.tracks.map((track) => track.id) });
         syncEditorState();
         showStatus(`Moved '${engine.sequence.tracks[index].name}' to track position ${index + 1}.`);
+        broadcastSync('TRACKS_SYNC', id);
     }
 
     function setArrangementOrder(ids) {
@@ -477,6 +488,13 @@
             const known = new Set(order);
             const extra = engine.sequence.tracks.filter((track) => !known.has(track.id)).map((track) => track.id);
             engine.setMidiTrackOrder([...order, ...extra]);
+        } else if (entry.kind === 'audio-track-delete') {
+            if (arrangement.deletingAsset) throw new Error('Wait for Sample Rack deletion to finish.');
+            if (side === 'before') engine.restoreAudioTrack(entry.record);
+            else {
+                entry.record = engine.deleteAudioTrack(entry.record.track.id);
+                arrangement.setSelection(arrangement.selected, arrangement.trackId);
+            }
         } else if (side === 'before') {
             engine.restoreMidiTrack(entry.record);
         } else {
@@ -489,14 +507,21 @@
         showStatus(`${side === 'before' ? 'Undo' : 'Redo'}: ${entry.kind === 'track-order' ? 'MIDI track order' : `track '${entry.record.track.name}' deletion`}.`);
     }
 
-    function deleteTrack(id) {
+    function deleteTrack(track) {
         checkHistory();
-        const record = engine.deleteMidiTrack(id);
-        pushHistory({ kind: 'track-delete', record });
-        overlapIds = [];
-        selectNote(null);
+        cancelEditorGesture();
+        arrangement.cancelDrop();
+        const record = track.audio ? engine.deleteAudioTrack(track.id) : engine.deleteMidiTrack(track.id);
+        pushHistory({ kind: track.audio ? 'audio-track-delete' : 'track-delete', record });
+        if (track.audio) arrangement.setSelection(arrangement.selected, arrangement.trackId);
+        else {
+            overlapIds = [];
+            selectNote(null);
+        }
         syncEditorState();
-        showStatus(`Deleted track '${record.track.name}' and ${record.notes.length} notes. Undo restores it.`);
+        broadcastSync('TRACKS_SYNC', id);
+        const count = track.audio ? record.clips.length : record.notes.length;
+        showStatus(`Deleted track '${track.name}' and ${count} ${track.audio ? 'clips' : 'notes'}. Undo restores it.`);
     }
 
     function recordEdit(before) {
@@ -509,12 +534,15 @@
         ).map((id) => ({ before: before.get(id), after: after.get(id) }));
         if (changes.length) {
             pushHistory(changes);
+            broadcastSync('NOTES_SYNC', changes[0]?.after?.id ?? changes[0]?.before?.id ?? 'notes');
         }
     }
 
     function restoreHistory(source, destination, side) {
+        if (databaseProject?.role === 'VIEWER') return;
         invalidateRenderIndex();
         cancelEditorGesture();
+        arrangement.cancelDrop();
         checkHistory();
         const entry = source.at(-1);
         if (!entry) {
@@ -532,6 +560,7 @@
             } else {
                 restoreTrackHistory(entry, side);
             }
+            broadcastSync('FULL_SYNC', 'history');
             source.pop();
             destination.push(entry);
             return;
@@ -572,6 +601,7 @@
         selectedNoteId = [...selectedIds][0] ?? null;
         refreshNoteControls();
         syncEditorState();
+        broadcastSync('FULL_SYNC', 'history');
     }
 
     function clipboardEdit(action) {
@@ -643,6 +673,203 @@
     let databaseSaveInFlight = false;
     let loadedInstrumentState = null;
 
+
+let isApplyingRemote = false;
+    let lastSyncedArrangementJson = '';
+    let lastSyncedInstrumentsJson = '';
+
+    function broadcastSync(type, targetId = null, payload = null) {
+        if (isApplyingRemote || !databaseProject || databaseProject.role === 'VIEWER') return;
+        collab.publish(type, targetId, payload);
+    }
+
+    function applyProjectDataFromServer(data, serverName = null, preserveView = true) {
+        if (!data || typeof data !== 'object') return false;
+        const prevSelection = new Set(selectedIds);
+        const prevClipSelection = new Set(arrangement.selected);
+        const prevTrackId = activeTrackId;
+        const prevScrollLeft = pianoViewport.scrollLeft;
+        const prevScrollTop = pianoViewport.scrollTop;
+        const cachedAssets = new Map(engine.arrangement.assets);
+
+        isApplyingRemote = true;
+        try {
+            const nextStepCount = Number.isInteger(data.stepCount) ? data.stepCount : 16;
+            const nextPpq = Number.isInteger(data.ppq) ? data.ppq : 480;
+            const nextName = serverName || data.name || 'JukeBox';
+
+            if (engine.sequence && engine.sequence.ppq === nextPpq) {
+                engine.sequence.name = nextName;
+                if (nextStepCount !== engine.totalSteps) {
+                    engine.setPatternLength(nextStepCount);
+                }
+                if (Array.isArray(data.tracks) && data.tracks.length) {
+                    const existingTracks = new Map(engine.sequence.tracks.map((t) => [t.id, t]));
+                    engine.sequence.tracks = data.tracks.map((incoming) => {
+                        const existing = existingTracks.get(incoming.id);
+                        return existing ? Object.assign(existing, incoming) : { ...incoming };
+                    });
+                }
+                if (Array.isArray(data.tempos) && data.tempos.length) {
+                    engine.sequence.tempos = data.tempos;
+                }
+                if (Array.isArray(data.timeSignatures) && data.timeSignatures.length) {
+                    engine.sequence.timeSignatures = data.timeSignatures;
+                }
+                engine.sequence.importInfo = data.importInfo || null;
+
+                const incomingNotes = Array.isArray(data.notes) ? data.notes : [];
+                const incomingById = new Map(incomingNotes.map((n) => [n.id, n]));
+                engine.sequence.notes = engine.sequence.notes.filter((n) => incomingById.has(n.id));
+                const existingById = new Map(engine.sequence.notes.map((n) => [n.id, n]));
+                for (const incoming of incomingNotes) {
+                    const existing = existingById.get(incoming.id);
+                    if (existing) {
+                        // Assign only plain data fields so prototype getters (startStep/durationSteps) never throw in Firefox
+                        existing.midi = incoming.midi;
+                        existing.ticks = incoming.ticks;
+                        existing.durationTicks = incoming.durationTicks;
+                        existing.velocity = incoming.velocity;
+                        existing.velocityMidi = incoming.velocityMidi;
+                        existing.trackId = incoming.trackId;
+                        existing.importId = incoming.importId ?? null;
+                    } else {
+                        engine.sequence.addNote({
+                            id: incoming.id,
+                            midi: incoming.midi,
+                            ticks: incoming.ticks,
+                            durationTicks: incoming.durationTicks,
+                            velocity: incoming.velocity,
+                            velocityMidi: incoming.velocityMidi,
+                            trackId: incoming.trackId,
+                            importId: incoming.importId ?? null
+                        });
+                    }
+                }
+            } else {
+                const resumeTick = engine.isPlaying ? engine.getPlaybackTick() : null;
+                const sequence = new NoteSequence(nextStepCount, nextPpq);
+                sequence.name = nextName;
+                sequence.tracks = Array.isArray(data.tracks) && data.tracks.length
+                    ? data.tracks
+                    : sequence.tracks;
+                sequence.tempos = data.tempos || sequence.tempos;
+                sequence.timeSignatures = data.timeSignatures || sequence.timeSignatures;
+                sequence.importInfo = data.importInfo || null;
+                (data.notes || []).forEach((note) => sequence.addNote(note));
+                engine.replaceSequence(sequence);
+                if (resumeTick !== null) {
+                    engine.play(resumeTick);
+                }
+            }
+
+            const nextLoopStart = Number.isInteger(data.loopStart) ? data.loopStart : 0;
+            const nextLoopEnd = Number.isInteger(data.loopEnd) ? data.loopEnd : engine.sequence.stepCount;
+            if (nextLoopStart !== engine.loopStart || nextLoopEnd !== engine.loopEnd) {
+                engine.setLoopRange(nextLoopStart, nextLoopEnd);
+            }
+
+            const arrangementJson = JSON.stringify(data.arrangement ?? null);
+            if (arrangementJson !== lastSyncedArrangementJson &&
+                (data.arrangement || engine.arrangement.assets.size || engine.arrangement.tracks.size)) {
+                try {
+                    const nextArrangement = new AudioArrangement(data.arrangement);
+                    for (const [id, asset] of nextArrangement.assets) {
+                        const cached = cachedAssets.get(id);
+                        if (cached?.buffer) {
+                            asset.buffer = cached.buffer;
+                            asset.waveform = cached.waveform;
+                            asset.spectrogram = cached.spectrogram;
+                            asset.local = cached.local;
+                            asset.previewStatus = cached.previewStatus;
+                        }
+                    }
+                    engine.arrangement = nextArrangement;
+                    arrangement.restoreAssets();
+                    lastSyncedArrangementJson = arrangementJson;
+                } catch (err) {
+                    console.warn('[collab] Skipped arrangement sync:', err);
+                }
+            }
+
+            const instrumentsJson = JSON.stringify(data.instruments ?? null);
+            if (data.instruments?.version === 1 && instrumentsJson !== lastSyncedInstrumentsJson) {
+                try {
+                    loadedInstrumentState = data.instruments;
+                    window.jukeboxSynth?.restoreState(data.instruments.synth ?? null);
+                    window.jukeboxDrums?.restoreState(data.instruments.drums ?? null);
+                    lastSyncedInstrumentsJson = instrumentsJson;
+                } catch (err) {
+                    console.warn('[collab] Skipped instrument sync:', err);
+                }
+            }
+
+            engine.mutedLanes = new Set(
+                Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []
+            );
+
+            if (preserveView) {
+                invalidateRenderIndex();
+                expandPitchRange(engine.sequence.notes);
+                activeTrackId = engine.sequence.tracks.some((t) => t.id === prevTrackId) ? prevTrackId : null;
+                selectedIds.clear();
+                for (const note of engine.sequence.notes) {
+                    if (prevSelection.has(note.id)) selectedIds.add(note.id);
+                }
+                selectedNoteId = [...selectedIds][0] ?? null;
+                arrangement.setSelection(prevClipSelection, arrangement.trackId);
+                syncEditorState();
+                pianoViewport.scrollLeft = prevScrollLeft;
+                pianoViewport.scrollTop = prevScrollTop;
+                pendingViewportRender = true;
+                renderPianoRoll();
+            }
+            return true;
+        } finally {
+            isApplyingRemote = false;
+        }
+    }
+
+    const collab = new ProjectCollabClient({
+        getProject: () => databaseProject,
+        getSnapshot: () => databaseSnapshot(),
+        onRemoteEvent: (event, isFullSnapshot) => {
+            console.debug('[collab] remote event:', event.type, 'rev:', event.revision, 'isPlaying:', engine.isPlaying);
+            if (!event.snapshot) return false;
+            try {
+                const parsed = JSON.parse(event.snapshot);
+                const applied = applyProjectDataFromServer(parsed, event.name, true);
+                console.debug('[collab] applied:', applied, 'notes count:', engine.sequence.notes.length);
+                if (applied && !isFullSnapshot && event.actorUsername) {
+                    showStatus(`Updated by ${event.actorUsername} (rev ${event.revision}).`);
+                }
+                return applied;
+            } catch (error) {
+                console.error('[collab] Failed to apply remote project sync:', error);
+                showStatus(`Sync apply error: ${error.message}`);
+                return false;
+            }
+        },
+        onConflict: (event) => {
+            if (event.snapshot) {
+                try {
+                    applyProjectDataFromServer(JSON.parse(event.snapshot), event.name, true);
+                } catch { /* Ignore malformed snapshot */ }
+            }
+            showStatus('Project changed by a collaborator — synced to latest version.');
+        },
+        onStatus: (message) => {
+            if (databaseProject) showStatus(message);
+        }
+    });
+
+    // Re-sync latest state when returning focus to the browser window if no local edit is in flight
+    window.addEventListener('focus', () => {
+        if (databaseProject && collab.connected && !collab.inFlight && !collab.outbox.length) {
+            collab.requestState();
+        }
+    });
+
     // Controls and selected-note details.
     function showStatus(text) {
         statusElement.textContent = text;
@@ -656,7 +883,8 @@
             instruments: {
                 version: 1,
                 synth: window.jukeboxSynth?.snapshot() ?? null,
-                drums: window.jukeboxDrums?.snapshot() ?? null
+                drums: window.jukeboxDrums?.snapshot() ?? null,
+                mixer: engine.snapshotMix()
             },
             loopStart: engine.loopStart,
             loopEnd: engine.loopEnd,
@@ -718,7 +946,7 @@
             'lengthIncrease', 'velocity', 'deleteNote', 'nextOverlap', 'pitchLow',
             'pitchHigh',
             'removeImportedMidi', 'addMidiTrack', 'renameMidiTrack', 'trackName',
-            'deleteMidiTrack', 'undoNotes', 'redoNotes',
+            'undoNotes', 'redoNotes',
             'cutNotes', 'pasteNotes', 'duplicateNotes'
         ].forEach((id) => {
             const element = getElement(id);
@@ -1029,7 +1257,7 @@
         if (workspaceMode === 'tracks') {
             noteRects = drawTrackOverview(width, height, first, last, scrollLeft, scrollTop, meterMarks);
         } else {
-            if (muteButtons.size) renderMuteControls([], height, scrollTop);
+            if (laneButtons.size) renderLaneControls([], height, scrollTop);
             drawPitchRows(width, height, scrollTop);
             drawTimingGrid(first, last, height, scrollLeft, meterMarks);
             drawLoopRegion(width, height, scrollLeft);
@@ -1261,44 +1489,61 @@
         }
     }
 
-    const muteControls = getElement('laneMuteControls');
-    const muteButtons = new Map();
+    const laneControls = getElement('laneControls');
+    const laneButtons = new Map();
 
-    function renderMuteControls(lanes, height, scrollTop) {
+    function renderLaneControls(lanes, height, scrollTop) {
         const kept = new Set();
-        for (const lane of lanes) {
-            const { track, index } = lane;
-            const top = RULER_HEIGHT + index * TrackOverview.laneHeight - scrollTop + TrackOverview.laneHeight - 28;
+        for (const { track, index } of lanes) {
+            const top = RULER_HEIGHT + (index + 1) * TrackOverview.laneHeight - scrollTop - 28;
             if (top < RULER_HEIGHT || top + 24 > height) continue;
             kept.add(track.id);
-            let button = muteButtons.get(track.id);
-            if (!button) {
-                button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'lane-mute';
-                button.onclick = () => {
+            let controls = laneButtons.get(track.id);
+            if (!controls) {
+                const mute = document.createElement('button');
+                mute.type = 'button';
+                mute.className = 'lane-control lane-mute';
+                mute.onclick = () => {
                     if (databaseProject?.role === 'VIEWER') return;
                     engine.setLaneMuted(track.id, !engine.mutedLanes.has(track.id));
                     renderPianoRoll();
+                    broadcastSync('SETTINGS_SYNC', track.id);
                 };
-                muteButtons.set(track.id, button);
-                muteControls.append(button);
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'lane-control lane-delete';
+                remove.textContent = '🗑';
+                remove.onclick = () => runEditorAction(() => requestTrackDeletion(track.id));
+                for (const button of [mute, remove]) {
+                    button.addEventListener('pointerdown', (event) => event.stopPropagation());
+                }
+                controls = { track, mute, remove };
+                laneButtons.set(track.id, controls);
+                laneControls.append(mute, remove);
             }
+            const { mute, remove } = controls;
+            controls.track = track;
             const muted = engine.mutedLanes.has(track.id);
-            button.disabled = databaseProject?.role === 'VIEWER';
-            button.style.top = `${top}px`;
+            mute.disabled = databaseProject?.role === 'VIEWER';
+            remove.disabled = !canDeleteTrack(track);
+            mute.style.top = remove.style.top = `${top}px`;
             const label = `Mute ${track.name}`;
-            if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
-            if (button.getAttribute('aria-pressed') !== String(muted)) {
-                button.setAttribute('aria-pressed', String(muted));
-                button.textContent = muted ? '🔇' : '🔊';
+            if (mute.getAttribute('aria-label') !== label) mute.setAttribute('aria-label', label);
+            if (mute.getAttribute('aria-pressed') !== String(muted)) {
+                mute.setAttribute('aria-pressed', String(muted));
+                mute.textContent = muted ? '🔇' : '🔊';
             }
-            button.title = `${muted ? 'Unmute' : 'Mute'} ${track.name}`;
+            mute.title = `${muted ? 'Unmute' : 'Mute'} ${track.name}`;
+            const deleteLabel = `Delete track ${track.name}`;
+            if (remove.getAttribute('aria-label') !== deleteLabel) remove.setAttribute('aria-label', deleteLabel);
+            remove.title = !track.audio && engine.sequence.tracks.length <= 1
+                ? 'The last MIDI track is protected.' : deleteLabel;
         }
-        for (const [id, button] of muteButtons) {
+        for (const [id, { mute, remove }] of laneButtons) {
             if (kept.has(id)) continue;
-            button.remove();
-            muteButtons.delete(id);
+            mute.remove();
+            remove.remove();
+            laneButtons.delete(id);
         }
     }
 
@@ -1309,7 +1554,7 @@
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             return y + TrackOverview.laneHeight > RULER_HEIGHT && y < height;
         });
-        renderMuteControls(visible, height, scrollTop);
+        renderLaneControls(visible, height, scrollTop);
         for (const lane of visible) {
             const y = RULER_HEIGHT + lane.index * TrackOverview.laneHeight - scrollTop;
             drawingContext.fillStyle = lane.track.id === (activeTrackId ?? arrangement.trackId) ? ROLL.laneActive : lane.index % 2 ? ROLL.laneAlt : ROLL.bg;
@@ -1371,7 +1616,7 @@
             drawingContext.fillStyle = ROLL.text;
             const label = lane.track.name.length > 10 ? lane.track.name.slice(0, 9) + '…' : lane.track.name;
             for (const x of [10, 16]) {
-                for (const offset of [24, 30, 36]) {
+                for (const offset of [12, 18, 24]) {
                     drawingContext.fillRect(x, y + offset, 2, 2);
                 }
             }
@@ -2189,6 +2434,7 @@
         }
         const track = engine.addMidiTrack(`MIDI Track ${engine.sequence.tracks.length + 1}`);
         setWorkspace(workspaceMode, track.id);
+        broadcastSync('TRACKS_SYNC', track.id);
         if (!event || event.detail === 0) {
             getElement('trackName').focus();
         }
@@ -2199,6 +2445,7 @@
         }
         engine.renameMidiTrack(activeTrackId, getElement('trackName').value);
         syncEditorState();
+        broadcastSync('TRACKS_SYNC', activeTrackId);
     });
     pianoCanvas.onpointerdown = beginGesture;
     pianoCanvas.onpointermove = moveGesture;
@@ -2218,39 +2465,43 @@
         pianoViewport.focus({ preventScroll: true });
     }
 
-    function requestTrackDeletion() {
-        if (trackGesture) {
-            return;
-        }
+    function trackContents(track) {
+        const items = track.audio ? engine.arrangement.clips.values() : engine.sequence.notes;
+        return [...items].filter((item) => item.trackId === track.id);
+    }
+
+    function requestTrackDeletion(id) {
+        const track = overviewTracks().find((candidate) => candidate.id === id);
+        if (!track || !canDeleteTrack(track)) return;
         engine.assertTrackDeletionStopped();
-        const track = activeTrack();
-        if (!track || engine.sequence.tracks.length <= 1) {
-            throw new Error('Select a MIDI track; the last track cannot be deleted.');
-        }
-        const notes = engine.sequence.notes.filter((note) => note.trackId === track.id);
-        if (!notes.length) {
-            deleteTrack(track.id);
+        const items = trackContents(track);
+        if (!items.length) {
+            deleteTrack(track);
             return;
         }
-        pendingTrackDeletion = { sequence: engine.sequence, id: track.id, name: track.name, noteIds: new Set(notes.map((note) => note.id)) };
-        getElement('deleteTrackMessage').textContent = `Delete track '${track.name}' and its ${notes.length} MIDI notes? Undo can restore it.`;
+        pendingTrackDeletion = { sequence: engine.sequence, id, name: track.name, itemIds: new Set(items.map((item) => item.id)) };
+        const noun = track.audio ? 'audio clip' : 'MIDI note';
+        getElement('deleteTrackMessage').textContent =
+            `Delete track '${track.name}' and its ${items.length} ${noun}${items.length === 1 ? '' : 's'}? Undo can restore it.`;
         deleteTrackDialog.showModal();
         getElement('cancelDeleteTrack').focus();
     }
 
-    getElement('deleteMidiTrack').onclick = () => runEditorAction(requestTrackDeletion);
     getElement('cancelDeleteTrack').onclick = closeTrackDeletion;
     getElement('confirmDeleteTrack').onclick = () => runEditorAction(() => {
         const request = pendingTrackDeletion;
-        const track = engine.sequence.tracks.find((candidate) => candidate.id === request?.id);
-        const notes = engine.sequence.notes.filter((note) => note.trackId === request?.id);
+        const track = overviewTracks().find((candidate) => candidate.id === request?.id);
+        const items = track ? trackContents(track) : [];
         if (!request || request.sequence !== engine.sequence || track?.name !== request.name ||
-            notes.length !== request.noteIds.size || notes.some((note) => !request.noteIds.has(note.id))) {
+            items.length !== request.itemIds.size || items.some((item) => !request.itemIds.has(item.id))) {
             closeTrackDeletion();
             throw new Error('The track changed. Request deletion again.');
         }
-        engine.assertTrackDeletionStopped();
-        deleteTrack(request.id);
+        if (!canDeleteTrack(track)) {
+            closeTrackDeletion();
+            return;
+        }
+        deleteTrack(track);
         closeTrackDeletion();
     });
     deleteTrackDialog.addEventListener('cancel', (event) => {
@@ -2682,6 +2933,7 @@
             undoStack.length = 0;
             redoStack.length = 0;
             showStatus(`Pattern: ${steps} steps. No notes deleted.`);
+            broadcastSync('SETTINGS_SYNC', 'pattern');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2719,6 +2971,7 @@
         syncEditingCursor();
         updateMeterControls(false);
         renderPianoRoll();
+        broadcastSync('SETTINGS_SYNC', 'timeSignature');
     };
 
     function changeMeasureLength(direction) {
@@ -2738,6 +2991,7 @@
             }
             engine.setLoopRange(Number(loopStartInput.value) - 1, Number(loopEndInput.value));
             showStatus(`Loop: ${engine.loopStart + 1}–${engine.loopEnd}.`);
+            broadcastSync('SETTINGS_SYNC', 'loop');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2751,6 +3005,7 @@
             engine.setBpm(Number(bpmInput.value));
             pendingViewportRender = true;
             showStatus(`Tempo: ${engine.bpm} BPM.`);
+            broadcastSync('SETTINGS_SYNC', 'bpm');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2813,7 +3068,111 @@
         showStatus(`Audio ${details?.fatal === false ? 'warning' : 'failure'}: ${error.message}`);
     };
 
+    // ---- Per-channel mixer (volume, pan, filter, effect sends) ----
+    const formatPct = (value) => `${Math.round(value * 100)}%`;
+    const formatPan = (value) =>
+        Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
+    const formatHz = (hz) => (hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)));
+    const CUTOFF_RATIO = 1000; // cutoff slider spans 20 Hz–20 kHz logarithmically
 
+    const MIX_CONTROLS = [
+        { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
+        { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
+        { key: 'filterType', label: 'Filter', select: [['lowpass', 'Low-pass'], ['highpass', 'High-pass']] },
+        { key: 'cutoff', label: 'Cutoff', min: 0, max: 1, step: 0.001, format: formatHz,
+            toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
+            fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
+        { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
+        { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
+        { key: 'delayBeats', label: 'Time', min: 0.125, max: 2, step: 0.125, format: (v) => `${+v.toFixed(3)} beat` },
+        { key: 'delayFeedback', label: 'Fdbk', min: 0, max: 0.9, step: 0.01, format: formatPct },
+        { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
+    ];
+
+    function createMixRow({ id, name }) {
+        const row = document.createElement('div');
+        row.className = 'mix-row';
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', name);
+        row.dataset.trackId = id;
+        // Opts into the "release focus after pointer use" policy so Space still controls transport.
+        row.setAttribute('data-daw-pointer-inputs', '');
+
+        const heading = document.createElement('span');
+        heading.className = 'mix-title';
+        heading.textContent = name;
+        row.append(heading);
+
+        const controls = MIX_CONTROLS.map((control) => {
+            const wrapper = document.createElement('label');
+            const text = document.createElement('span');
+            text.textContent = control.label;
+
+            if (control.select) {
+                const input = document.createElement('select');
+                for (const [value, label] of control.select) input.append(new Option(label, value));
+                wrapper.append(text, input);
+                row.append(wrapper);
+                input.addEventListener('change', () => {
+                    if (!input.disabled) engine.setChannelFilterType(id, input.value);
+                    refresh();
+                });
+                return { control, input };
+            }
+
+            const toSlider = control.toSlider ?? ((value) => value);
+            const fromSlider = control.fromSlider ?? ((value) => value);
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = String(control.min);
+            input.max = String(control.max);
+            input.step = String(control.step);
+            input.title = 'Double-click to reset';
+            const readout = document.createElement('output');
+            wrapper.append(text, input, readout);
+            row.append(wrapper);
+
+            input.addEventListener('input', () => {
+                if (!input.disabled) engine.setChannelParam(id, control.key, fromSlider(input.valueAsNumber));
+                refresh();
+            });
+            input.addEventListener('dblclick', () => {
+                if (!input.disabled) engine.resetChannelParam(id, control.key);
+                refresh();
+            });
+            return { control, input, readout, toSlider };
+        });
+
+        function refresh() {
+            const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
+            const mix = engine.getChannelMix(id);
+            for (const { control, input, readout, toSlider } of controls) {
+                input.disabled = locked;
+                const focused = document.activeElement === input;
+                if (control.select) {
+                    if (!focused) input.value = mix.filterType;
+                    continue;
+                }
+                if (!focused) input.value = String(toSlider(mix[control.key]));
+                readout.textContent = control.format(mix[control.key]);
+            }
+        }
+
+        return { row, refresh };
+    }
+
+    // Rebuilds rows only when tracks are added, removed, renamed or reordered;
+    // otherwise just refreshes slider values so dragging isn't interrupted.
+    function syncMixer() {
+        const tracks = overviewTracks();
+        const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
+        if (key !== mixerKey) {
+            mixerKey = key;
+            mixerRows = tracks.map(createMixRow);
+            mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
+        }
+        mixerRows.forEach((mix) => mix.refresh());
+    }
     getElement('midiFile').onchange = async (event) => {
         const file = event.target.files[0];
         if (!file) {
@@ -2843,6 +3202,7 @@
             showStatus(
                 `Imported ${engine.sequence.notes.length} notes in ${engine.sequence.tracks.length} tracks. ${result.warnings.join(' ')}`
             );
+            broadcastSync('FULL_SYNC', 'midiImport');
         } catch (error) {
             if (token === latestMidiImportId) {
                 showStatus(`Import cancelled: ${error.message}. Existing composition retained.`);
@@ -2889,6 +3249,7 @@
             showStatus(
                 'Imported MIDI removed, including edited imported notes. Manual notes and audio samples retained.'
             );
+            broadcastSync('FULL_SYNC', 'removeMidi');
         } catch (error) {
             showStatus(`Could not remove MIDI: ${error.message}`);
         }
@@ -2916,6 +3277,7 @@
         window.jukeboxSynth?.restoreState(null);
         window.jukeboxDrums?.restoreState(null);
         databaseProject = null;
+        collab.disconnect();
         getElement('saveProject').disabled = false;
         newNoteLengthSteps = 1;
         newNoteVelocity = 89;
@@ -2997,17 +3359,19 @@
             engine.arrangement = new AudioArrangement(data.arrangement);
             arrangement.restoreAssets();
             loadedInstrumentState = data.instruments?.version === 1 ? data.instruments : null;
+            engine.restoreMix(loadedInstrumentState?.mixer);
             engine.mutedLanes = new Set(Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []);
             if (data.sample && typeof data.sample === 'object') {
-                unavailableSample = { ...data.sample, audioPersisted: false };
-                const warning = getElement('legacySampleWarning');
-                warning.hidden = false;
-                warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
+              unavailableSample = { ...data.sample, audioPersisted: false };
+              const warning = getElement('legacySampleWarning');
+              warning.hidden = false;
+              warning.textContent = 'Legacy sample triggers are retained in project data and are silent. Import the original audio into Sample Rack to arrange it as clips.';
             }
             resetEditorSelection();
             resetPitchViewport();
             showStatus(`Loaded "${sequence.name}" from the database.${unavailableSample ? ' Legacy sample triggers are archived and silent.' : ''}`);
             applyDatabasePermissions();
+            collab.connect(databaseProject.id);
         } catch (error) {
             showStatus(`Could not load database project: ${error.message}`);
         }
@@ -3145,6 +3509,7 @@
     });
     window.addEventListener('pagehide', () => {
         midiImportController?.abort();
+        collab.disconnect();
         stopPlayback();
     });
     function updatePlayhead(timestamp = 0) {

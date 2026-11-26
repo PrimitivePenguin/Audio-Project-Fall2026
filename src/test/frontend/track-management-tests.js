@@ -117,10 +117,15 @@ test('long-list drag edge scrolling uses the existing animation and cancels clea
     assert.equal(h.elements.pianoViewport.scrollTop, top);
 });
 
+function requestDeletion(h) {
+    const { name } = h.engine.sequence.tracks.find((track) => track.id === h.elements.activeTrack.value);
+    h.elements.laneControls.children.find((button) => button.getAttribute('aria-label') === `Delete track ${name}`).onclick();
+}
+
 test('empty deletion is immediate, active selection falls back and last track is protected', () => {
     const h = setup();
     select(h, 'empty');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     assert.ok(!ids(h).includes('empty'));
     assert.equal(Boolean(h.elements.deleteTrackDialog.open), false);
     assert.notEqual(h.elements.activeTrack.value, 'empty');
@@ -136,12 +141,12 @@ test('nonempty deletion requires confirmation; Cancel/Escape have no data or his
     const h = setup();
     select(h, 'bass');
     const before = json(h);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     assert.equal(h.elements.deleteTrackDialog.open, true);
-    assert.match(h.elements.deleteTrackMessage.textContent, /Bass.*1 MIDI notes/);
+    assert.match(h.elements.deleteTrackMessage.textContent, /Bass.*1 MIDI note/);
     h.elements.cancelDeleteTrack.onclick();
     assert.equal(json(h), before);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     key(h, 'Escape');
     assert.equal(h.elements.deleteTrackDialog.open, false);
     undo(h);
@@ -152,7 +157,7 @@ test('confirmed imported-track deletion and Undo/Redo preserve exact order, note
     const h = setup();
     select(h, 'bass');
     const before = json(h);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.elements.confirmDeleteTrack.onclick();
     assert.deepEqual(ids(h), ['piano', 'strings', 'empty']);
     assert.deepEqual(Array.from(h.engine.sequence.notes, (note) => note.id), ['p', 's']);
@@ -168,13 +173,13 @@ test('confirmed imported-track deletion and Undo/Redo preserve exact order, note
 test('confirmation identifies stable IDs after reordering and rejects stale changed tracks', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.reorderMidiTrack('bass', 3);
     h.elements.confirmDeleteTrack.onclick();
     assert.ok(!ids(h).includes('bass'));
     undo(h);
     select(h, 'bass');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.renameMidiTrack('bass', 'Changed');
     h.elements.confirmDeleteTrack.onclick();
     assert.ok(ids(h).includes('bass'));
@@ -221,7 +226,7 @@ test('deletion and restore require Stop in playing, paused and preparing states;
 test('blocked structural Undo retains its transaction until Stop, then restores and supports note history', () => {
     const h = setup();
     select(h, 'empty');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.isPaused = true;
     undo(h);
     assert.ok(!ids(h).includes('empty'));
@@ -289,7 +294,7 @@ test('note edits and structural transactions share ordered Undo/Redo without inv
     h.elements.noteLength.onchange();
     h.elements.tracksView.onclick();
     drag(h, 1, 0);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.elements.confirmDeleteTrack.onclick();
     undo(h);
     assert.equal(h.engine.sequence.notes.find((note) => note.id === 'b').durationTicks, 480);

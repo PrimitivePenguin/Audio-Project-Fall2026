@@ -90,9 +90,15 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
     // ---- Public API ----
 
     const getSteps = (id) => isDrum(id) ? [...(patterns.get(id) ?? Array(STEPS).fill(false))] : [];
-    const getVolume = (id) => getTrack(id)?.gainNode.gain.value ?? DEFAULT_VOLUME;
+    const getVolume = (id) => (getTrack(id) ? engine.getChannelMix(id).volume : DEFAULT_VOLUME);
+    const getPan = (id) => (getTrack(id) ? engine.getChannelMix(id).pan : 0);
     const stepCount = () => STEPS;
 
+    function setPan(id, value) {
+        if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isFinite(value)) return false;
+        ensureTracks();
+        return engine.setChannelPan(id, value);
+    }
     // step is zero-based (0 = first sixteenth), like engine.setStep.
     function setStep(id, step, on) {
         if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isInteger(step) || step < 0 || step >= STEPS) {
@@ -114,8 +120,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
     function setVolume(id, value) {
         if (editor?.getState?.().readOnly || !isDrum(id) || !Number.isFinite(value)) return false;
         ensureTracks();
-        getTrack(id).gainNode.gain.value = Math.min(1.5, Math.max(0, value));
-        return true;
+        return engine.setChannelVolume(id, value); // keeps the engine's mix state in sync
     }
 
     // One-shot audition through the track's own gain node (respects volume).
@@ -139,6 +144,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             tracks: KIT.filter((drum) => getTrack(drum.id)).map((drum) => ({
                 id: drum.id,
                 volume: getVolume(drum.id),
+                pan: getPan(drum.id),
                 steps: getSteps(drum.id),
                 ...(legacy.has(drum.id) ? { legacySteps: legacy.get(drum.id).slice() } : {})
             }))
@@ -147,7 +153,10 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
 
     function restoreState(state) {
         // Only kit tracks belong to this API; never remove uploaded samples or MIDI tracks.
-        KIT.forEach((drum) => engine.removeTrack(drum.id));
+        KIT.forEach((drum) => {
+            engine.removeTrack(drum.id);
+            engine.resetChannelMix(drum.id);
+        });
         patterns.clear();
         legacy.clear();
         if (!Array.isArray(state?.tracks)) {
@@ -165,61 +174,84 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
                 const tail = Array.isArray(entry.legacySteps) ? entry.legacySteps : entry.steps.slice(STEPS);
                 if (tail.length) legacy.set(entry.id, tail.map((step) => step === true));
             }
-            if (typeof entry.volume === 'number' && Number.isFinite(entry.volume)) {
-                track.gainNode.gain.value = Math.min(1.5, Math.max(0, entry.volume));
-            }
+            engine.applyChannelMix(entry.id, entry);
         }
     }
 
-    function renderPattern(bpm) {
+    function renderPatternPCM(bpm) {
         if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('The cursor has no valid tempo.');
-        const ctx = ensureTracks();
-        const rate = ctx.sampleRate;
+        engine.initContext();
+        const rate = engine.audioContext.sampleRate;
         const frames = Math.round(rate * 240 / bpm);
         if (frames < 1 || frames > rate * 300) throw new Error('The drum loop is outside the audio asset duration limit.');
-        const mixed = new Float32Array(frames);
+        const channels = [new Float32Array(frames), new Float32Array(frames)];
         for (const { id } of KIT) {
+            const steps = getSteps(id);
+            if (!steps.some(Boolean)) continue;
             const hit = buffers[id].getChannelData(0);
             const volume = getVolume(id);
-            getSteps(id).forEach((enabled, step) => {
+            const angle = (getPan(id) + 1) * Math.PI / 4;
+            const left = volume * Math.cos(angle);
+            const right = volume * Math.sin(angle);
+            steps.forEach((enabled, step) => {
                 if (!enabled) return;
                 const start = Math.round(step * rate * 15 / bpm);
                 const length = Math.min(hit.length, frames - start);
                 const cutsTail = length < hit.length;
                 for (let i = 0; i < length; i++) {
                     const fade = cutsTail ? Math.min(1, (length - i - 1) / (rate * 0.005)) : 1;
-                    mixed[start + i] += hit[i] * volume * fade;
+                    channels[0][start + i] += hit[i] * left * fade;
+                    channels[1][start + i] += hit[i] * right * fade;
                 }
             });
         }
+        return { rate, frames, channels: channels.map((channel) =>
+            Int16Array.from(channel, (value) => Math.round(Math.max(-1, Math.min(1, value)) * 32767))) };
+    }
+
+    function previewPattern(bpm, onEnd) {
+        if (engine.isPlaying || engine.startPromise || engine.patternPreview ||
+            !KIT.some(({ id }) => getSteps(id).some(Boolean))) return false;
+        const { rate, frames, channels } = renderPatternPCM(bpm);
+        const buffer = engine.audioContext.createBuffer(2, frames, rate);
+        channels.forEach((channel, index) => {
+            buffer.copyToChannel(Float32Array.from(channel, (sample) => sample / 32768), index);
+        });
+        return engine.playPatternPreview(buffer, onEnd);
+    }
+
+    function renderPattern(bpm) {
+        const { rate, frames, channels } = renderPatternPCM(bpm);
         // Encode PCM WAV. The JUNK ID gives repeated exports their own rack identity.
-        const bytes = new ArrayBuffer(68 + frames * 2);
+        const bytes = new ArrayBuffer(68 + frames * 4);
         const view = new DataView(bytes);
         const tag = (offset, value) => {
             for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
         };
         tag(0, 'RIFF'); view.setUint32(4, bytes.byteLength - 8, true);
         tag(8, 'WAVE'); tag(12, 'fmt '); view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true); view.setUint16(22, 1, true);
-        view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
-        view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+        view.setUint16(20, 1, true); view.setUint16(22, 2, true);
+        view.setUint32(24, rate, true); view.setUint32(28, rate * 4, true);
+        view.setUint16(32, 4, true); view.setUint16(34, 16, true);
         tag(36, 'JUNK'); view.setUint32(40, 16, true);
         crypto.getRandomValues(new Uint8Array(bytes, 44, 16));
-        tag(60, 'data'); view.setUint32(64, frames * 2, true);
+        tag(60, 'data'); view.setUint32(64, frames * 4, true);
         for (let i = 0; i < frames; i++) {
-            view.setInt16(68 + 2 * i, Math.round(Math.max(-1, Math.min(1, mixed[i])) * 32767), true);
+            view.setInt16(68 + 4 * i, channels[0][i], true);
+            view.setInt16(70 + 4 * i, channels[1][i], true);
         }
         return bytes;
     }
 
     restoreState(instrumentState?.drums);
 
+
     window.jukeboxDrums = {
         KIT: KIT.map(({ id, label }) => ({ id, label })),
         ensure: () => { ensureTracks(); },
         hasTrack: (id) => !!getTrack(id),
-        setStep, toggleStep, setVolume, preview,
-        getSteps, getVolume, stepCount, snapshot, restoreState, renderPattern,
+        setStep, toggleStep, setVolume, setPan, preview,
+        getSteps, getVolume, getPan, stepCount, snapshot, restoreState, renderPattern, previewPattern,
         hasLegacySteps: () => [...legacy.values()].some((steps) => steps.some(Boolean)),
     };
 }, { once: true });

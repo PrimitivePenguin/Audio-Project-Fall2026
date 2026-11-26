@@ -117,12 +117,12 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         const rate = h.engine.audioContext.sampleRate;
         const initial = drums.renderPattern(120);
         const mix = new DataView(initial);
-        assert.equal(mix.getUint32(64, true) / 2 / rate, 2);
-        assert.ok(Math.abs(new DataView(drums.renderPattern(90)).getUint32(64, true) / 2 / rate - 8 / 3) <= 1 / rate);
-        const sample = (frame) => mix.getInt16(68 + frame * 2, true);
+        assert.equal(mix.getUint32(64, true) / 4 / rate, 2);
+        assert.ok(Math.abs(new DataView(drums.renderPattern(90)).getUint32(64, true) / 4 / rate - 8 / 3) <= 1 / rate);
+        const sample = (frame, channel = 0) => mix.getInt16(68 + frame * 4 + channel * 2, true);
         for (const [id, step, volume] of [['drum-kick', 0, .25], ['drum-snare', 4, .5], ['drum-hat', 15, .4]]) {
             const waveform = h.engine.tracks.get(id).buffer.getChannelData(0);
-            assert.equal(sample(step * rate / 8 + 4), Math.round(waveform[4] * volume * 32767));
+            assert.equal(sample(step * rate / 8 + 4), Math.round(Math.fround(waveform[4] * (volume * Math.cos(Math.PI / 4))) * 32767));
         }
         assert.equal(sample(rate / 2 - 1), 0);
         assert.equal(sample(2 * rate - 1), 0);
@@ -130,9 +130,13 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         h.SampleAssetStore.prototype.write = async (id, bytes) => saved.set(id, bytes);
         h.engine.audioContext.decodeAudioData = async (bytes) => {
             const view = new DataView(bytes);
-            const buffer = h.engine.audioContext.createBuffer(1, view.getUint32(64, true) / 2, rate);
-            const waveform = buffer.getChannelData(0);
-            for (let frame = 0; frame < waveform.length; frame++) waveform[frame] = view.getInt16(68 + frame * 2, true) / 32768;
+            const buffer = h.engine.audioContext.createBuffer(2, view.getUint32(64, true) / 4, rate);
+            for (let channel = 0; channel < 2; channel++) {
+                const waveform = buffer.getChannelData(channel);
+                for (let frame = 0; frame < waveform.length; frame++) {
+                    waveform[frame] = view.getInt16(68 + frame * 4 + channel * 2, true) / 32768;
+                }
+            }
             return buffer;
         };
         const copy = h.nodes.find((node) => node.textContent === 'Copy to Sample Rack');
@@ -150,6 +154,78 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         await h.engine.play(0);
         assert.equal(h.engine.audioContext.sources.filter((source) => source.buffer).length, 0);
         h.engine.stop();
+    });
+
+    await test('pattern preview shares stereo WAV PCM, uses cursor tempo and relinquishes the shared transport', async () => {
+        const h = setup();
+        await h.ready;
+        const { engine } = h;
+        const drums = h.scope.window.jukeboxDrums;
+        await h.activateControl('drumToggle');
+        const preview = h.nodes.find((node) => node.className === 'drum-pattern-preview');
+        preview.listeners.click();
+        assert.equal(engine.audioContext, null);
+        const hits = [['drum-kick', 0, .25, -1], ['drum-snare', 8, .5, 1], ['drum-hat', 15, .4, 0]];
+        for (const [id, step, volume, pan] of hits) {
+            drums.setStep(id, step, true);
+            drums.setVolume(id, volume);
+            drums.setPan(id, pan);
+        }
+        engine.sequence.tempos = [{ ticks: 0, bpm: 120 }, { ticks: 480, bpm: 90 }];
+        const editor = h.readyEvents[0].detail.editor;
+        h.clickAt(100 + 4.25 * 38, 12);
+        assert.ok(editor.getState().editingCursorTick >= 480);
+        const currentState = () => JSON.stringify([snapshot(h), engine.arrangement, drums.snapshot(), editor.getState()]);
+        const before = currentState();
+        preview.focus();
+        preview.listeners.click();
+        const ctx = engine.audioContext;
+        const src = ctx.sources.at(-1);
+        const wav = new DataView(drums.renderPattern(90));
+        assert.equal(src.destination, engine.masterGain);
+        assert.equal(src.buffer.numberOfChannels, 2);
+        assert.equal(src.buffer.length, Math.round(ctx.sampleRate * 240 / 90));
+        assert.equal(preview.textContent, '■ Stop Preview');
+        for (let ch = 0; ch < 2; ch++) {
+            const pcm = src.buffer.getChannelData(ch);
+            assert.ok(pcm.every((sample, frame) => sample === wav.getInt16(68 + frame * 4 + ch * 2, true) / 32768));
+            for (const [id, step, volume, pan] of hits) {
+                const frame = Math.round(step * ctx.sampleRate * 15 / 90) + 4;
+                const raw = engine.tracks.get(id).buffer.getChannelData(0)[4];
+                const angle = (pan + 1) * Math.PI / 4;
+                const gain = volume * (ch ? Math.sin(angle) : Math.cos(angle));
+                assert.equal(pcm[frame], (Math.round(Math.fround(raw * gain) * 32767) || 0) / 32768);
+            }
+        }
+        assert.equal(drums.previewPattern(90, () => {}), false);
+        assert.equal(ctx.sources.length, 1);
+        preview.listeners.click();
+        assert.equal(src.stopTime, 0);
+        assert.equal(src.disconnected, true);
+        assert.equal(src.onended, null);
+        assert.match(preview.textContent, /Preview Pattern/);
+        preview.listeners.click();
+        const ended = ctx.sources.at(-1);
+        ended.onended();
+        assert.equal(ended.disconnected, true);
+        assert.match(preview.textContent, /Preview Pattern/);
+        preview.listeners.click();
+        const closed = ctx.sources.at(-1);
+        await h.activateControl('drumToggle');
+        assert.equal(closed.stopTime, 0);
+        assert.equal(closed.disconnected, true);
+        assert.equal(currentState(), before);
+        await h.activateControl('drumToggle');
+        preview.focus();
+        preview.listeners.click();
+        const ongoing = ctx.sources.at(-1);
+        assert.equal(await space(h), true);
+        assert.equal(engine.isPlaying, true);
+        assert.equal(ongoing.stopTime, 0);
+        assert.equal(ongoing.disconnected, true);
+        assert.match(preview.textContent, /Preview Pattern/);
+        assert.equal(key(h, 'Enter', preview), false);
+        engine.stop();
     });
 
     await test('Space cannot reactivate controls after rack, clip, drum, lane, or zoom edits', async () => {
@@ -193,7 +269,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         await spaceAfter(elements.pianoViewport);
         h.clickAt(155, 148);
         await spaceAfter(elements.pianoViewport);
-        const mute = elements.laneMuteControls.children[0];
+        const mute = elements.laneControls.children[0];
         mute.onclick();
         const muted = mute.getAttribute('aria-pressed');
         await spaceAfter(mute);
@@ -250,6 +326,161 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         await h.elements.saveProject.onclick();
         assert.equal(JSON.parse(requests.at(-1).body).version, 8);
     });
+    await test('the mixer follows interleaved lanes, updates live clips and round-trips through database saves', async () => {
+        const data = savedData();
+        data.tracks.push({ id: 'bass', name: 'Bass', channel: 1, program: 33 });
+        data.arrangement = { version: 1,
+            tracks: [{ id: 'audio-a', name: 'Audio A' }, { id: 'audio-b', name: 'Audio B' }],
+            laneOrder: ['audio-a', 'lead-stable', 'audio-b', 'bass'] };
+        const { h, requests } = await databaseHarness(data);
+        const { engine, elements } = h;
+        const mixer = elements.trackMixer;
+        const rowIds = () => mixer.children.map((row) => row.dataset.trackId);
+        const sliders = (id) => mixer.children.find((row) => row.dataset.trackId === id).children
+            .filter((node) => node.tagName === 'LABEL').map((label) => label.children[1]);
+        const set = (slider, value) => {
+            slider.value = String(value);
+            slider.listeners.input();
+        };
+        assert.deepEqual(rowIds(), data.arrangement.laneOrder);
+        const editor = h.readyEvents[0].detail.editor;
+        editor.setWorkspace('tracks', null);
+        elements.addAudioTrack.onclick();
+        const added = rowIds().at(-1);
+        assert.ok(added.startsWith('audio-'));
+        elements.audioTrackName.value = 'Percussion';
+        elements.renameAudioTrack.onclick();
+        assert.equal(mixer.children.at(-1).getAttribute('aria-label'), 'Percussion');
+        const canvas = elements.pianoCanvas;
+        const start = h.pointer(12, h.PianoRollEditor.geometry.rulerHeight + h.TrackOverview.laneHeight * 4 + 18);
+        const finish = h.pointer(12, h.PianoRollEditor.geometry.rulerHeight + 8);
+        canvas.onpointerdown(start);
+        canvas.onpointermove(finish);
+        canvas.onpointerup(finish);
+        assert.deepEqual(rowIds(), [added, ...data.arrangement.laneOrder]);
+        const remove = (name) => elements.laneControls.children.find((button) => button.getAttribute('aria-label') === `Delete track ${name}`);
+        remove('Percussion').onclick();
+        assert.ok(!elements.deleteTrackDialog.open);
+        assert.deepEqual(rowIds(), data.arrangement.laneOrder);
+
+        engine.initContext();
+        const buffer = engine.audioContext.createBuffer(1, 48000, 48000);
+        const assetId = 'a'.repeat(64);
+        engine.arrangement.assets.set(assetId, { id: assetId, name: 'Source', duration: 1, buffer });
+        for (const id of ['audio-a', 'audio-a', 'audio-b']) engine.arrangement.createClip(assetId, id, 0);
+        set(sliders('audio-a')[0], .45);
+        set(sliders('audio-b')[1], .75);
+        set(sliders('lead-stable')[0], .8);
+        await engine.play(0);
+        const [a, a2, b] = engine.audioContext.sources.filter((source) => source.buffer === buffer);
+        assert.equal(a.destination, a2.destination);
+        assert.notEqual(a.destination, b.destination);
+        assert.equal(a.destination.gain.value, .45);
+        assert.equal(b.destination.gain.value, 1);
+        assert.equal(b.destination.destination.pan.value, .75);
+        const mute = elements.laneControls.children.find((button) => button.getAttribute('aria-label') === 'Mute Audio A');
+        mute.onclick();
+        const muteGain = a.destination.destination.destination.gain;
+        assert.equal(muteGain.value, 0);
+        set(sliders('audio-a')[0], .3);
+        set(sliders('audio-a')[1], -.6);
+        assert.equal(a.destination.gain.value, .3);
+        assert.equal(a.destination.destination.pan.value, -.6);
+        assert.equal(muteGain.value, 0);
+        assert.equal(b.destination.destination.pan.value, .75);
+        mute.onclick();
+        assert.equal(muteGain.value, 1);
+        assert.equal(a.destination.gain.value, .3);
+        assert.equal(a.destination.destination.pan.value, -.6);
+        engine.stop();
+        mute.onclick();
+        await elements.saveProject.onclick();
+        const saved = JSON.parse(JSON.parse(requests.at(-1).body).projectData);
+        const { h: reopened } = await databaseHarness(saved);
+        assert.equal(JSON.stringify(reopened.engine.snapshotMix()), JSON.stringify(engine.snapshotMix()));
+        assert.equal(reopened.engine.mutedLanes.has('audio-a'), true);
+        assert.deepEqual(reopened.elements.trackMixer.children.map((row) => row.dataset.trackId), rowIds());
+        elements.addMidiTrack.onclick();
+        assert.equal(rowIds().at(-1), engine.sequence.tracks.at(-1).id);
+    });
+
+    await test('audio lane deletion confirms clips, preserves rack assets, and restores order and mix in one Undo', async () => {
+        const h = setup();
+        await h.ready;
+        const { engine, elements } = h;
+        const model = engine.arrangement;
+        const lane = model.addTrack('Picked');
+        const other = model.addTrack('Survivor');
+        const assetId = 'b'.repeat(64);
+        const asset = { id: assetId, name: 'Original', duration: 2 };
+        model.assets.set(assetId, asset);
+        model.laneOrder = ['piano', lane.id, other.id];
+        const clip = model.setClip({ id: 'trimmed', trackId: lane.id, assetId, startTick: 47,
+            sourceOffsetSeconds: .125, playDurationSeconds: .5 });
+        const survivor = model.createClip(assetId, other.id, 480);
+        engine.setChannelVolume(lane.id, .25);
+        engine.setChannelPan(lane.id, -.7);
+        engine.setLaneMuted(lane.id, true);
+        const input = engine.laneOutput(lane.id);
+        const mute = engine.laneGains.get(lane.id);
+        elements.pianoViewport.scrollTop = 0;
+        h.readyEvents[0].detail.editor.setWorkspace('tracks', null);
+        const remove = elements.laneControls.children.find((button) => button.getAttribute('aria-label') === 'Delete track Picked');
+        assert.equal(elements.laneControls.children.filter((button) => button.className.includes('lane-delete')).length, 3);
+        assert.equal(remove.style.top, elements.laneControls.children.find((button) =>
+            button.getAttribute('aria-label') === 'Mute Picked').style.top);
+        let stopped = false;
+        remove.listeners.pointerdown({ stopPropagation() { stopped = true; } });
+        assert.equal(stopped, true);
+        assert.equal(elements.pianoCanvas.capturedPointers.size, 0);
+        elements.audioTrackSelect.value = lane.id;
+        elements.audioTrackSelect.onchange();
+        elements.audioClipSelect.value = clip.id;
+        elements.audioClipSelect.onchange();
+        remove.onclick();
+        assert.match(elements.deleteTrackMessage.textContent, /Picked.*1 audio clip/);
+        elements.cancelDeleteTrack.onclick();
+        assert.equal(model.clips.get(clip.id), clip);
+        remove.onclick();
+        elements.confirmDeleteTrack.onclick();
+        assert.equal(model.tracks.has(lane.id), false);
+        assert.equal(model.laneOrder.includes(lane.id), false);
+        assert.equal(model.clips.has(clip.id), false);
+        assert.equal(model.clips.get(survivor.id), survivor);
+        assert.equal(model.assets.get(assetId), asset);
+        assert.equal(engine.laneGains.has(lane.id), false);
+        assert.equal(input.disconnected, true);
+        assert.equal(mute.disconnected, true);
+        assert.notEqual(elements.audioTrackSelect.value, lane.id);
+        assert.ok(!elements.trackMixer.children.some((row) => row.dataset.trackId === lane.id));
+        elements.undoNotes.onclick();
+        assert.deepEqual(model.tracks.get(lane.id), lane);
+        assert.deepEqual(model.clips.get(clip.id), clip);
+        assert.deepEqual(Array.from(model.laneOrder), ['piano', lane.id, other.id]);
+        assert.equal(engine.getChannelMix(lane.id).volume, .25);
+        assert.equal(engine.getChannelMix(lane.id).pan, -.7);
+        assert.equal(engine.mutedLanes.has(lane.id), true);
+        elements.redoNotes.onclick();
+        assert.equal(model.tracks.has(lane.id), false);
+        assert.equal(model.clips.get(survivor.id), survivor);
+        assert.equal(model.assets.get(assetId), asset);
+
+        const data = savedData();
+        data.arrangement = { version: 1, tracks: [{ id: 'audio-readonly', name: 'Read only' }] };
+        const { h: viewer } = await databaseHarness(data, 'VIEWER');
+        viewer.elements.tracksView.onclick();
+        const blocked = viewer.elements.laneControls.children.find((button) =>
+            button.getAttribute('aria-label') === 'Delete track Read only');
+        assert.equal(blocked.disabled, true);
+        blocked.onclick();
+        assert.equal(viewer.engine.arrangement.tracks.has('audio-readonly'), true);
+        await viewer.activateControl('drumToggle');
+        const preview = viewer.nodes.find((node) => node.className === 'drum-pattern-preview');
+        preview.listeners.click();
+        assert.equal(preview.textContent, '■ Stop Preview');
+        viewer.engine.stopPatternPreview();
+    });
+
     await test('database project save and load preserve edited meters and imported meter maps', async () => {
         const meterMap = [{ ticks: 0, timeSignature: [3, 4] }, { ticks: 151, timeSignature: [7, 8] }];
         for (const timeSignatures of [undefined, meterMap]) {

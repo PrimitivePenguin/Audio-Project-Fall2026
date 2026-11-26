@@ -62,6 +62,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.focused = true;
             activeElement = this;
         }
+        get valueAsNumber() { return Number(this.value); }
         getContext() {
             return drawingContext;
         }
@@ -136,7 +137,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.frequency = { value: 0 };
         }
         connect(destination) { this.destination = destination; return this; }
-        disconnect() {}
+        disconnect() { this.disconnected = true; }
         start(time, offset, duration) {
             this.startTime = time;
             this.offset = offset;
@@ -166,12 +167,20 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 copyToChannel(data, channel) { pcm[channel].set(data); }, getChannelData(channel) { return pcm[channel]; } };
         }
         createBiquadFilter() { return new AudioSource(); }
-        createGain() {
+        param() {
             return {
-                gain: { value: 0, setValueAtTime(value) { this.value = value; }, linearRampToValueAtTime(value) { this.value = value; }, cancelScheduledValues() {} },
-                connect() { return this; },
-                disconnect() {}
+                value: 0,
+                setValueAtTime(value) { this.value = value; },
+                linearRampToValueAtTime(value) { this.value = value; },
+                setTargetAtTime(value) { this.value = value; },
+                cancelScheduledValues() {}
             };
+        }
+        createGain() {
+            return Object.assign(new AudioSource(), { gain: this.param() });
+        }
+        createStereoPanner() {
+            return Object.assign(new AudioSource(), { pan: this.param() });
         }
         createBufferSource() {
             const source = new AudioSource();

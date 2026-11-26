@@ -1,4 +1,5 @@
 // Run with node src/test/frontend/sequencer-tests.js (no npm dependencies).
+
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -9,7 +10,7 @@ class Source {
     constructor() {
         this.frequency = { value: 0 };
     }
-    connect() {}
+    connect(destination) { this.destination = destination; }
     disconnect() {
         this.disconnected = true;
     }
@@ -30,10 +31,23 @@ class Context {
         this.state = 'running';
         return Promise.resolve();
     }
+    param() {
+        return { value: 0, setValueAtTime(value) { this.value = value; }, linearRampToValueAtTime(value) { this.value = value; },
+            setTargetAtTime(value) { this.value = value; }, cancelScheduledValues() {} };
+    }
     createGain() {
         return {
-            gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {} },
-            connect() {},
+            gain: this.param(),
+            connect(destination) { this.destination = destination; },
+            disconnect() {
+                this.disconnected = true;
+            }
+        };
+    }
+    createStereoPanner() {
+        return {
+            pan: this.param(),
+            connect(destination) { this.destination = destination; },
             disconnect() {
                 this.disconnected = true;
             }
@@ -557,6 +571,62 @@ async function test(name, fn) {
         assert.throws(() => MidiIO.parse(raw([0, 144, 60, 100, 0, 255, 47, 0])));
         assert.throws(() => MidiIO.parse(raw([0, 144, 60, 100, 0, 128, 60, 0, 0, 255, 47, 0])));
     });
+
+    // Objects built inside the vm sandbox have another realm's prototypes; compare plain copies.
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    await test('legacy sample tracks retain a gain and pan strip through buffer replacement', () => {
+        const e = new SequencerEngine();
+        e.addTrack('kick', {});
+        const original = e.tracks.get('kick');
+        assert.equal(original.gainNode.gain.value, 0.8);
+        assert.equal(original.gainNode.destination, original.panNode);
+        assert.equal(original.panNode.destination, e.masterGain);
+        assert.equal(e.setChannelVolume('kick', 9), true);
+        assert.equal(original.gainNode.gain.value, 1.5);
+        assert.equal(e.setChannelVolume('kick', -1), true);
+        assert.equal(original.gainNode.gain.value, 0);
+        assert.equal(e.setChannelPan('kick', -5), true);
+        assert.equal(original.panNode.pan.value, -1);
+        assert.equal(e.setChannelVolume('kick', NaN), false);
+        assert.equal(e.setChannelPan('kick', Infinity), false);
+        assert.equal(e.setChannelVolume('missing', 0.5), false);
+        e.addTrack('kick', {});
+        assert.equal(original.gainNode.disconnected, true);
+        assert.equal(original.panNode.disconnected, true);
+        assert.deepEqual(plain(e.getChannelMix('kick')), { volume: 0, pan: -1 });
+    });
+
+    await test('MIDI voices use the same gain, pan, and mute chain as audio lanes', async () => {
+        const e = new SequencerEngine();
+        const midiId = e.sequence.tracks[0].id;
+        e.sequence.addNote({ midi: 60, startStep: 0, durationSteps: 1 });
+        assert.equal(e.setChannelPan(midiId, 0.25), true);
+        assert.equal(e.audioContext, null);
+        let output;
+        e.voiceFactory = (event, context, out) => {
+            output = out;
+            return { stop() {}, finished: new Promise(() => {}) };
+        };
+        e.setLaneMuted(midiId, true);
+        await e.play();
+        const mute = e.laneGains.get(midiId);
+        assert.equal(output.destination.destination, mute);
+        assert.equal(mute.destination, e.masterGain);
+        assert.equal(mute.gain.value, 0);
+        assert.equal(output.destination.pan.value, 0.25);
+        e.setChannelVolume(midiId, 0.6);
+        assert.equal(output.gain.value, 0.6);
+        assert.equal(mute.gain.value, 0);
+        e.setLaneMuted(midiId, false);
+        assert.equal(mute.gain.value, 1);
+        assert.deepEqual(plain(e.getChannelMix(midiId)), { volume: 0.6, pan: 0.25 });
+        e.stop();
+        e.newSequence();
+        assert.equal(e.laneGains.size, 0);
+        assert.equal(output.disconnected, true);
+        assert.deepEqual(plain(e.getChannelMix(midiId)), { volume: 1, pan: 0 });
+    });
+
     console.log(`${passed} tests passed`);
 })().catch((error) => {
     console.error(error);

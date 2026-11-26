@@ -1602,8 +1602,8 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         const tick0 = fromTick === null ? stepStart : Math.max(stepStart, fromTick);
         const tick1 = sequence.stepToTick(stepIndex + 1);
         const stepOffset = this.stepSeconds(stepIndex);
-        const t0 = time + sequence.ticksToSeconds(tick0) - stepOffset;
-        const t1 = time + this.stepSeconds(stepIndex + 1) - stepOffset;
+const t0 = time + (sequence.ticksToSeconds(tick0) - sequence.ticksToSeconds(stepStart));
+const t1 = time + (sequence.ticksToSeconds(tick1) - sequence.ticksToSeconds(stepStart));
         for (const [id, lanes] of this.#automation) {
             const strip = this.#stripFor(id);
             if (!strip) {

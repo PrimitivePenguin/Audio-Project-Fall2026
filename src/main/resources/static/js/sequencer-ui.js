@@ -675,7 +675,7 @@
         }
         databaseSaveInFlight = true;
         try {
-            await arrangement.ensureAssetsUploaded();
+            const unsyncedSamples = await arrangement.ensureAssetsUploaded();
             const response = await fetch(`/api/projects/${databaseProject.id}`, {
                 method: 'PUT',
                 credentials: 'same-origin',
@@ -691,7 +691,15 @@
                 throw new Error(body?.error || `Save failed (${response.status})`);
             }
             databaseProject.version = body.version;
-            showStatus(`Saved "${engine.sequence.name}" to the database.`);
+            if (unsyncedSamples.length) {
+                const count = unsyncedSamples.length;
+                showStatus(
+                    `Saved "${engine.sequence.name}" to the database, but cloud sync is incomplete ` +
+                    `(${count} ${count === 1 ? 'sample' : 'samples'} saved locally only and unavailable in other browsers).`
+                );
+            } else {
+                showStatus(`Saved "${engine.sequence.name}" to the database.`);
+            }
         } catch (error) {
             showStatus(`Save failed: ${error.message}`);
         } finally {

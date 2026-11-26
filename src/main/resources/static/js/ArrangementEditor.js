@@ -342,14 +342,34 @@ class ArrangementEditor {
     }
 
     async ensureAssetsUploaded() {
+        await this.assetJobs;
         const projectId = this.hooks.projectId?.();
-        if (!projectId) return;
+        const unsynced = [];
+        let uploadedAny = false;
+
         for (const asset of this.model.assets.values()) {
             if (asset.url) continue;
-            const bytes = await this.store.read(asset.id).catch(() => null);
-            if (!bytes) continue;
-            await this.uploadAssetToCloud(asset, bytes, this.inferContentType(asset));
+            if (!projectId) {
+                unsynced.push(asset.name);
+                continue;
+            }
+            try {
+                const bytes = await this.store.read(asset.id).catch(() => null);
+                if (!bytes) {
+                    unsynced.push(asset.name);
+                    continue;
+                }
+                await this.uploadAssetToCloud(asset, bytes, this.inferContentType(asset));
+                uploadedAny = true;
+            } catch {
+                unsynced.push(asset.name);
+            }
         }
+
+        if (uploadedAny) {
+            this.refreshRack();
+        }
+        return unsynced;
     }
 
     async decode(bytes, model) {

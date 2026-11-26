@@ -136,14 +136,25 @@ class ProjectCollabClient {
         }
 
         if (event.type === 'STATE_SNAPSHOT') {
-            const applied = this.onRemoteEvent(event, true);
-            if (applied !== false && typeof event.revision === 'number') {
+            if (this.inFlight || this.outbox.length > 0) {
+                if (!this.inFlight) {
+                    this.#flushOutbox();
+                }
+                return;
+            }
+            if (
+                typeof event.revision === 'number' &&
+                typeof project.version === 'number' &&
+                event.revision < project.version
+            ) {
+                return;
+            }
+            if (this.onRemoteEvent(event, true) && typeof event.revision === 'number') {
                 project.version = event.revision;
             }
-            this.#flushOutbox();
             return;
         }
-
+        
         if (event.clientId === this.clientId) {
             if (typeof event.revision === 'number') {
                 project.version = event.revision;

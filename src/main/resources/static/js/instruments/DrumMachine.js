@@ -174,8 +174,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
                 const tail = Array.isArray(entry.legacySteps) ? entry.legacySteps : entry.steps.slice(STEPS);
                 if (tail.length) legacy.set(entry.id, tail.map((step) => step === true));
             }
-            engine.setChannelVolume(entry.id, entry.volume);
-            engine.setChannelPan(entry.id, entry.pan);
+            engine.applyChannelMix(entry.id, entry);
         }
     }
 

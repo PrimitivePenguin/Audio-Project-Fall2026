@@ -34,6 +34,7 @@
     let mixerRows = [];
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
+        onMutate: (type, targetId) => broadcastSync(type, targetId),
         canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
         canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
@@ -45,6 +46,7 @@
                 pianoViewport.scrollTop = Math.max(pianoViewport.scrollTop, bottom - pianoViewport.clientHeight);
                 getElement('sampleRack').open = true;
             }
+            broadcastSync('TRACKS_SYNC', id ?? 'tracks');
         },
         createLane: (below) => {
             const ids = overviewTracks().map((track) => track.id);
@@ -459,6 +461,7 @@
             pushHistory({ kind: 'arrangement-order', before, after });
             syncEditorState();
             showStatus(`Moved lane to position ${index + 1}.`);
+            broadcastSync('TRACKS_SYNC', id);
             return;
         }
         const before = engine.sequence.tracks.map((track) => track.id);
@@ -468,6 +471,7 @@
         pushHistory({ kind: 'track-order', before, after: engine.sequence.tracks.map((track) => track.id) });
         syncEditorState();
         showStatus(`Moved '${engine.sequence.tracks[index].name}' to track position ${index + 1}.`);
+        broadcastSync('TRACKS_SYNC', id);
     }
 
     function setArrangementOrder(ids) {
@@ -514,6 +518,7 @@
             selectNote(null);
         }
         syncEditorState();
+        broadcastSync('TRACKS_SYNC', id);
         const count = track.audio ? record.clips.length : record.notes.length;
         showStatus(`Deleted track '${track.name}' and ${count} ${track.audio ? 'clips' : 'notes'}. Undo restores it.`);
     }
@@ -528,6 +533,7 @@
         ).map((id) => ({ before: before.get(id), after: after.get(id) }));
         if (changes.length) {
             pushHistory(changes);
+            broadcastSync('NOTES_SYNC', changes[0]?.after?.id ?? changes[0]?.before?.id ?? 'notes');
         }
     }
 
@@ -553,6 +559,7 @@
             } else {
                 restoreTrackHistory(entry, side);
             }
+            broadcastSync('FULL_SYNC', 'history');
             source.pop();
             destination.push(entry);
             return;
@@ -593,6 +600,7 @@
         selectedNoteId = [...selectedIds][0] ?? null;
         refreshNoteControls();
         syncEditorState();
+        broadcastSync('FULL_SYNC', 'history');
     }
 
     function clipboardEdit(action) {
@@ -663,6 +671,203 @@
     let databaseProject = null;
     let databaseSaveInFlight = false;
     let loadedInstrumentState = null;
+
+
+let isApplyingRemote = false;
+    let lastSyncedArrangementJson = '';
+    let lastSyncedInstrumentsJson = '';
+
+    function broadcastSync(type, targetId = null, payload = null) {
+        if (isApplyingRemote || !databaseProject || databaseProject.role === 'VIEWER') return;
+        collab.publish(type, targetId, payload);
+    }
+
+    function applyProjectDataFromServer(data, serverName = null, preserveView = true) {
+        if (!data || typeof data !== 'object') return false;
+        const prevSelection = new Set(selectedIds);
+        const prevClipSelection = new Set(arrangement.selected);
+        const prevTrackId = activeTrackId;
+        const prevScrollLeft = pianoViewport.scrollLeft;
+        const prevScrollTop = pianoViewport.scrollTop;
+        const cachedAssets = new Map(engine.arrangement.assets);
+
+        isApplyingRemote = true;
+        try {
+            const nextStepCount = Number.isInteger(data.stepCount) ? data.stepCount : 16;
+            const nextPpq = Number.isInteger(data.ppq) ? data.ppq : 480;
+            const nextName = serverName || data.name || 'JukeBox';
+
+            if (engine.sequence && engine.sequence.ppq === nextPpq) {
+                engine.sequence.name = nextName;
+                if (nextStepCount !== engine.totalSteps) {
+                    engine.setPatternLength(nextStepCount);
+                }
+                if (Array.isArray(data.tracks) && data.tracks.length) {
+                    const existingTracks = new Map(engine.sequence.tracks.map((t) => [t.id, t]));
+                    engine.sequence.tracks = data.tracks.map((incoming) => {
+                        const existing = existingTracks.get(incoming.id);
+                        return existing ? Object.assign(existing, incoming) : { ...incoming };
+                    });
+                }
+                if (Array.isArray(data.tempos) && data.tempos.length) {
+                    engine.sequence.tempos = data.tempos;
+                }
+                if (Array.isArray(data.timeSignatures) && data.timeSignatures.length) {
+                    engine.sequence.timeSignatures = data.timeSignatures;
+                }
+                engine.sequence.importInfo = data.importInfo || null;
+
+                const incomingNotes = Array.isArray(data.notes) ? data.notes : [];
+                const incomingById = new Map(incomingNotes.map((n) => [n.id, n]));
+                engine.sequence.notes = engine.sequence.notes.filter((n) => incomingById.has(n.id));
+                const existingById = new Map(engine.sequence.notes.map((n) => [n.id, n]));
+                for (const incoming of incomingNotes) {
+                    const existing = existingById.get(incoming.id);
+                    if (existing) {
+                        // Assign only plain data fields so prototype getters (startStep/durationSteps) never throw in Firefox
+                        existing.midi = incoming.midi;
+                        existing.ticks = incoming.ticks;
+                        existing.durationTicks = incoming.durationTicks;
+                        existing.velocity = incoming.velocity;
+                        existing.velocityMidi = incoming.velocityMidi;
+                        existing.trackId = incoming.trackId;
+                        existing.importId = incoming.importId ?? null;
+                    } else {
+                        engine.sequence.addNote({
+                            id: incoming.id,
+                            midi: incoming.midi,
+                            ticks: incoming.ticks,
+                            durationTicks: incoming.durationTicks,
+                            velocity: incoming.velocity,
+                            velocityMidi: incoming.velocityMidi,
+                            trackId: incoming.trackId,
+                            importId: incoming.importId ?? null
+                        });
+                    }
+                }
+            } else {
+                const resumeTick = engine.isPlaying ? engine.getPlaybackTick() : null;
+                const sequence = new NoteSequence(nextStepCount, nextPpq);
+                sequence.name = nextName;
+                sequence.tracks = Array.isArray(data.tracks) && data.tracks.length
+                    ? data.tracks
+                    : sequence.tracks;
+                sequence.tempos = data.tempos || sequence.tempos;
+                sequence.timeSignatures = data.timeSignatures || sequence.timeSignatures;
+                sequence.importInfo = data.importInfo || null;
+                (data.notes || []).forEach((note) => sequence.addNote(note));
+                engine.replaceSequence(sequence);
+                if (resumeTick !== null) {
+                    engine.play(resumeTick);
+                }
+            }
+
+            const nextLoopStart = Number.isInteger(data.loopStart) ? data.loopStart : 0;
+            const nextLoopEnd = Number.isInteger(data.loopEnd) ? data.loopEnd : engine.sequence.stepCount;
+            if (nextLoopStart !== engine.loopStart || nextLoopEnd !== engine.loopEnd) {
+                engine.setLoopRange(nextLoopStart, nextLoopEnd);
+            }
+
+            const arrangementJson = JSON.stringify(data.arrangement ?? null);
+            if (arrangementJson !== lastSyncedArrangementJson &&
+                (data.arrangement || engine.arrangement.assets.size || engine.arrangement.tracks.size)) {
+                try {
+                    const nextArrangement = new AudioArrangement(data.arrangement);
+                    for (const [id, asset] of nextArrangement.assets) {
+                        const cached = cachedAssets.get(id);
+                        if (cached?.buffer) {
+                            asset.buffer = cached.buffer;
+                            asset.waveform = cached.waveform;
+                            asset.spectrogram = cached.spectrogram;
+                            asset.local = cached.local;
+                            asset.previewStatus = cached.previewStatus;
+                        }
+                    }
+                    engine.arrangement = nextArrangement;
+                    arrangement.restoreAssets();
+                    lastSyncedArrangementJson = arrangementJson;
+                } catch (err) {
+                    console.warn('[collab] Skipped arrangement sync:', err);
+                }
+            }
+
+            const instrumentsJson = JSON.stringify(data.instruments ?? null);
+            if (data.instruments?.version === 1 && instrumentsJson !== lastSyncedInstrumentsJson) {
+                try {
+                    loadedInstrumentState = data.instruments;
+                    window.jukeboxSynth?.restoreState(data.instruments.synth ?? null);
+                    window.jukeboxDrums?.restoreState(data.instruments.drums ?? null);
+                    lastSyncedInstrumentsJson = instrumentsJson;
+                } catch (err) {
+                    console.warn('[collab] Skipped instrument sync:', err);
+                }
+            }
+
+            engine.mutedLanes = new Set(
+                Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []
+            );
+
+            if (preserveView) {
+                invalidateRenderIndex();
+                expandPitchRange(engine.sequence.notes);
+                activeTrackId = engine.sequence.tracks.some((t) => t.id === prevTrackId) ? prevTrackId : null;
+                selectedIds.clear();
+                for (const note of engine.sequence.notes) {
+                    if (prevSelection.has(note.id)) selectedIds.add(note.id);
+                }
+                selectedNoteId = [...selectedIds][0] ?? null;
+                arrangement.setSelection(prevClipSelection, arrangement.trackId);
+                syncEditorState();
+                pianoViewport.scrollLeft = prevScrollLeft;
+                pianoViewport.scrollTop = prevScrollTop;
+                pendingViewportRender = true;
+                renderPianoRoll();
+            }
+            return true;
+        } finally {
+            isApplyingRemote = false;
+        }
+    }
+
+    const collab = new ProjectCollabClient({
+        getProject: () => databaseProject,
+        getSnapshot: () => databaseSnapshot(),
+        onRemoteEvent: (event, isFullSnapshot) => {
+            console.debug('[collab] remote event:', event.type, 'rev:', event.revision, 'isPlaying:', engine.isPlaying);
+            if (!event.snapshot) return false;
+            try {
+                const parsed = JSON.parse(event.snapshot);
+                const applied = applyProjectDataFromServer(parsed, event.name, true);
+                console.debug('[collab] applied:', applied, 'notes count:', engine.sequence.notes.length);
+                if (applied && !isFullSnapshot && event.actorUsername) {
+                    showStatus(`Updated by ${event.actorUsername} (rev ${event.revision}).`);
+                }
+                return applied;
+            } catch (error) {
+                console.error('[collab] Failed to apply remote project sync:', error);
+                showStatus(`Sync apply error: ${error.message}`);
+                return false;
+            }
+        },
+        onConflict: (event) => {
+            if (event.snapshot) {
+                try {
+                    applyProjectDataFromServer(JSON.parse(event.snapshot), event.name, true);
+                } catch { /* Ignore malformed snapshot */ }
+            }
+            showStatus('Project changed by a collaborator — synced to latest version.');
+        },
+        onStatus: (message) => {
+            if (databaseProject) showStatus(message);
+        }
+    });
+
+    // Re-sync latest state when returning focus to the browser window if no local edit is in flight
+    window.addEventListener('focus', () => {
+        if (databaseProject && collab.connected && !collab.inFlight && !collab.outbox.length) {
+            collab.requestState();
+        }
+    });
 
     // Controls and selected-note details.
     function showStatus(text) {
@@ -1292,6 +1497,7 @@
                     if (databaseProject?.role === 'VIEWER') return;
                     engine.setLaneMuted(track.id, !engine.mutedLanes.has(track.id));
                     renderPianoRoll();
+                    broadcastSync('SETTINGS_SYNC', track.id);
                 };
                 const remove = document.createElement('button');
                 remove.type = 'button';
@@ -2218,6 +2424,7 @@
         }
         const track = engine.addMidiTrack(`MIDI Track ${engine.sequence.tracks.length + 1}`);
         setWorkspace(workspaceMode, track.id);
+        broadcastSync('TRACKS_SYNC', track.id);
         if (!event || event.detail === 0) {
             getElement('trackName').focus();
         }
@@ -2228,6 +2435,7 @@
         }
         engine.renameMidiTrack(activeTrackId, getElement('trackName').value);
         syncEditorState();
+        broadcastSync('TRACKS_SYNC', activeTrackId);
     });
     pianoCanvas.onpointerdown = beginGesture;
     pianoCanvas.onpointermove = moveGesture;
@@ -2715,6 +2923,7 @@
             undoStack.length = 0;
             redoStack.length = 0;
             showStatus(`Pattern: ${steps} steps. No notes deleted.`);
+            broadcastSync('SETTINGS_SYNC', 'pattern');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2752,6 +2961,7 @@
         syncEditingCursor();
         updateMeterControls(false);
         renderPianoRoll();
+        broadcastSync('SETTINGS_SYNC', 'timeSignature');
     };
 
     function changeMeasureLength(direction) {
@@ -2771,6 +2981,7 @@
             }
             engine.setLoopRange(Number(loopStartInput.value) - 1, Number(loopEndInput.value));
             showStatus(`Loop: ${engine.loopStart + 1}–${engine.loopEnd}.`);
+            broadcastSync('SETTINGS_SYNC', 'loop');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2784,6 +2995,7 @@
             engine.setBpm(Number(bpmInput.value));
             pendingViewportRender = true;
             showStatus(`Tempo: ${engine.bpm} BPM.`);
+            broadcastSync('SETTINGS_SYNC', 'bpm');
         } catch (error) {
             showStatus(error.message);
         }
@@ -2980,6 +3192,7 @@
             showStatus(
                 `Imported ${engine.sequence.notes.length} notes in ${engine.sequence.tracks.length} tracks. ${result.warnings.join(' ')}`
             );
+            broadcastSync('FULL_SYNC', 'midiImport');
         } catch (error) {
             if (token === latestMidiImportId) {
                 showStatus(`Import cancelled: ${error.message}. Existing composition retained.`);
@@ -3026,6 +3239,7 @@
             showStatus(
                 'Imported MIDI removed, including edited imported notes. Manual notes and audio samples retained.'
             );
+            broadcastSync('FULL_SYNC', 'removeMidi');
         } catch (error) {
             showStatus(`Could not remove MIDI: ${error.message}`);
         }
@@ -3053,6 +3267,7 @@
         window.jukeboxSynth?.restoreState(null);
         window.jukeboxDrums?.restoreState(null);
         databaseProject = null;
+        collab.disconnect();
         getElement('saveProject').disabled = false;
         newNoteLengthSteps = 1;
         newNoteVelocity = 89;
@@ -3146,6 +3361,7 @@
             resetPitchViewport();
             showStatus(`Loaded "${sequence.name}" from the database.${unavailableSample ? ' Legacy sample triggers are archived and silent.' : ''}`);
             applyDatabasePermissions();
+            collab.connect(databaseProject.id);
         } catch (error) {
             showStatus(`Could not load database project: ${error.message}`);
         }
@@ -3283,6 +3499,7 @@
     });
     window.addEventListener('pagehide', () => {
         midiImportController?.abort();
+        collab.disconnect();
         stopPlayback();
     });
     function updatePlayhead(timestamp = 0) {

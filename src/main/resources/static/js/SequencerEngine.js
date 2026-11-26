@@ -1307,12 +1307,12 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
     }
 
 // gain -> filter -> pan -> master, plus optional per-channel delay and reverb taps off pan.
-    #buildStrip(mix) {
+    #buildStrip(mix, out = this.masterGain) {
         const ctx = this.audioContext;
         const gain = ctx.createGain();
         const filter = ctx.createBiquadFilter();
         const pan = ctx.createStereoPanner();
-      
+
         filter.type = mix.filterType;
         gain.gain.value = mix.volume;
         filter.frequency.value = mix.cutoff;
@@ -1320,7 +1320,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         pan.pan.value = mix.pan;
         gain.connect(filter);
         filter.connect(pan);
-        F#enspan.connect(out);
+        pan.connect(out);
         const strip = { gain, filter, pan, out, delay: null, reverb: null };
         if (mix.delaySend > 0) this.#ensureDelay(strip, mix);
         if (mix.reverbSend > 0) this.#ensureReverb(strip, mix);

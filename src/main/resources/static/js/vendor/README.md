@@ -57,3 +57,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## Bundled MP3 encoder
+
+JukeBox uses the LAME JavaScript port via `@breezystack/lamejs` **1.2.7** (LGPL-3.0, unchanged IIFE build loaded as a separate script by the encoding worker).
+
+- npm archive: https://registry.npmjs.org/@breezystack/lamejs/-/lamejs-1.2.7.tgz
+- Upstream revision: https://github.com/shijinyu/lamejs/tree/1fb0ef5fa177413107e2e107d054a9b994e3f79c
+- LAME project: https://lame.sourceforge.io/
+- Build SHA-256: `0be202ec162aa3042d5c5c4e6288ad326cff8cec7312c2894a0a91ad2f9aeda1`
+- The matching source and build files are in `lamejs-1.2.7-source.tar.gz`. The upstream notice and license texts are in `lamejs-LICENSE.txt`, `lamejs-LGPL-3.0.txt`, and `lamejs-GPL-3.0.txt`.

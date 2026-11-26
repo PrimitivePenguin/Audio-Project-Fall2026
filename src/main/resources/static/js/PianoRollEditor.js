@@ -16,11 +16,7 @@ class PianoRollEditor {
 
     static cursorLabel(sequence, ticks) {
         const position = sequence.positionAtTick(ticks);
-        const meterEvent = sequence.timeSignatures.filter((event) => event.ticks <= ticks).at(-1);
-        const meterStart = meterEvent?.ticks ?? 0;
-        const beatTicks = sequence.ppq * 4 / position.meter[1];
-        const withinBeat = (ticks - meterStart) % beatTicks;
-        const subdivision = Math.floor(withinBeat / sequence.stepToTick(1) + 1e-8) + 1;
+        const subdivision = Math.floor(sequence.tickToStep(position.ticksIntoBeat) + 1e-8) + 1;
         return `Measure ${position.measure} · Beat ${position.beat} · Step ${subdivision}` +
             ` (absolute ${Math.floor(sequence.tickToStep(ticks)) + 1} · tick ${ticks})`;
     }
@@ -65,7 +61,27 @@ class PianoRollEditor {
         return leftDistance <= rightDistance ? 'left' : 'right';
     }
 
-    static resizedTiming(sequence, original, edge, pointerStep, deletionPointerStep = pointerStep) {
+    static snapInterval(mode) {
+        return mode === 'free' ? 0 : mode === 'thirty-second' ? 0.5 : 1;
+    }
+
+    static snappedTicks(sequence, steps, mode, placement = false) {
+        // Free editing works in ticks. New notes still start on the sixteenth-note grid.
+        const interval = this.snapInterval(placement && mode === 'free' ? 'sixteenth' : mode);
+        if (!interval) return Math.round(sequence.stepToTick(steps));
+        const units = placement ? Math.floor(steps / interval) : Math.round(steps / interval);
+        const ticks = sequence.stepToTick(units * interval);
+        return Math.sign(ticks) * Math.round(Math.abs(ticks));
+    }
+
+    static formatDuration(sequence, ticks) {
+        // Decimal rounding error is at most half a unit in the last place.
+        // Keep that unit no larger than the distance between adjacent ticks.
+        const decimals = Math.max(0, Math.ceil(Math.log10(sequence.stepToTick(1))));
+        return String(Number(sequence.tickToStep(ticks).toFixed(decimals)));
+    }
+
+    static resizedTiming(sequence, original, edge, pointerStep, deletionPointerStep = pointerStep, mode = 'sixteenth') {
         if (!Number.isFinite(pointerStep)) {
             throw new RangeError('Invalid resize position.');
         }
@@ -82,19 +98,22 @@ class PianoRollEditor {
         if (crossedBoundary) {
             return { ...original, deleteNote: true };
         }
-        // Snap duration relative to the fixed endpoint. Imported fractional starts/ends
-        // remain exact, but a deliberate resize never manufactures a one-tick sliver.
         const available = edge === 'right' ? patternEnd - original.ticks : originalEnd;
-        let maximumSteps = Math.floor(sequence.tickToStep(available));
-        if (Math.round(sequence.stepToTick(maximumSteps + 1)) <= available) {
-            maximumSteps++;
-        }
-        if (maximumSteps < 1) {
-            return { ...original, limited: true };
-        }
+        const interval = this.snapInterval(mode);
+        const minimumTicks = Math.max(1, this.snappedTicks(sequence, interval, mode));
+        if (available < minimumTicks) return { ...original, limited: true };
+
         const requestedSteps = edge === 'right' ? pointerStep - startStep : endStep - pointerStep;
-        const durationSteps = Math.max(1, Math.min(maximumSteps, Math.round(requestedSteps)));
-        const durationTicks = Math.round(sequence.stepToTick(durationSteps));
+        let maximumSteps = sequence.tickToStep(available);
+        if (interval) {
+            const units = Math.floor(maximumSteps / interval);
+            maximumSteps = units * interval;
+            if (this.snappedTicks(sequence, maximumSteps + interval, mode) <= available) {
+                maximumSteps += interval;
+            }
+        }
+        const durationTicks = Math.max(minimumTicks, Math.min(available,
+            this.snappedTicks(sequence, Math.min(maximumSteps, requestedSteps), mode)));
         if (edge === 'right') {
             return { ticks: original.ticks, durationTicks };
         }
@@ -112,7 +131,7 @@ class PianoRollEditor {
             bounds.y + bounds.height > Math.min(start.y, end.y);
     }
 
-    static movedNotes(sequence, notes, horizontalPixels, verticalPixels) {
+    static movedNotes(sequence, notes, horizontalPixels, verticalPixels, mode = 'sixteenth') {
         const patternEnd = Math.floor(sequence.stepToTick(sequence.stepCount));
         let minimumTickDelta = -Infinity;
         let maximumTickDelta = Infinity;
@@ -128,7 +147,7 @@ class PianoRollEditor {
             return null;
         }
         // Snap the displacement, preserving imported fractional grid positions.
-        const requestedTicks = Math.round(sequence.stepToTick(Math.round(horizontalPixels / this.geometry.stepWidth)));
+        const requestedTicks = this.snappedTicks(sequence, horizontalPixels / this.geometry.stepWidth, mode);
         const ticks = Math.max(minimumTickDelta, Math.min(maximumTickDelta, requestedTicks));
         const requestedPitch = -Math.round(verticalPixels / this.geometry.rowHeight);
         const pitch = Math.max(minimumPitchDelta, Math.min(maximumPitchDelta, requestedPitch));
@@ -139,20 +158,20 @@ class PianoRollEditor {
         }]));
     }
 
-    static resizedGroup(sequence, notes, requestedSteps) {
+    static resizedGroup(sequence, notes, requestedSteps, mode = 'sixteenth') {
         const patternEnd = Math.floor(sequence.stepToTick(sequence.stepCount));
-        const wholeStepTicks = Math.max(1, Math.round(sequence.stepToTick(1)));
+        const minimumTicks = Math.max(1, this.snappedTicks(sequence, this.snapInterval(mode), mode));
         let minimumDelta = -Infinity;
         let maximumDelta = Infinity;
         for (const note of notes) {
-            // Existing sub-step notes may stay short, but cannot shrink further by mouse.
-            minimumDelta = Math.max(minimumDelta, Math.min(note.durationTicks, wholeStepTicks) - note.durationTicks);
+            // Existing notes shorter than the snap interval may keep their length.
+            minimumDelta = Math.max(minimumDelta, Math.min(note.durationTicks, minimumTicks) - note.durationTicks);
             maximumDelta = Math.min(maximumDelta, patternEnd - note.ticks - note.durationTicks);
         }
         if (minimumDelta > maximumDelta) {
             return new Map(notes.map((note) => [note.id, { ...note, limited: true }]));
         }
-        const requestedTicks = Math.round(sequence.stepToTick(Math.round(requestedSteps)));
+        const requestedTicks = this.snappedTicks(sequence, requestedSteps, mode);
         const delta = Math.max(minimumDelta, Math.min(maximumDelta, requestedTicks));
         return new Map(notes.map((note) => [note.id, {
             ticks: note.ticks,

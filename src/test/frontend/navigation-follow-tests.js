@@ -141,7 +141,7 @@ function sample(overrides = {}) {
         assert.equal(key(h, 'ArrowRight'), true);
         assert.match(h.elements.noteInfo.textContent, new RegExp(b.id));
         assert.equal(h.elements.selectionCount.textContent, '1 selected');
-        assert.equal(Number(h.elements.noteLength.value), b.durationSteps);
+        assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), b.durationTicks);
         assert.equal(key(h, 'ArrowRight'), false);
         assert.equal(key(h, 'ArrowLeft'), true);
         assert.match(h.elements.noteInfo.textContent, new RegExp(a.id));

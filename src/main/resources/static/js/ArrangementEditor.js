@@ -210,8 +210,13 @@ class ArrangementEditor {
             label.className = 'sample-asset-label';
             row.onclick = () => this.selectRackAsset(asset.id);
             this.rackButtons.set(asset.id, { row, label });
+            // 1. Inside refreshRack(), replace the `const status = ...` line with:
             const status = asset.loading ? 'Loading' : asset.buffer
-                ? (asset.local ? 'Ready · stored in this browser' : 'Ready · session only') : 'Missing audio · relink original file';
+                ? (asset.url && asset.local ? 'Ready · cloud & browser'
+                    : asset.url ? 'Ready · cloud'
+                    : asset.local ? 'Ready · stored in this browser'
+                    : 'Ready · session only')
+                : 'Missing audio · relink original file';
             label.textContent = `${asset.name} · ${asset.duration.toFixed(2)} s · ${status}`;
             const color = TrackOverview.color(asset.id);
             row.style.backgroundColor = color;
@@ -251,6 +256,7 @@ class ArrangementEditor {
         return button;
     }
 
+    // 2. Replace importFiles(files, relinkId = null) and add the three upload helpers below it:
     importFiles(files, relinkId = null) {
         const model = this.model;
         this.assetJobs = this.assetJobs.then(async () => {
@@ -266,16 +272,23 @@ class ArrangementEditor {
                     const id = await SampleAssetStore.identify(bytes);
                     if (relinkId && relinkId !== id) throw new Error('Choose the exact original audio file.');
                     const existing = model.assets.get(id);
-                    if (existing?.buffer) continue;
+                    if (existing?.buffer && existing?.url) continue;
                     if (!existing && model.assets.size >= AudioArrangement.limits.assets) throw new Error('The rack is full (64 samples).');
                     this.el('rackStatus').textContent = `Decoding ${file.name}…`;
-                    const buffer = await this.decode(bytes, model);
+                    const buffer = existing?.buffer ?? await this.decode(bytes, model);
                     if (this.model !== model) return;
                     const asset = existing ?? { id, name: file.name.slice(0, 255), duration: buffer.duration };
                     asset.buffer = buffer;
+                    asset.fetchFailed = false;
                     model.assets.set(id, asset);
                     added.push(asset);
                     try { await this.store.write(id, bytes); asset.local = true; } catch { asset.local = false; }
+                    try {
+                        this.el('rackStatus').textContent = `Uploading ${file.name} to cloud…`;
+                        await this.uploadAssetToCloud(asset, bytes, this.inferContentType(file));
+                    } catch (uploadError) {
+                        failures.push(`${file.name} (cloud sync): ${uploadError.message}`);
+                    }
                     if (this.model !== model) return;
                     this.preview(asset, model);
                     this.refreshRack();
@@ -289,6 +302,76 @@ class ArrangementEditor {
             return added;
         });
         return this.assetJobs;
+    }
+
+    inferContentType(file) {
+        if (file?.type && file.type.startsWith('audio/')) return file.type;
+        const ext = file?.name?.split('.').pop()?.toLowerCase();
+        const map = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4' };
+        return map[ext] || 'audio/wav';
+    }
+
+    async uploadAssetToCloud(asset, bytes, contentType = 'audio/wav') {
+        const projectId = this.hooks.projectId?.();
+        if (!projectId || asset.url) return;
+        const presignRes = await fetch(`/api/projects/${projectId}/samples/presign`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sha256: asset.id,
+                fileName: asset.name,
+                contentType
+            })
+        });
+        const presign = await presignRes.json().catch(() => null);
+        if (!presignRes.ok) {
+            throw new Error(presign?.error || `Presign failed (${presignRes.status})`);
+        }
+        const uploadRes = await fetch(presign.uploadUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': contentType,
+                'Cache-Control': 'public, max-age=31536000, immutable'
+            },
+            body: bytes
+        });
+        if (!uploadRes.ok) {
+            throw new Error(`Cloud upload failed (${uploadRes.status})`);
+        }
+        asset.url = presign.publicUrl;
+        this.hooks.onAssetUploaded?.(asset);
+    }
+
+    async ensureAssetsUploaded() {
+        await this.assetJobs;
+        const projectId = this.hooks.projectId?.();
+        const unsynced = [];
+        let uploadedAny = false;
+
+        for (const asset of this.model.assets.values()) {
+            if (asset.url) continue;
+            if (!projectId) {
+                unsynced.push(asset.name);
+                continue;
+            }
+            try {
+                const bytes = await this.store.read(asset.id).catch(() => null);
+                if (!bytes) {
+                    unsynced.push(asset.name);
+                    continue;
+                }
+                await this.uploadAssetToCloud(asset, bytes, this.inferContentType(asset));
+                uploadedAny = true;
+            } catch {
+                unsynced.push(asset.name);
+            }
+        }
+
+        if (uploadedAny) {
+            this.refreshRack();
+        }
+        return unsynced;
     }
 
     async decode(bytes, model) {
@@ -309,24 +392,41 @@ class ArrangementEditor {
             () => this.model === model && model.assets.get(asset.id) === asset);
     }
 
+    // 3. Replace restoreAssets() with:
     restoreAssets() {
         const model = this.model;
-        const assets = [...model.assets.values()].filter((asset) => !asset.buffer);
+        const assets = [...model.assets.values()].filter(
+            (asset) => !asset.buffer && !asset.loading && !asset.fetchFailed
+        );
+        if (!assets.length) return this.assetJobs;
         for (const asset of assets) asset.loading = true;
         this.refreshRack();
         this.assetJobs = this.assetJobs.then(async () => {
             for (const asset of assets) {
                 if (this.model !== model) return;
                 try {
-                    const bytes = await this.store.read(asset.id);
+                    let bytes = await this.store.read(asset.id);
+                    if (!bytes && asset.url) {
+                        const response = await fetch(asset.url);
+                        if (!response.ok) throw new Error(`Download failed (${response.status})`);
+                        const downloaded = await response.arrayBuffer();
+                        if (await SampleAssetStore.identify(downloaded) !== asset.id) {
+                            throw new Error('Downloaded sample hash did not match project metadata.');
+                        }
+                        bytes = downloaded;
+                        try { await this.store.write(asset.id, bytes); asset.local = true; } catch { asset.local = false; }
+                    } else if (bytes) {
+                        asset.local = true;
+                    }
                     if (bytes) {
                         const buffer = await this.decode(bytes, model);
                         if (this.model !== model) return;
                         asset.buffer = buffer;
-                        asset.local = true;
                         this.preview(asset, model);
                     }
-                } catch { /* Metadata remains usable; the rack offers relinking. */ }
+                } catch {
+                    asset.fetchFailed = true;
+                }
                 asset.loading = false;
                 if (this.model === model) { this.refreshRack(); this.hooks.redraw(); }
             }

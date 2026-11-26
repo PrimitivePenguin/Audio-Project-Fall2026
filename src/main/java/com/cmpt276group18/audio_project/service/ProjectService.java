@@ -230,6 +230,12 @@ public class ProjectService {
         public ProjectVersionConflictException(String message) { super(message); }
     }
 
+        // For R2
+    public void assertEditor(UUID projectId, Integer userId) {
+        requireProject(projectId);
+        requireEditor(projectId, userId);
+    }
+
     @Transactional
     public Project applySync(UUID projectId, Integer userId, String name, String snapshot, Long baseRevision) {
         Project project = requireProject(projectId);

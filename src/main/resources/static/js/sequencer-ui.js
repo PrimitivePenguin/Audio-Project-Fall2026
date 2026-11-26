@@ -35,6 +35,7 @@
     const drawingContext = pianoCanvas.getContext('2d');
     const arrangement = new ArrangementEditor(engine, {
         onMutate: (type, targetId) => broadcastSync(type, targetId),
+        projectId: () => databaseProject?.id ?? null,
         canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
         canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
@@ -902,6 +903,7 @@ let isApplyingRemote = false;
         }
         databaseSaveInFlight = true;
         try {
+            const unsyncedSamples = await arrangement.ensureAssetsUploaded();
             const response = await fetch(`/api/projects/${databaseProject.id}`, {
                 method: 'PUT',
                 credentials: 'same-origin',
@@ -917,7 +919,15 @@ let isApplyingRemote = false;
                 throw new Error(body?.error || `Save failed (${response.status})`);
             }
             databaseProject.version = body.version;
-            showStatus(`Saved "${engine.sequence.name}" to the database.`);
+            if (unsyncedSamples.length) {
+                const count = unsyncedSamples.length;
+                showStatus(
+                    `Saved "${engine.sequence.name}" to the database, but cloud sync is incomplete ` +
+                    `(${count} ${count === 1 ? 'sample' : 'samples'} saved locally only and unavailable in other browsers).`
+                );
+            } else {
+                showStatus(`Saved "${engine.sequence.name}" to the database.`);
+            }
         } catch (error) {
             showStatus(`Save failed: ${error.message}`);
         } finally {

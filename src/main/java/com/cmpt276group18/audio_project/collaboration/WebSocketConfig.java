@@ -13,10 +13,16 @@ import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
 import org.springframework.web.socket.server.support.HttpSessionHandshakeInterceptor;
 
 import com.cmpt276group18.audio_project.controller.UserManagementController;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
+
+
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -65,5 +71,20 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
         registration.interceptors(projectChannelInterceptor);
+    }
+
+    @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
+        registry.setMessageSizeLimit(2 * 1024 * 1024);      // 2 MB max incoming STOMP frame
+        registry.setSendBufferSizeLimit(4 * 1024 * 1024);   // 4 MB outbound buffer
+        registry.setSendTimeLimit(20 * 1000);               // 20s send timeout
+    }
+
+    @Bean
+    public ServletServerContainerFactoryBean createWebSocketContainer() {
+        ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+        container.setMaxTextMessageBufferSize(2 * 1024 * 1024);
+        container.setMaxBinaryMessageBufferSize(2 * 1024 * 1024);
+        return container;
     }
 }

@@ -486,10 +486,9 @@
 
     function restoreTrackHistory(entry, side) {
         if (entry.kind === 'automation') {
-            engine.setAutomation(entry.channelId, entry.key, entry[side]);
-            renderPianoRoll();
-            showStatus(`${side === 'before' ? 'Undo' : 'Redo'}: automation (${entry.label}).`);
-            return;
+            if (!engine.setAutomation(entry.channelId, entry.key, entry[side])) {
+                throw new Error('Stop playback to change tempo automation.');
+            }
         }
 
         if (entry.kind === 'track-order') {
@@ -971,6 +970,8 @@ let isApplyingRemote = false;
 
     function updateTransportControls() {
         const busy = isStartingPlayback || engine.isPlaying || Boolean(engine.startPromise);
+        const tempoLane = engine.hasAutomation('master', 'tempo');
+        bpmInput.disabled = tempoLane || engine.sequence.tempos.length > 1 || (busy && engine.arrangement.clips.size > 0);
         playButton.disabled = false;
         playButton.textContent = busy ? 'Ⅱ Pause' : engine.isPaused ? '▶ Resume' : '▶ Play';
         playButton.setAttribute('aria-label', busy ? 'Pause playback (Space)' : engine.isPaused ? 'Resume playback (Space)' : 'Play (Space)');
@@ -993,10 +994,12 @@ let isApplyingRemote = false;
         bpmInput.disabled = engine.sequence.tempos.length > 1 || (busy && engine.arrangement.clips.size > 0);
         bpmInput.min = bpmInput.disabled ? '' : '40';
         bpmInput.max = bpmInput.disabled ? '' : '240';
-        getElement('tempoInfo').textContent = engine.sequence.tempos.length > 1
-            ? 'Imported tempo map active; BPM editing disabled.'
+        getElement('tempoInfo').textContent = tempoLane
+            ? 'Tempo automation is active. Edit or clear the Tempo lane.'
+            : engine.sequence.tempos.length > 1 ? 'Imported tempo map active; BPM editing disabled.'
             : bpmInput.disabled ? 'Pause or stop before changing BPM with audio clips.'
             : 'BPM edits replace the constant tempo (40–240).';
+
         updateMeterControls(busy);
         arrangement.refreshInspector();
         applyDatabasePermissions();
@@ -3084,111 +3087,139 @@ let isApplyingRemote = false;
         showStatus(`Audio ${details?.fatal === false ? 'warning' : 'failure'}: ${error.message}`);
     };
 
-    // ---- Per-channel mixer (volume, pan, filter, effect sends) ----
-    const formatPct = (value) => `${Math.round(value * 100)}%`;
-    const formatPan = (value) =>
-        Math.abs(value) < 0.005 ? 'C' : `${value < 0 ? 'L' : 'R'}${Math.round(Math.abs(value) * 100)}`;
-    const formatHz = (hz) => (hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)));
-    const CUTOFF_RATIO = 1000; // cutoff slider spans 20 Hz–20 kHz logarithmically
+     // ---- Per-channel mixer (generated from the effect modules) ----
+     const FORMATS = {
+         percent: (v) => `${Math.round(v * 100)}%`,
+         pan: (v) => (Math.abs(v) < 0.005 ? 'C' : `${v < 0 ? 'L' : 'R'}${Math.round(Math.abs(v) * 100)}`),
+         hz: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v))),
+         db: (v) => `${v.toFixed(1)} dB`,
+         seconds: (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`),
+         ratio: (v) => `${v.toFixed(1)}:1`,
+         beats: (v) => `${Number(v.toFixed(3))} beat`,
+         bpm: (v) => `${v.toFixed(1)} BPM`,
+         number: (v) => v.toFixed(2)
+     };
 
-    const MIX_CONTROLS = [
-        { key: 'volume', label: 'Vol', min: 0, max: 1.5, step: 0.01, format: formatPct },
-        { key: 'pan', label: 'Pan', min: -1, max: 1, step: 0.01, format: formatPan },
-        { key: 'filterType', label: 'Filter', select: [['lowpass', 'Low-pass'], ['highpass', 'High-pass']] },
-        { key: 'cutoff', label: 'Cutoff', min: 0, max: 1, step: 0.001, format: formatHz,
-            toSlider: (hz) => Math.log(hz / 20) / Math.log(CUTOFF_RATIO),
-            fromSlider: (position) => 20 * CUTOFF_RATIO ** position },
-        { key: 'resonance', label: 'Reso', min: 0, max: 15, step: 0.1, format: (v) => `${v.toFixed(1)} dB` },
-        { key: 'delaySend', label: 'Delay', min: 0, max: 1, step: 0.01, format: formatPct },
-        { key: 'delayBeats', label: 'Time', min: 0.125, max: 2, step: 0.125, format: (v) => `${+v.toFixed(3)} beat` },
-        { key: 'delayFeedback', label: 'Fdbk', min: 0, max: 0.9, step: 0.01, format: formatPct },
-        { key: 'reverbSend', label: 'Reverb', min: 0, max: 1, step: 0.01, format: formatPct }
-    ];
+     // Log params use a 0..1 slider; the rest use their own range.
+     function sliderMap(param) {
+         return param.log
+             ? { min: 0, max: 1, step: 0.001,
+                 to: (v) => Math.log(v / param.min) / Math.log(param.max / param.min),
+                 from: (p) => param.min * (param.max / param.min) ** p }
+             : { min: param.min, max: param.max, step: param.step, to: (v) => v, from: (p) => p };
+     }
 
-    function createMixRow({ id, name }) {
-        const row = document.createElement('div');
-        row.className = 'mix-row';
-        row.setAttribute('role', 'group');
-        row.setAttribute('aria-label', name);
-        row.dataset.trackId = id;
-        // Opts into the "release focus after pointer use" policy so Space still controls transport.
-        row.setAttribute('data-daw-pointer-inputs', '');
-                row.addEventListener('change', () => broadcastSync('SETTINGS_SYNC', id));
-        const heading = document.createElement('span');
-        heading.className = 'mix-title';
-        heading.textContent = name;
-        row.append(heading);
+     function createMixRow({ id, name }) {
+         const row = document.createElement('div');
+         row.className = 'mix-row';
+         row.setAttribute('role', 'group');
+         row.setAttribute('aria-label', name);
+         row.dataset.trackId = id;
+         // Opts into the "release focus after pointer use" policy so Space still controls transport.
+         row.setAttribute('data-daw-pointer-inputs', '');
+         row.addEventListener('change', () => broadcastSync('SETTINGS_SYNC', id));
 
-        const controls = MIX_CONTROLS.map((control) => {
-            const wrapper = document.createElement('label');
-            const text = document.createElement('span');
-            text.textContent = control.label;
+         const heading = document.createElement('span');
+         heading.className = 'mix-title';
+         heading.textContent = name;
+         const core = document.createElement('div');
+         core.className = 'mix-core';
+         row.append(heading, core);
 
-            if (control.select) {
-                const input = document.createElement('select');
-                for (const [value, label] of control.select) input.append(new Option(label, value));
-                wrapper.append(text, input);
-                row.append(wrapper);
-                input.addEventListener('change', () => {
-                    if (!input.disabled) engine.setChannelFilterType(id, input.value);
-                    refresh();
-                });
-                return { control, input };
-            }
+         const sliders = [];
+         const sections = [];
+         let typeSelect = null;
 
-            const toSlider = control.toSlider ?? ((value) => value);
-            const fromSlider = control.fromSlider ?? ((value) => value);
-            const input = document.createElement('input');
-            input.type = 'range';
-            input.min = String(control.min);
-            input.max = String(control.max);
-            input.step = String(control.step);
-            input.title = 'Double-click to reset';
-            const readout = document.createElement('output');
-            wrapper.append(text, input, readout);
-            row.append(wrapper);
+         function addSlider(host, param) {
+             const map = sliderMap(param);
+             const wrapper = document.createElement('label');
+             const text = document.createElement('span');
+             text.textContent = param.label;
+             const input = document.createElement('input');
+             input.type = 'range';
+             input.min = String(map.min);
+             input.max = String(map.max);
+             input.step = String(map.step);
+             input.title = 'Double-click to reset';
+             const readout = document.createElement('output');
+             wrapper.append(text, input, readout);
+             host.append(wrapper);
+             input.addEventListener('input', () => {
+                 if (!input.disabled) engine.setChannelParam(id, param.key, map.from(input.valueAsNumber));
+                 refresh();
+             });
+             input.addEventListener('dblclick', () => {
+                 if (!input.disabled) engine.resetChannelParam(id, param.key);
+                 refresh();
+             });
+             sliders.push({ param, input, readout, map });
+         }
 
-            input.addEventListener('input', () => {
-                if (!input.disabled) engine.setChannelParam(id, control.key, fromSlider(input.valueAsNumber));
-                refresh();
-            });
-            input.addEventListener('dblclick', () => {
-                if (!input.disabled) engine.resetChannelParam(id, control.key);
-                refresh();
-            });
-            return { control, input, readout, toSlider };
-        });
+         for (const group of engine.paramCatalog(id)) {
+             let host = core;
+             if (group.id !== 'mix' && group.id !== 'filter') {
+                 const details = document.createElement('details');
+                 details.className = 'mix-fx';
+                 const summary = document.createElement('summary');
+                 summary.textContent = group.label;
+                 host = document.createElement('div');
+                 host.className = 'mix-fx-body';
+                 details.append(summary, host);
+                 row.append(details);
+                 sections.push({ group, details });
+             }
+             if (group.id === 'filter') {
+                 const wrapper = document.createElement('label');
+                 const text = document.createElement('span');
+                 text.textContent = 'Filter';
+                 typeSelect = document.createElement('select');
+                 for (const [value, label] of [['lowpass', 'Low-pass'], ['highpass', 'High-pass']]) {
+                     typeSelect.append(new Option(label, value));
+                 }
+                 wrapper.append(text, typeSelect);
+                 host.append(wrapper);
+                 typeSelect.addEventListener('change', () => {
+                     if (!typeSelect.disabled) engine.setChannelFilterType(id, typeSelect.value);
+                     refresh();
+                 });
+             }
+             for (const param of group.params) addSlider(host, param);
+         }
 
-        function refresh() {
-            const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
-            const mix = engine.getChannelMix(id);
-            for (const { control, input, readout, toSlider } of controls) {
-                input.disabled = locked;
-                const focused = document.activeElement === input;
-                if (control.select) {
-                    if (!focused) input.value = mix.filterType;
-                    continue;
-                }
-                if (!focused) input.value = String(toSlider(mix[control.key]));
-                readout.textContent = control.format(mix[control.key]);
-            }
-        }
+         function refresh() {
+             const locked = !engine.hasChannel(id) || databaseProject?.role === 'VIEWER';
+             const mix = engine.getChannelMix(id);
+             if (typeSelect) {
+                 typeSelect.disabled = locked;
+                 if (document.activeElement !== typeSelect) typeSelect.value = mix.filterType;
+             }
+             for (const { param, input, readout, map } of sliders) {
+                 input.disabled = locked;
+                 // Don't fight the user's thumb while they're dragging.
+                 if (document.activeElement !== input) input.value = String(map.to(mix[param.key]));
+                 readout.textContent = FORMATS[param.format](mix[param.key]);
+             }
+             for (const { group, details } of sections) {
+                 details.classList.toggle('is-active', engine.effectActive(id, group.id));
+             }
+         }
 
-        return { row, refresh };
-    }
+         return { row, refresh };
+     }
 
-    // Rebuilds rows only when tracks are added, removed, renamed or reordered;
-    // otherwise just refreshes slider values so dragging isn't interrupted.
-    function syncMixer() {
-        const tracks = overviewTracks();
-        const key = JSON.stringify(tracks.map((track) => [track.id, track.name]));
-        if (key !== mixerKey) {
-            mixerKey = key;
-            mixerRows = tracks.map(createMixRow);
-            mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
-        }
-        mixerRows.forEach((mix) => mix.refresh());
-    }
+     // Rebuilds rows only when channels are added, removed, renamed or reordered.
+     function syncMixer() {
+         const channels = [{ id: 'master', name: 'Master' },
+             ...overviewTracks().map((track) => ({ id: track.id, name: track.name }))];
+         const key = JSON.stringify(channels);
+         if (key !== mixerKey) {
+             mixerKey = key;
+             mixerRows = channels.map(createMixRow);
+             mixerPanel.replaceChildren(...mixerRows.map((mix) => mix.row));
+         }
+         mixerRows.forEach((mix) => mix.refresh());
+     }
+
     getElement('midiFile').onchange = async (event) => {
         const file = event.target.files[0];
         if (!file) {
@@ -3552,12 +3583,7 @@ let isApplyingRemote = false;
      const AUTOMATION_HEIGHT = 150;
      const AUTOMATION_PAD = 14;   // vertical padding so extreme values stay clickable
      const AUTOMATION_HIT = 9;    // px radius for grabbing a point
-     const AUTOMATION_NAMES = {
-         volume: 'Volume', pan: 'Pan', cutoff: 'Filter cutoff', resonance: 'Filter resonance',
-         delaySend: 'Delay send', delayFeedback: 'Delay feedback', reverbSend: 'Reverb send'
-     };
-     const AUTOMATION_SPECS = Object.fromEntries(engine.automationParams().map((spec) => [spec.key, spec]));
-     const automationFormat = (key) => MIX_CONTROLS.find((control) => control.key === key).format;
+
 
      const automationPanel = document.createElement('div');
      automationPanel.className = 'automation-panel';
@@ -3580,10 +3606,22 @@ let isApplyingRemote = false;
      }
      const autoChannelSelect = makeAutomationSelect('Automate');
      const autoParamSelect = makeAutomationSelect('Parameter');
-     for (const spec of engine.automationParams()) {
-         autoParamSelect.append(new Option(AUTOMATION_NAMES[spec.key], spec.key));
-     }
 
+     let autoParamsKey = '';
+     const autoSpec = () => engine.automationParams(autoChannelSelect.value)
+         .find((param) => param.key === autoParamSelect.value) ?? null;
+
+     function refreshAutomationParams() {
+         const id = autoChannelSelect.value;
+         const params = engine.automationParams(id);
+         const signature = `${id}|${params.map((param) => param.key).join(',')}`;
+         if (signature === autoParamsKey) return;
+         autoParamsKey = signature;
+         const previous = autoParamSelect.value;
+         autoParamSelect.replaceChildren(...params.map((param) =>
+             new Option(`${param.groupLabel} · ${param.label}`, param.key)));
+         autoParamSelect.value = params.some((param) => param.key === previous) ? previous : (params[0]?.key ?? '');
+     }
      const snapButton = document.createElement('button');
      snapButton.type = 'button';
      snapButton.textContent = 'Snap';
@@ -3682,12 +3720,11 @@ let isApplyingRemote = false;
          ctx.fillStyle = ROLL.bg;
          ctx.fillRect(0, 0, width, height);
 
-         const { id, key } = autoSelection();
-         const spec = AUTOMATION_SPECS[key];
-         if (!spec || !id) {
-             return;
-         }
-         const format = automationFormat(key);
+         const { id } = autoSelection();
+         const spec = autoSpec();
+         if (!spec || !id) return;
+         const key = spec.key;
+         const format = FORMATS[spec.format];
          const scrollLeft = pianoViewport.scrollLeft;
          const points = autoGesture?.draft ?? engine.getAutomation(id, key);
          clearButton.disabled = !autoEditable() || !points.length;
@@ -3791,7 +3828,8 @@ let isApplyingRemote = false;
              }
          } else {
              // No lane: show where the mixer slider currently sits.
-             const y = autoYOf(spec, engine.getChannelMix(id)[key]);
+             const y = autoYOf(spec, (key === 'tempo' ? engine.bpm : engine.getChannelMix(id)[key]));
+
              ctx.setLineDash([6, 4]);
              ctx.strokeStyle = ROLL.marquee;
              ctx.lineWidth = 1;
@@ -3821,7 +3859,7 @@ let isApplyingRemote = false;
          ctx.fillStyle = ROLL.text;
          ctx.font = '11px system-ui';
          ctx.textAlign = 'left';
-         ctx.fillText(AUTOMATION_NAMES[key], 6, 11);
+         ctx.fillText(spec.label, 6, 11);
          ctx.textAlign = 'right';
          ctx.fillText(format(spec.max), KEYBOARD_WIDTH - 6, autoTop + 24);
          ctx.fillText(format(spec.min), KEYBOARD_WIDTH - 6, autoBottom - 4);
@@ -3836,7 +3874,7 @@ let isApplyingRemote = false;
          const channel = [...autoChannelSelect.options].find((option) => option.value === id)?.textContent ?? id;
          pushHistory({
              kind: 'automation', channelId: id, key, before, after,
-             label: `${channel} · ${AUTOMATION_NAMES[key]}`
+             label: `${channel} · ${engine.automationParams(id).find((param) => param.key === key)?.label ?? key}`
          });
        broadcastSync('SETTINGS_SYNC', id);
      }
@@ -3844,7 +3882,10 @@ let isApplyingRemote = false;
      function removeAutomationPointAt(position) {
          const { id, key } = autoSelection();
          const before = engine.getAutomation(id, key);
-         const index = autoHit(before, AUTOMATION_SPECS[key], position);
+         if(autoSpec() == null){
+             return;
+         }
+         const index = autoHit(before, autoSpec(), position);
          if (index < 0) {
              return;
          }
@@ -3883,7 +3924,8 @@ let isApplyingRemote = false;
              return;
          }
          const { id, key } = autoSelection();
-         const spec = AUTOMATION_SPECS[key];
+         if(autoSpec() == null){return;}
+         const spec = autoSpec();
          const position = autoPointer(event);
          if (event.shiftKey) {
              removeAutomationPointAt(position);
@@ -3907,7 +3949,12 @@ let isApplyingRemote = false;
                  draft.sort((a, b) => a.tick - b.tick);
                  index = draft.findIndex((point) => point.tick === tick);
              }
-             engine.setAutomation(id, key, draft);
+             if (!engine.setAutomation(id, key, draft)) {
+                 showStatus(key === 'tempo'
+                     ? 'Stop playback, and clear any imported tempo map, to edit tempo automation.'
+                     : 'That automation lane cannot be edited.');
+                 return;
+             }
          }
          autoGesture = { pointerId: event.pointerId, id, key, spec, before, draft, index };
          automationCanvas.setPointerCapture(event.pointerId);
@@ -3924,7 +3971,8 @@ let isApplyingRemote = false;
                  return;
              }
              const { id, key } = autoSelection();
-             const index = autoHit(engine.getAutomation(id, key), AUTOMATION_SPECS[key], position);
+             if(autoSpec()==null){return;}
+             const index = autoHit(engine.getAutomation(id, key), autoSpec(), position);
              automationCanvas.style.cursor = index >= 0 ? 'grab' : 'crosshair';
              if (index !== autoHoverIndex) {
                  autoHoverIndex = index;
@@ -3978,20 +4026,20 @@ let isApplyingRemote = false;
      });
 
      clearButton.onclick = () => runEditorAction(clearAutomationLane);
-     autoChannelSelect.onchange = autoParamSelect.onchange = () => {
-         autoHoverIndex = -1;
-         drawAutomationLane();
-     };
+     autoChannelSelect.onchange = () => { refreshAutomationParams(); autoHoverIndex = -1; drawAutomationLane(); };
+     autoParamSelect.onchange = () => { autoHoverIndex = -1; drawAutomationLane(); };
 
      function syncAutomationControls() {
-         const channels = overviewTracks().map((track) => ({ id: track.id, name: track.name }));
+         const channels = [{ id: 'master', name: 'Master' },
+             ...overviewTracks().map((track) => ({ id: track.id, name: track.name }))];
          const key = JSON.stringify(channels);
          if (key !== autoChannelsKey) {
              autoChannelsKey = key;
              const previous = autoChannelSelect.value;
              autoChannelSelect.replaceChildren(...channels.map(({ id, name }) => new Option(name, id)));
-             autoChannelSelect.value = channels.some(({ id }) => id === previous) ? previous : (channels[0]?.id ?? '');
+             autoChannelSelect.value = channels.some(({ id }) => id === previous) ? previous : 'master';
          }
+         refreshAutomationParams();
          drawAutomationLane();
      }
 

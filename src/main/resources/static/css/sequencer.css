@@ -231,6 +231,11 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .mix-row label { display: flex; align-items: center; gap: 0.4rem; }
 .mix-row output { min-width: 3.2ch; font-variant-numeric: tabular-nums; }
 
+.mix-core { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; }
+.mix-fx { flex-basis: 100%; }
+.mix-fx summary { padding: 2px 8px; font-size: 0.9em; }
+.mix-fx.is-active > summary { font-weight: 700; background: var(--accent-steel-soft); }
+.mix-fx-body { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; padding: 0.25rem 0 0.25rem 1rem; }
 .drum-pan { width: 5rem; }
 .mix-title { min-width: 6rem; font-weight: 600; }
 .mix-row input[type="range"] { width: 6rem; }

@@ -44,7 +44,7 @@ class AudioExporter {
             throw new Error(`Required audio is unavailable: ${[...missing].join(', ')}. Wait for loading to finish or relink these samples in the Sample Rack, then try again.`);
         }
         const frames = Math.max(1, Math.ceil(end * this.sampleRate));
-        return { frames, notes, clips, renderer, masterGain: engine.masterGain?.gain.value ?? MASTER_GAIN };
+        return { frames, notes, clips, renderer, masterGain: engine.getChannelMix('master').volume};
     }
 
     static checkBudget(plan) {

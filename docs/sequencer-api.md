@@ -3,7 +3,7 @@
 The browser editor uses plain JavaScript, one Web Audio lookahead scheduler, a temporary sine voice, and locally bundled `@tonejs/midi` **2.0.28**. Spring Boot serves the existing `static/index.html`. No frontend framework, CDN, database changes or second transport are involved.
 
 Load classic scripts in this order: `vendor/tonejs-midi-2.0.28.js`, `NoteSequence.js`, `AudioArrangement.js`, `SampleAssetStore.js`, `SequencerEngine.js`, `midi-io.js`, `PianoRollEditor.js`, `TrackOverview.js`, `ArrangementEditor.js`, `sequencer-ui.js`. Vendor source, version, checksum and licenses are under `static/js/vendor/`.
-
+The effect modules (effects/EffectRegistry.js first, then distortion.js, compressor.js, limiter.js, delay.js, reverb.js) load anywhere before sequencer-ui.js, which constructs the engine. See effects.
 ## Musical data (version 2)
 
 `new NoteSequence(stepCount = 16, ppq = 480)` creates a musical sequence. PPQ is pulses per quarter note, an integer 1–32767. Pattern length is 1–65536 sixteenth-note steps; the initial 16 steps represent one 4/4 measure. Viewport dimensions never define musical data.
@@ -55,20 +55,20 @@ Load classic scripts in this order: `vendor/tonejs-midi-2.0.28.js`, `NoteSequenc
 
 ### Context and transport
 
-- `initContext(): void`: lazily creates the shared AudioContext and master GainNode. It does not resume it. Call in a user interaction when loading sample audio.
+- `initContext(): void`: lazily creates the shared AudioContext and the master strip (volume, filter, inserts, pan, then the destination). engine.masterGain is that strip's gain node. It does not resume it. Call in a user interaction when loading sample audio.
 - `play(cursorTick?): Promise<void>`: resumes the context and the existing scheduler with a 50 ms lead. The UI supplies its precise editing cursor for fresh playback; direct legacy `play()` without an argument retains loop-start behavior. A supplied tick may be fractional for transport consumers; the editing cursor itself uses integer ticks. Play while paused resumes the saved/explicitly sought position rather than its argument. The initial pass and normal loop policy are described below. Await/catch it. Repeated calls share pending startup or do nothing while playing. Stop invalidates pending starts.
 - `pause(): void`: saves the audible musical tick from `getPlaybackTick()`, cancels active/queued voices and samples through the existing Stop cleanup, invalidates pending startup, and retains that position for Resume. `isPaused` and `pausedTick` expose the paused state.
 - `seekPaused(tick): void`: explicitly repositions a paused transport without starting audio. Has no effect while playing/stopped, validates composition bounds, and updates a pending Resume start if necessary. The composition end maps to loop start.
 - `getPlaybackPosition(): {ticks, pass}`: reads the same audio clock without scheduling audio. `pass` is 0 for the initial audition pass, then 1, 2, … for full loop passes; it is null while paused/stopped. Together with `runId`, this lets the view distinguish wraps even when multiple loops pass between animation frames. Exact boundaries normalize sub-nanosecond arithmetic error.
 - `getPlaybackTick(): number`: continuous transport position in PPQ ticks, integrating tempo segments through the initial audition pass and then wrapping inside the custom loop using the AudioContext clock. Transport positions can be fractional ticks; committed MIDI edits remain integers. Stopped returns loop start; paused returns the saved tick.
-- `stop(): void`: clears the timer, invalidates legacy callbacks, cancels pending preparation, attempts every active/future pitched and sample cancellation independently, clears registries/visual events, calls the manager's optional Stop hook, and resets position to loop start. One throwing cancellation cannot skip healthy voices or samples. Synchronous failures are reported only after cleanup; reentrant Stop is safe.
-- `setBpm(number)`: clamps finite values to 40–240; ignores non-finite input. For a constant-tempo composition it replaces that tempo. A composition with multiple tempo events rejects manual BPM changes rather than flattening the map; the UI disables BPM editing. Imported tempos outside the UI range are preserved and played without clamping.
+- `stop(): void`: clears the timer, invalidates legacy callbacks, cancels pending preparation, attempts every active/future pitched and sample cancellation independently, clears registries/visual events, calls the manager's optional Stop hook, returns automated parameters to their mixer values, and resets position to loop start. One throwing cancellation cannot skip healthy voices or samples. Synchronous failures are reported only after cleanup; reentrant Stop is safe.
+- `setBpm(number)`: clamps finite values to 40–240; ignores non-finite input. For a constant-tempo composition it replaces that tempo. A composition with multiple tempo events rejects manual BPM changes rather than flattening the map; the UI disables BPM editing. A tempo automation lane on the master also rejects manual BPM changes until the lane is cleared. Imported tempos outside the UI range are preserved and played without clamping.
 - `setLoopRange(startStep, endStepExclusive)`: stopped-only integer bounds satisfying `0 <= start < end <= totalSteps`. Supports a single-step loop. UI endpoints are inclusive and one-based.
 - `setPatternLength(steps)`: stopped-only coordinated resize of sequence, sample patterns, loop and position. Shortening past any note end or active sample trigger throws before mutation. Full-pattern loops expand with the pattern; custom loops are clamped. Changing pitch visibility never deletes notes.
 - `replaceSequence(sequence)`: stopped-only application of an already validated NoteSequence. This low-level replacement API is unchanged. Sample buffers and trigger positions remain. Pattern length expands if needed to retain sample triggers. Loop resets to the full pattern; BPM reflects the initial tempo.
 - `importMidiSequence(sequence)`: stopped-only provenance-aware import. Retains manual musical notes, replaces the prior import, applies the imported tempo/meter map, and resets the full-pattern loop. Called by `MidiIO.importInto`.
 - `removeImportedMidi()`: stops active/pending playback and removes the current import group, restoring the preceding tempo/meter maps. Manual notes survive, migrating from removed imported tracks to Piano when needed. Uploaded samples and trigger patterns remain. With no active import, this is a no-op.
-- `newSequence()`: stops active/pending playback, disconnects/removes every sample track and replaces the composition with a new 16-step, 480-PPQ, 120-BPM sequence containing one empty Piano track. It retains the shared AudioContext, master output and `voiceFactory` integration. The UI, rather than the engine API, owns the confirmation dialog and async-load invalidation.
+- `newSequence()`: stops active/pending playback, disconnects/removes every sample track, clears all channel mixes, automation lanes and lane strips, resets the master, and replaces the composition with a new 16-step, 480-PPQ, 120-BPM sequence containing one empty Piano track. It retains the shared AudioContext, master strip and `voiceFactory` integration. The UI, rather than the engine API, owns the confirmation dialog and async-load invalidation.
 
 ### Sample compatibility (unchanged signatures)
 
@@ -83,10 +83,10 @@ engine.addTrack('kick', buffer);
 await engine.play();
 ```
 
-- `addTrack(trackId, audioBuffer)` creates `{buffer, steps, gainNode, activeSources}`. Replacing an ID stops/disconnects the previous track and resets its pattern. The UI explicitly copies/reapplies old triggers when replacing uploaded samples.
+- `addTrack(trackId, audioBuffer)` creates `{buffer, steps, gainNode, strip, activeSources}`; gainNode is the entry of the channel strip (gain, filter, inserts, pan, master). Replacing an ID stops/disconnects the previous track and resets its pattern. The UI explicitly copies/reapplies old triggers when replacing uploaded samples.
 - `removeTrack(trackId)` independently attempts every sample-source cancellation, clears the buffer and trigger references, disconnects gain, and removes the track. Cleanup errors are reported without skipping the remaining work. It does not stop the transport, pitched voices or other sample tracks.
 - `setStep(trackId, stepIndex, isActive)` enables/disables a sample trigger; unknown tracks and noninteger/out-of-range indexes are ignored.
-- Default sample gain is 0.8 and master gain is 0.7. These provide headroom, not guaranteed clipping protection for arbitrary samples or unlimited polyphony.
+- Default volumes are 0.8 for sample and drum channels, 1.0 for MIDI and audio lanes, and 0.7 for the master, which is an ordinary master-volume parameter. These provide headroom, not guaranteed clipping protection for arbitrary samples or unlimited polyphony. The channels can include a limiter, which is off by default (see effects).
 - Audio uploads reuse one context/engine, decode before replacement and ignore stale results. Failed uploads retain the old sample and triggers. MIDI import is a separate control.
 
 ### Timing and UI hooks
@@ -175,11 +175,11 @@ document.addEventListener('jukebox:ready', (event) => {
 ### Ownership, routing and remaining integration limits
 
 - The sequencer owns the AudioContext, transport and master output. Use the supplied context and `noteEvent.when`; never create a second clock, scheduler or context, and never close/suspend this shared context on Stop.
-- Route `voice → optional per-track effects → outputNode`. The engine already connects `outputNode` (master gain) to the destination. Do not create duplicate destination paths or reconnect the master per note. Master-effects insertion requires one deliberate graph reconfiguration owned by the integration.
+- Route voice → outputNode. For notes, outputNode is the track's lane strip input, so the per-track filter, effects, pan and mute already apply. prepare() receives the master strip's input (engine.masterGain). The engine connects the master strip to the destination. Do not create duplicate destination paths or reconnect the master per note. Per-channel and master effects are built in (see effects); an integration's own per-track effects belong before outputNode.
 - Voice completion cleans only that voice's nodes. The manager owns persistent buses, processors, loaded assets and per-track selection. `syncTracks` reconciles track replacements; `dispose` releases manager resources on replacement/unregistration. New Sequence keeps the manager and context, not stale MIDI track IDs.
 - A stopped source can leave reverb/delay buffers ringing. Use the manager's Stop hook to flush or gate those tails synchronously if immediate silence is required. The sequencer cannot clear arbitrary private DSP state; Stop errors are isolated and reported, not a guarantee that a broken plugin actually silenced itself.
 - Sample tracks remain on their original buffer/gain path and do not pass through `voiceFactory`. Removing a sample does not call the instrument manager's Stop hook or flush shared effects, which could silence unrelated notes. Any future sample-specific effects need explicit per-track ownership and cleanup.
-- Tempo-map timing and note endpoints are already converted to seconds. Already scheduled voices are not retimed after edits; loop-tail and note-chasing policies are unchanged. Tempo-synchronized effects may require additional tempo-map integration later.
+- Tempo-map timing and note endpoints are already converted to seconds. Already scheduled voices are not retimed after edits; loop-tail and note-chasing policies are unchanged. The built-in delay follows the base BPM (it retimes when BPM changes) but not an automated tempo lane.
 - The temporary sine voice uses the MIDI frequency formula and gain envelopes at velocity × 0.02 before master gain. Final instruments must provide their own gain staging. A manager that allocates audio but throws without returning a cancellable handle remains responsible for those allocations; the sequencer cannot recover unreported resources.
 
 ## MIDI APIs
@@ -222,7 +222,7 @@ Note-body movement and multi-selection are described below. There is no drag aut
 
 ### Audio arrangement
 
-Each lane has a speaker button with an accessible pressed state. MIDI instruments and audio clip sources share the master output through independent lane gain nodes. Mute ramps that lane to zero over 8 ms, including sounding and queued sources. Unmute restores the lane without restarting the transport. Project metadata stores the muted lane IDs. Rack cards and their clips use the same deterministic asset color from the existing palette.
+Each lane has a speaker button with an accessible pressed state. Each MIDI and audio lane has its own channel strip (gain, filter, effect inserts, pan, then a mute node) feeding the master strip. Delay and reverb sends rejoin after pan and before the mute node, so muting a lane also silences its effect tails. Mute ramps that lane to zero over 8 ms, including sounding and queued sources. Unmute restores the lane without restarting the transport. Project metadata stores the muted lane IDs. Rack cards and their clips use the same deterministic asset color from the existing palette.
 
 Open **Tracks** and use the bottom **Sample Rack** dock. Import one or more files and drag an asset block into the timeline. A drop on a MIDI lane creates an audio lane immediately below it, and a drop below the lanes appends an audio lane. Select a clip to inspect its source offset and duration. Drag the body to move it between times or audio lanes. Drag either edge to trim it. Duplicate places a new clip immediately after the original at the next representable tick. Shift-click selects multiple clips. Copy, Cut, Paste, Duplicate, Delete, Undo and Redo work from the arrangement. Paste anchors the earliest clip at the cursor and retains each clip’s lane and relative timing. Cut Mode splits a clip after a downward pointer stroke. The split retains the complete trimmed source range and is one Undo action. Clips may overlap and use a shared decoded asset. Use the Clip selector to reach a clip covered by another clip. The lane grips reorder both types of lanes. Double-click a MIDI lane to open its piano roll.
 
@@ -582,7 +582,7 @@ sh mvnw test
 sh mvnw spring-boot:run
 ```
 
-Open `http://localhost:8080/`. No npm install is required. Tests use the actual bundled MIDI parser/encoder plus fake Web Audio, pointer capture, preparation cancellation and canvas operations. A synthetic 1696-step/22-track file with an empty first track exercises the visibility regression. Other editor tests cover all-note rendering, navigation/pitches, overlap isolation, both resize edges, scroll/DPI offsets, fractional timing, input validation, cancellation, provenance, PPQ conflicts, export and reset/load races. Automated mocks cannot prove real browser rendering, native pointer capture or audible output. No new manual browser/audio verification is implied.
+Open `http://localhost:8080/`. No npm install is required. Tests use the actual bundled MIDI parser/encoder plus fake Web Audio, pointer capture, preparation cancellation and canvas operations. The fake Web Audio must implement the node types the strips create (gain, biquad filter, stereo panner, delay, convolver, dynamics compressor, wave shaper), and the effect registry must be loaded before the engine is constructed. A synthetic 1696-step/22-track file with an empty first track exercises the visibility regression. Other editor tests cover all-note rendering, navigation/pitches, overlap isolation, both resize edges, scroll/DPI offsets, fractional timing, input validation, cancellation, provenance, PPQ conflicts, export and reset/load races. Automated mocks cannot prove real browser rendering, native pointer capture or audible output. No new manual browser/audio verification is implied.
 
 Manual checks:
 
@@ -632,6 +632,7 @@ Load SynthInstrumentManager, InstrumentPanel, SynthUI, DrumMachine and DrumMachi
   }
 }
 ```
+Saves also include mixer ({ master, tracks: [{ trackId, ...mix }] }: volume, pan, filter and every effect value per lane, plus the master) and automation ({ version: 1, lanes: [{ channelId, key, points }] }). Drum entries carry pan as well as volume. See effects and automation. Older projects without these load at defaults.
 
 The example drum array is abbreviated: saves contain the fixed 16-step boolean array. `jukeboxSynth.snapshot()` reads complete current settings per existing stable MIDI track ID. `restoreState(state)` clears old settings, applies supported waveform/finite bounded parameters and ignores unknown tracks/invalid values. Missing settings default normally. MIDI channel/program/IDs and note metadata never change. New Sequence resets settings even when the default Piano ID is reused.
 
@@ -678,5 +679,7 @@ Large editor MIDI imports use cancellable `MidiIO.parseAsync()` workers when ava
 ### Export Audio
 
 **Export Audio** renders the entire song once from tick zero in a separate OfflineAudioContext. It uses the tempo map, composition length, note releases, and full lengths of placed clips, including clips that extend beyond the nominal pattern. The live cursor and loop settings do not set export boundaries. The synth shares its oscillator, filter, velocity, and envelope implementation with playback. MIDI channel 10 (zero-based channel 9) remains silent, as it is with the current live synth. Exports use unmuted lanes, current gain settings, and the same master gain. Drum patterns are included when placed as audio clips. If a required asset is missing, relink the original sample in Sample Rack before retrying.
+
+The exporter renders per-lane volume and pan and the master volume only. It does not apply the channel filter, effect modules, the master pan/filter/chain or mix automation, so an export can differ from live playback. Tempo automation is included, because it is compiled into the tempo map.
 
 The worker encodes 44.1 kHz stereo as 16-bit PCM WAV or 192 kbps MP3. WAV preserves the exact rendered frame count. MP3 is lossy and may have a short encoder delay or padding. Both encoders clamp PCM peaks without automatic normalization. Rendering uses a single offline context and has a 512 MiB estimated working-set budget covering the offline graph, used source audio, rendered channels, and encoding copies. Actual memory availability varies by browser and device.

@@ -88,6 +88,7 @@ class ProjectWebSocketIntegrationTest {
     @MockitoBean UserRepository users;
     @Autowired SimpleBrokerMessageHandler broker;
     @Autowired UserDestinationResolver userDestinations;
+    @Autowired ProjectSyncController syncController;
 
     @Test
     void editorUpdatesReachViewerAndViewerCanOnlyRequestState() throws Exception {
@@ -100,8 +101,10 @@ class ProjectWebSocketIntegrationTest {
                 .thenReturn(Optional.of(new ProjectCollaborator(id, 42, ProjectRole.EDITOR, null)));
         when(collaborators.findByProjectIdAndUserId(id, 43))
                 .thenReturn(Optional.of(new ProjectCollaborator(id, 43, ProjectRole.VIEWER, null)));
+        when(collaborators.findByProjectIdAndUserId(id, 44))
+                .thenReturn(Optional.of(new ProjectCollaborator(id, 44, ProjectRole.EDITOR, null)));
         when(projects.saveAndFlush(project)).thenAnswer(invocation -> {
-            ReflectionTestUtils.setField(project, "version", 2L);
+            ReflectionTestUtils.setField(project, "version", project.getVersion() + 1);
             return project;
         });
 
@@ -109,15 +112,20 @@ class ProjectWebSocketIntegrationTest {
         try {
             StompSession editor = connect(client, sessionCookie(42), localOrigin(), null);
             StompSession viewer = connect(client, sessionCookie(43), localOrigin(), null);
+            StompSession secondEditor = connect(client, sessionCookie(44), localOrigin(), null);
             var viewerReplies = new EventQueue();
             var updates = new EventQueue();
             viewer.subscribe("/user/queue/sync", viewerReplies);
             String topic = "/topic/projects/" + id;
             viewer.subscribe(topic, updates);
+            var editorUpdates = new EventQueue();
+            var secondEditorUpdates = new EventQueue();
+            editor.subscribe(topic, editorUpdates);
+            secondEditor.subscribe(topic, secondEditorUpdates);
             // The simple broker does not send subscription receipts. Wait until both
             // subscriptions are registered before publishing requests and updates.
             await().atMost(Duration.ofSeconds(5)).until(() ->
-                    hasSubscription(topic) && hasPrivateSubscription(43));
+                    broker.getSubscriptionRegistry().findSubscriptions(messageFor(topic)).size() == 3 && hasPrivateSubscription(43));
 
             String sync = "/app/projects/" + id + "/sync";
             viewer.send(sync, new ProjectSyncRequest("viewer", "REQUEST_STATE",
@@ -137,6 +145,21 @@ class ProjectWebSocketIntegrationTest {
             assertEquals("ERROR", rejection.type());
             assertEquals("Viewer access is read-only", rejection.error());
             verify(projects, times(1)).saveAndFlush(project);
+            assertEquals(2L, editorUpdates.next().revision());
+            assertEquals(2L, secondEditorUpdates.next().revision());
+
+            when(collaborators.findByProjectIdAndUserId(id, 43)).thenReturn(Optional.empty());
+            secondEditor.send(sync, new ProjectSyncRequest("editor-2", "NOTES_SYNC",
+                    "note-3", 2L, "Song", null, "{\"notes\":[3]}"));
+            assertEquals(3L, editorUpdates.next().revision());
+            assertEquals(3L, secondEditorUpdates.next().revision());
+
+            syncController.broadcastRestSave(project, 42, "rest-client");
+            assertEquals("REST_SYNC", editorUpdates.next().type());
+            assertEquals("REST_SYNC", secondEditorUpdates.next().type());
+            assertEquals(null, updates.events.poll(300, TimeUnit.MILLISECONDS));
+            verify(projects, times(2)).saveAndFlush(project);
+            secondEditor.disconnect();
             viewer.disconnect();
             editor.disconnect();
         } finally {

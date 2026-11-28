@@ -67,7 +67,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
         waveSelect.appendChild(option);
     }
     waveSelect.addEventListener('change', () => {
-        if (selectedId) synth.setParam(selectedId, 'waveform', waveSelect.value);
+        if (selectedId && synth.setParam(selectedId, 'waveform', waveSelect.value)) editor.instrumentChanged?.();
         render(true);
     });
 
@@ -80,6 +80,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
         slider.setAttribute('aria-label', p.label);
         const readout = document.createElement('span');
         readout.className = 'synth-readout';
+        slider.addEventListener('change', () => editor.instrumentChanged?.());
         slider.addEventListener('input', () => {
             if (!selectedId) return;
             synth.setParam(selectedId, p.key, fromSlider(p, Number(slider.value)));
@@ -101,6 +102,7 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor } }) => {
             for (const [key, value] of Object.entries(synth.DEFAULTS)) {
                 synth.setParam(selectedId, key, value);
             }
+            editor.instrumentChanged?.();
         }
         render(true);
     });

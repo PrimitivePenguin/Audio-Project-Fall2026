@@ -27,7 +27,7 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
             cell.type = 'button';
             cell.className = i > 0 && i % 4 === 0 ? 'drum-step beat' : 'drum-step';
             cell.addEventListener('click', () => {
-                drums.toggleStep(id, i);
+                if (drums.toggleStep(id, i) !== null) editor.instrumentChanged?.();
                 render(true);
             });
             cells.push(cell);
@@ -42,6 +42,7 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
         slider.step = '0.05';
         slider.setAttribute('aria-label', `${label} volume`);
         slider.addEventListener('input', () => drums.setVolume(id, Number(slider.value)));
+        slider.addEventListener('change', () => editor.instrumentChanged?.());
         el.appendChild(slider);
 
         const pan = document.createElement('input');
@@ -55,8 +56,9 @@ document.addEventListener('jukebox:ready', ({ detail: { editor, engine } }) => {
         pan.addEventListener('input', () => drums.setPan(id, Number(pan.value)));
         pan.addEventListener('dblclick', () => {
             pan.value = '0';
-            drums.setPan(id, 0);
+            if (drums.setPan(id, 0)) editor.instrumentChanged?.();
         });
+        pan.addEventListener('change', () => editor.instrumentChanged?.());
         el.appendChild(pan);
 
         return { id, label, el, cells, slider, pan };

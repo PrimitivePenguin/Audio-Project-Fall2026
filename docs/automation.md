@@ -59,10 +59,10 @@ ID, a non-array, or more than 2000 points. Invalid individual points are skipped
 
 ## Playback
 
-For every scheduled 16th step, `scheduleStep` calls `#scheduleAutomation`, which
-evaluates each lane at the step's start and end tick. It then schedules
-`setValueAtTime(start)` and a linear (or, for cutoff, exponential) ramp to the
-end value at the step's audio times.
+For every scheduled sixteenth, the engine schedules automation ramps at the
+interval boundaries, any automation points inside the interval, and any tempo
+changes inside the interval. Cutoff uses exponential ramps. Offline WAV and MP3
+rendering uses the same curves over the full song, including effect decay.
 
 - A partial first step (after resume or seek) starts the curve at the chosen
   tick, not the step boundary.
@@ -97,8 +97,8 @@ toolbar.
 - Pan snaps to center near zero for easy centering.
 - The shaded region marks the area outside the loop, and the playhead follows
   playback.
-- With Snap on, playback matches the drawn curve exactly. With Snap off, a point
-  inside a step rounds the curve slightly, because ramps are scheduled per step.
+- Snap changes the point placement grid. With Snap off, the scheduler applies
+  points at their stored ticks, including points between sixteenth boundaries.
 - Viewers can see lanes but cannot edit them.
 - The panel is marked `data-daw-controls` and `data-daw-pointer-inputs`, so the
   focus policy returns focus to the workspace after pointer use and Space still

@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>JukeBox offline audio checks</title>
+<pre id="result">Running…</pre>
+<script src="/js/NoteSequence.js"></script>
+<script src="/js/AudioArrangement.js"></script>
+<script src="/js/SequencerEngine.js"></script>
+<script src="/js/AudioExporter.js"></script>
+<script>
+(async () => {
+    const result = document.getElementById('result');
+    const passed = [];
+    const check = (condition, label) => {
+        if (!condition) throw new Error(label);
+        passed.push(label);
+    };
+    const rate = AudioExporter.sampleRate;
+    const rms = (buffer, channel, from, to) => {
+        const data = buffer.getChannelData(channel);
+        let sum = 0;
+        const start = Math.round(from * rate);
+        const end = Math.round(to * rate);
+        for (let i = start; i < end; i++) sum += data[i] ** 2;
+        return Math.sqrt(sum / (end - start));
+    };
+    function fixture(frequency, duration = 1) {
+        const engine = new SequencerEngine();
+        const sample = new AudioBuffer({ length: Math.round(rate * duration), sampleRate: rate });
+        const data = sample.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = 0.2 * Math.sin(i * frequency * 2 * Math.PI / rate);
+        const lane = engine.arrangement.addTrack();
+        engine.arrangement.assets.set('source', { name: 'test tone', duration, buffer: sample });
+        engine.arrangement.createClip('source', lane.id, 0);
+        return { engine, lane: lane.id };
+    }
+    const render = (engine) => AudioExporter.render(AudioExporter.snapshot(engine));
+    try {
+        const highTone = fixture(4000);
+        const dry = await render(highTone.engine);
+        highTone.engine.setChannelParam(highTone.lane, 'cutoff', 400);
+        const lowPass = await render(highTone.engine);
+        check(rms(lowPass, 0, 0.1, 0.4) < rms(dry, 0, 0.1, 0.4) / 20, 'low-pass attenuates high frequencies');
+
+        const lowTone = fixture(150);
+        const open = await render(lowTone.engine);
+        lowTone.engine.setChannelFilterType(lowTone.lane, 'highpass');
+        lowTone.engine.setChannelParam(lowTone.lane, 'cutoff', 1500);
+        const highPass = await render(lowTone.engine);
+        check(rms(highPass, 0, 0.1, 0.4) < rms(open, 0, 0.1, 0.4) / 20, 'high-pass attenuates low frequencies');
+        lowTone.engine.setChannelParam(lowTone.lane, 'cutoff', 150);
+        const noResonance = await render(lowTone.engine);
+        lowTone.engine.setChannelParam(lowTone.lane, 'resonance', 12);
+        const resonant = await render(lowTone.engine);
+        check(rms(resonant, 0, 0.1, 0.4) > rms(noResonance, 0, 0.1, 0.4) * 2, 'resonance changes exported amplitude');
+
+        const pulse = fixture(600, 0.03);
+        pulse.engine.setChannelParam(pulse.lane, 'delaySend', 0.8);
+        pulse.engine.setChannelParam(pulse.lane, 'delayBeats', 0.5);
+        pulse.engine.setChannelParam(pulse.lane, 'delayFeedback', 0.5);
+        const echoes = await render(pulse.engine);
+        check(rms(echoes, 0, 0.255, 0.28) > 0.01 && rms(echoes, 0, 0.18, 0.22) < 0.0001, 'delay echoes at half a beat');
+        check(rms(echoes, 0, 0.505, 0.53) > 0.005, 'delay feedback repeats the echo');
+        pulse.engine.setBpm(60);
+        const slowEcho = await render(pulse.engine);
+        check(rms(slowEcho, 0, 0.505, 0.53) > 0.01 && rms(slowEcho, 0, 0.25, 0.3) < 0.0001, 'BPM scales delay time');
+        pulse.engine.setChannelParam(pulse.lane, 'delaySend', 0);
+        pulse.engine.setChannelParam(pulse.lane, 'reverbSend', 1);
+        const reverb = await render(pulse.engine);
+        check(reverb.duration >= 2.03 && rms(reverb, 0, 0.4, 0.5) > 0.00001, 'reverb tail survives the musical end');
+
+        const automated = fixture(1000);
+        automated.engine.setAutomation(automated.lane, 'volume', [{ tick: 0, value: 0 }, { tick: 480, value: 1 }]);
+        automated.engine.setAutomation(automated.lane, 'pan', [{ tick: 0, value: -1 }, { tick: 480, value: 1 }]);
+        automated.engine.setAutomation(automated.lane, 'cutoff', [{ tick: 0, value: 200 }, { tick: 480, value: 20000 }]);
+        const changed = await render(automated.engine);
+        check(rms(changed, 0, 0.05, 0.15) > rms(changed, 1, 0.05, 0.15)
+            && rms(changed, 1, 0.65, 0.8) > rms(changed, 0, 0.65, 0.8) * 10, 'pan automation moves between channels');
+        check(rms(changed, 1, 0.65, 0.8) > rms(changed, 0, 0.05, 0.15) * 3, 'volume and cutoff automation change signal over time');
+        automated.engine.setLaneMuted(automated.lane, true);
+        const muted = await render(automated.engine);
+        check(rms(muted, 0, 0, 1) === 0 && rms(muted, 1, 0, 1) === 0, 'muted lane is silent');
+        const wav = await AudioExporter.encode(changed, 'wav');
+        const mp3 = await AudioExporter.encode(changed, 'mp3');
+        check(wav.size > 44 && mp3.size > 100, 'both encoders consume the processed stereo render');
+        check(automated.engine.audioContext === null, 'offline render leaves the live context untouched');
+        document.title = `PASS ${passed.length} JukeBox PCM checks`;
+        result.textContent = passed.join('\n');
+    } catch (error) {
+        document.title = `FAIL ${error.message}`;
+        result.textContent = [...passed, error.stack].join('\n');
+    }
+    await fetch('/?audio-check=' + encodeURIComponent(document.title));
+})();
+</script>

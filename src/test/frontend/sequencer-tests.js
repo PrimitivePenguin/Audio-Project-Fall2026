@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const { createEditorHarness } = require('./editor-test-support');
 let timers = new Map();
 let nextTimer = 0;
 class Source {
@@ -52,6 +53,9 @@ class Context {
                 this.disconnected = true;
             }
         };
+    }
+    createBiquadFilter() {
+        return Object.assign(new Source(), { frequency: this.param(), Q: this.param() });
     }
     createBufferSource() {
         const s = new Source();
@@ -231,79 +235,15 @@ async function test(name, fn) {
         assert.equal(timers.size, 0);
     });
     await test('UI MIDI upload lifecycle and piano-roll click editing', async () => {
-        class Element {
-            constructor() {
-                this.value = '';
-                this.style = {};
-                this.dataset = {};
-                this.clientWidth = 900;
-                this.clientHeight = 600;
-                this.scrollLeft = 0;
-                this.scrollTop = 0;
-                this.disabled = false;
-                this.children = [];
-                this.listeners = {};
-                this.classList = { toggle() {} };
-            }
-            getBoundingClientRect() {
-                return { left: 0, top: 0 };
-            }
-            getContext() {
-                return new Proxy({}, { get: () => () => {} });
-            }
-            replaceChildren() {
-                this.children = [];
-            }
-            append(child) {
-                this.children.push(child);
-            }
-            setAttribute() {}
-            addEventListener(name, fn) {
-                this.listeners[name] = fn;
-            }
-        }
-        const elements = {};
-        const document = {
-            getElementById: (id) => (elements[id] ||= new Element()),
-            createElement: () => new Element(),
-            addEventListener() {},
-            dispatchEvent() {}
-        };
-        const engines = [];
-        sandbox.document = document;
-        sandbox.AbortController = AbortController;
-        sandbox.getComputedStyle = () => ({ getPropertyValue: () => '#000000' });
-        sandbox.CustomEvent = class {
-            constructor(type, options) {
-                this.type = type;
-                this.detail = options.detail;
-            }
-        };
-        sandbox.requestAnimationFrame = () => {};
-        sandbox.window.addEventListener = () => {};
-        sandbox.window.location = { pathname: '/index.html' };
-        sandbox.localStorage = { getItem() { return null; } };
-        sandbox.TestEngine = class extends SequencerEngine {
-            constructor() {
-                super();
-                engines.push(this);
-            }
-        };
-        const ui = fs
-            .readFileSync(
-                path.resolve(__dirname, '../../main/resources/static/js/sequencer-ui.js'),
-                'utf8'
-            )
-            .replace('new SequencerEngine()', 'new TestEngine()');
-        vm.runInContext(ui, sandbox);
-        const engine = engines[0];
-        engine.initContext();
-        assert.equal(engines.length, 1);
+        const h = createEditorHarness();
+        await h.ready;
+        const { engine, elements } = h;
+        assert.equal(h.readyEvents.length, 1);
         elements.noteLength.value = '1';
         elements.velocity.value = '89';
-        elements.pianoCanvas.onclick({ clientX: 119, clientY: 300 });
+        h.clickAt(119, 300);
         assert.equal(engine.sequence.notes.length, 1);
-        elements.pianoCanvas.onclick({ clientX: 119, clientY: 300 }); // select
+        h.clickAt(119, 300); // select
         elements.noteLength.value = '2';
         elements.noteLength.onchange();
         assert.equal(engine.sequence.notes[0].durationSteps, 2);
@@ -317,7 +257,7 @@ async function test(name, fn) {
         });
         assert.equal(engine.sequence.notes[0].ticks, 17);
         assert.equal(engine.totalSteps, 32);
-        assert.equal(elements.pitchHigh.value, 127);
+        assert.equal(Number(elements.pitchHigh.value), 127);
         const imported = engine.sequence;
         await elements.midiFile.onchange({
             target: { files: [{ size: 0, arrayBuffer: async () => new Uint8Array() }] }
@@ -579,21 +519,22 @@ async function test(name, fn) {
         e.addTrack('kick', {});
         const original = e.tracks.get('kick');
         assert.equal(original.gainNode.gain.value, 0.8);
-        assert.equal(original.gainNode.destination, original.panNode);
-        assert.equal(original.panNode.destination, e.masterGain);
+        assert.equal(original.gainNode.destination.destination, original.strip.pan);
+        assert.equal(original.strip.pan.destination, e.masterGain);
+        assert.equal(original.strip.out, e.masterGain);
         assert.equal(e.setChannelVolume('kick', 9), true);
         assert.equal(original.gainNode.gain.value, 1.5);
         assert.equal(e.setChannelVolume('kick', -1), true);
         assert.equal(original.gainNode.gain.value, 0);
         assert.equal(e.setChannelPan('kick', -5), true);
-        assert.equal(original.panNode.pan.value, -1);
+        assert.equal(original.strip.pan.pan.value, -1);
         assert.equal(e.setChannelVolume('kick', NaN), false);
         assert.equal(e.setChannelPan('kick', Infinity), false);
         assert.equal(e.setChannelVolume('missing', 0.5), false);
         e.addTrack('kick', {});
         assert.equal(original.gainNode.disconnected, true);
-        assert.equal(original.panNode.disconnected, true);
-        assert.deepEqual(plain(e.getChannelMix('kick')), { volume: 0, pan: -1 });
+        assert.equal(original.strip.pan.disconnected, true);
+        assert.deepEqual(plain(e.getChannelMix('kick')), { filterType: "lowpass", volume: 0, pan: -1, cutoff: 20000, resonance: 0, delaySend: 0, delayBeats: 0.75, delayFeedback: 0.4, reverbSend: 0 });
     });
 
     await test('MIDI voices use the same gain, pan, and mute chain as audio lanes', async () => {
@@ -610,21 +551,21 @@ async function test(name, fn) {
         e.setLaneMuted(midiId, true);
         await e.play();
         const mute = e.laneGains.get(midiId);
-        assert.equal(output.destination.destination, mute);
+        assert.equal(output.destination.destination.destination, mute);
         assert.equal(mute.destination, e.masterGain);
         assert.equal(mute.gain.value, 0);
-        assert.equal(output.destination.pan.value, 0.25);
+        assert.equal(output.destination.destination.pan.value, 0.25);
         e.setChannelVolume(midiId, 0.6);
         assert.equal(output.gain.value, 0.6);
         assert.equal(mute.gain.value, 0);
         e.setLaneMuted(midiId, false);
         assert.equal(mute.gain.value, 1);
-        assert.deepEqual(plain(e.getChannelMix(midiId)), { volume: 0.6, pan: 0.25 });
+        assert.deepEqual(plain(e.getChannelMix(midiId)), { filterType: "lowpass", volume: 0.6, pan: 0.25, cutoff: 20000, resonance: 0, delaySend: 0, delayBeats: 0.75, delayFeedback: 0.4, reverbSend: 0 });
         e.stop();
         e.newSequence();
         assert.equal(e.laneGains.size, 0);
         assert.equal(output.disconnected, true);
-        assert.deepEqual(plain(e.getChannelMix(midiId)), { volume: 1, pan: 0 });
+        assert.deepEqual(plain(e.getChannelMix(midiId)), { filterType: "lowpass", volume: 1, pan: 0, cutoff: 20000, resonance: 0, delaySend: 0, delayBeats: 0.75, delayFeedback: 0.4, reverbSend: 0 });
     });
 
     console.log(`${passed} tests passed`);

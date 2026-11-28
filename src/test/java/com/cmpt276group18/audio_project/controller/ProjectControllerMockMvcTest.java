@@ -22,6 +22,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.cmpt276group18.audio_project.service.ProjectService;
 import com.cmpt276group18.audio_project.service.R2StorageService;
+import com.cmpt276group18.audio_project.collaboration.ProjectSyncController;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectAccessException;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectVersionConflictException;
 
@@ -34,12 +35,14 @@ class ProjectControllerMockMvcTest {
     
     @Mock 
     private R2StorageService r2StorageService;
+    @Mock
+    private ProjectSyncController sync;
 
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService, r2StorageService)).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService, r2StorageService, sync)).build();
     }
 
     @Test
@@ -110,6 +113,7 @@ class ProjectControllerMockMvcTest {
                         .content(request))
                 .andExpect(status().isOk());
         verify(projectService).update(PROJECT_ID, 42, "Instrument project", projectData, 7L);
+        verify(sync).broadcastRestSave(null, 42, null);
     }
 
 }

@@ -57,6 +57,10 @@ class ArrangementEditor {
         el('sampleRack').addEventListener('click', (event) => {
             if (!event.target?.closest?.('.sample-asset')) this.selectRackAsset(null);
         });
+        el('retrySampleTransfers').onclick = () => {
+            this.restoreAssets(true);
+            this.ensureAssetsUploaded(true);
+        };
         el('rackFiles').onchange = (event) => {
             const files = Array.from(event.target.files ?? []);
             event.target.value = '';
@@ -136,6 +140,7 @@ class ArrangementEditor {
         el('addAudioTrack').disabled = !editable;
         el('clipRazor').disabled = !editable;
         el('rackFiles').disabled = !editable;
+        el('retrySampleTransfers').disabled = !this.model.assets.size;
         el('audioTrackName').disabled = el('renameAudioTrack').disabled = !editable || !track;
         el('deleteAudioClip').disabled = el('duplicateAudioClip').disabled = !editable || !clip;
         el('audioClipInfo').textContent = this.selected.size > 1 ? `${this.selected.size} clips selected` : clip
@@ -210,10 +215,11 @@ class ArrangementEditor {
             label.className = 'sample-asset-label';
             row.onclick = () => this.selectRackAsset(asset.id);
             this.rackButtons.set(asset.id, { row, label });
-            // 1. Inside refreshRack(), replace the `const status = ...` line with:
+            const projectId = this.hooks.projectId?.();
+            const cloud = projectId ? this.cloudReady(asset, projectId) : asset.url && !asset.cloudFailed;
             const status = asset.loading ? 'Loading' : asset.buffer
-                ? (asset.url && asset.local ? 'Ready · cloud & browser'
-                    : asset.url ? 'Ready · cloud'
+                ? (cloud && asset.local ? 'Ready · cloud & browser'
+                    : cloud ? 'Ready · cloud'
                     : asset.local ? 'Ready · stored in this browser'
                     : 'Ready · session only')
                 : 'Missing audio · relink original file';
@@ -236,6 +242,7 @@ class ArrangementEditor {
                 row.addEventListener('dragstart', (event) => { if (event.target === row) startDrag(event); });
                 row.addEventListener('dragend', () => { this.dragAsset = null; this.cancelDrop(); });
             } else if (!asset.loading) {
+                if (asset.url) row.append(this.button('Retry download', () => this.restoreAssets(true)));
                 row.append(this.button('Relink', () => {
                     this.relinkId = asset.id;
                     this.el('relinkAudioFile').click();
@@ -256,7 +263,6 @@ class ArrangementEditor {
         return button;
     }
 
-    // 2. Replace importFiles(files, relinkId = null) and add the three upload helpers below it:
     importFiles(files, relinkId = null) {
         const model = this.model;
         this.assetJobs = this.assetJobs.then(async () => {
@@ -272,7 +278,7 @@ class ArrangementEditor {
                     const id = await SampleAssetStore.identify(bytes);
                     if (relinkId && relinkId !== id) throw new Error('Choose the exact original audio file.');
                     const existing = model.assets.get(id);
-                    if (existing?.buffer && existing?.url) continue;
+                    if (existing?.buffer && !relinkId) continue;
                     if (!existing && model.assets.size >= AudioArrangement.limits.assets) throw new Error('The rack is full (64 samples).');
                     this.el('rackStatus').textContent = `Decoding ${file.name}…`;
                     const buffer = existing?.buffer ?? await this.decode(bytes, model);
@@ -280,19 +286,20 @@ class ArrangementEditor {
                     const asset = existing ?? { id, name: file.name.slice(0, 255), duration: buffer.duration };
                     asset.buffer = buffer;
                     asset.fetchFailed = false;
+                    asset.bytes = bytes;
                     model.assets.set(id, asset);
                     added.push(asset);
-                    try { await this.store.write(id, bytes); asset.local = true; } catch { asset.local = false; }
-                    try {
-                        this.el('rackStatus').textContent = `Uploading ${file.name} to cloud…`;
-                        await this.uploadAssetToCloud(asset, bytes, this.inferContentType(file));
-                    } catch (uploadError) {
-                        failures.push(`${file.name} (cloud sync): ${uploadError.message}`);
-                    }
-                    if (this.model !== model) return;
                     this.preview(asset, model);
                     this.refreshRack();
+                    try {
+                        await this.withDeadline(() => this.store.write(id, bytes));
+                        asset.local = true;
+                    } catch { asset.local = false; }
+                    if (asset.local) delete asset.bytes;
+                    if (this.model !== model) return;
+                    this.refreshRack();
                     this.hooks.onMutate?.('AUDIO_SYNC', id);
+                    this.ensureAssetsUploaded();
                 } catch (error) {
                     failures.push(`${file.name}: ${error.message}`);
                 }
@@ -311,67 +318,105 @@ class ArrangementEditor {
         return map[ext] || 'audio/wav';
     }
 
-    async uploadAssetToCloud(asset, bytes, contentType = 'audio/wav') {
-        const projectId = this.hooks.projectId?.();
-        if (!projectId || asset.url) return;
-        const presignRes = await fetch(`/api/projects/${projectId}/samples/presign`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                sha256: asset.id,
-                fileName: asset.name,
-                contentType
-            })
+    static transferTimeout = 12000;
+
+    async withDeadline(operation) {
+        const controller = new AbortController();
+        let timer;
+        const deadline = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                reject(new Error('Sample transfer timed out.'));
+                controller.abort();
+            }, ArrangementEditor.transferTimeout);
         });
-        const presign = await presignRes.json().catch(() => null);
-        if (!presignRes.ok) {
-            throw new Error(presign?.error || `Presign failed (${presignRes.status})`);
+        try {
+            return await Promise.race([operation(controller.signal), deadline]);
+        } finally {
+            clearTimeout(timer);
         }
-        const uploadRes = await fetch(presign.uploadUrl, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': contentType,
-                'Cache-Control': 'public, max-age=31536000, immutable'
-            },
-            body: bytes
+    }
+
+    cloudReady(asset, projectId) {
+        if (!projectId || asset.cloudFailed || !asset.url) return false;
+        try {
+            return new URL(asset.url).pathname.includes(`/projects/${projectId}/${asset.id}.`);
+        } catch {
+            return false;
+        }
+    }
+
+    async uploadAssetToCloud(model, projectId, asset, bytes, contentType) {
+        const current = () => this.model === model && this.hooks.projectId?.() === projectId &&
+            model.assets.get(asset.id) === asset;
+        const url = await this.withDeadline(async (signal) => {
+            const response = await fetch(`/api/projects/${projectId}/samples/presign`, {
+                method: 'POST', credentials: 'same-origin', signal,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sha256: asset.id, fileName: asset.name, contentType })
+            });
+            if (!response.ok) throw new Error(`Presign failed (${response.status})`);
+            const presign = await response.json();
+            if (signal.aborted || !current()) return null;
+            const upload = await fetch(presign.uploadUrl, {
+                method: 'PUT', signal, body: bytes,
+                headers: { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' }
+            });
+            if (!upload.ok) throw new Error(`Cloud upload failed (${upload.status})`);
+            return presign.publicUrl;
         });
-        if (!uploadRes.ok) {
-            throw new Error(`Cloud upload failed (${uploadRes.status})`);
-        }
-        asset.url = presign.publicUrl;
+        if (!url || !current()) return;
+        asset.url = url;
+        asset.cloudFailed = false;
+        if (asset.local) delete asset.bytes;
         this.hooks.onAssetUploaded?.(asset);
     }
 
-    async ensureAssetsUploaded() {
-        await this.assetJobs;
+    ensureAssetsUploaded(verify = false) {
+        const model = this.model;
         const projectId = this.hooks.projectId?.();
-        const unsynced = [];
-        let uploadedAny = false;
-
-        for (const asset of this.model.assets.values()) {
-            if (asset.url) continue;
-            if (!projectId) {
-                unsynced.push(asset.name);
-                continue;
-            }
+        if (!projectId || this.hooks.readOnly?.()) return;
+        if (this.transfer?.model === model && this.transfer.projectId === projectId) return this.transfer.job;
+        const transfer = { model, projectId };
+        this.transfer = transfer;
+        // Serialize retries to limit simultaneous signed requests and browser memory.
+        transfer.job = (async () => {
             try {
-                const bytes = await this.store.read(asset.id).catch(() => null);
-                if (!bytes) {
-                    unsynced.push(asset.name);
-                    continue;
+                for (const asset of model.assets.values()) {
+                    if (this.model !== model || this.hooks.projectId?.() !== projectId) return;
+                    if (this.cloudReady(asset, projectId)) {
+                        if (!verify) continue;
+                        try {
+                            await this.downloadAsset(asset);
+                            continue;
+                        } catch {
+                            if (this.model === model) asset.cloudFailed = true;
+                        }
+                    }
+                    try {
+                        const bytes = asset.bytes ?? await this.withDeadline(() => this.store.read(asset.id));
+                        if (bytes) await this.uploadAssetToCloud(model, projectId, asset, bytes, this.inferContentType(asset));
+                    } catch {
+                        if (this.model === model) asset.cloudFailed = true;
+                    }
                 }
-                await this.uploadAssetToCloud(asset, bytes, this.inferContentType(asset));
-                uploadedAny = true;
-            } catch {
-                unsynced.push(asset.name);
+            } finally {
+                if (this.transfer === transfer) this.transfer = null;
+                if (this.model === model) this.refreshRack();
             }
-        }
+        })();
+        return transfer.job;
+    }
 
-        if (uploadedAny) {
-            this.refreshRack();
+    sampleSaveSummary() {
+        const counts = { cloud: 0, browser: 0, memory: 0, missing: 0 };
+        for (const asset of this.model.assets.values()) {
+            if (this.cloudReady(asset, this.hooks.projectId?.())) counts.cloud++;
+            else if (asset.local) counts.browser++;
+            else if (asset.buffer) counts.memory++;
+            else counts.missing++;
         }
-        return unsynced;
+        if (!this.model.assets.size) return '';
+        return ` Audio: ${counts.cloud} cloud, ${counts.browser} browser only, ${counts.memory} memory only, ${counts.missing} unavailable.`;
     }
 
     async decode(bytes, model) {
@@ -392,11 +437,22 @@ class ArrangementEditor {
             () => this.model === model && model.assets.get(asset.id) === asset);
     }
 
-    // 3. Replace restoreAssets() with:
-    restoreAssets() {
+    async downloadAsset(asset) {
+        const bytes = await this.withDeadline(async (signal) => {
+            const response = await fetch(asset.url, { signal });
+            if (!response.ok) throw new Error(`Download failed (${response.status})`);
+            const bytes = await response.arrayBuffer();
+            if (bytes.byteLength > AudioArrangement.limits.bytes) throw new Error('Cloud sample is too large.');
+            return bytes;
+        });
+        if (await SampleAssetStore.identify(bytes) !== asset.id) throw new Error('Downloaded sample hash did not match project metadata.');
+        return bytes;
+    }
+
+    restoreAssets(retry = false) {
         const model = this.model;
         const assets = [...model.assets.values()].filter(
-            (asset) => !asset.buffer && !asset.loading && !asset.fetchFailed
+            (asset) => !asset.buffer && !asset.loading && (retry || !asset.fetchFailed)
         );
         if (!assets.length) return this.assetJobs;
         for (const asset of assets) asset.loading = true;
@@ -405,16 +461,13 @@ class ArrangementEditor {
             for (const asset of assets) {
                 if (this.model !== model) return;
                 try {
-                    let bytes = await this.store.read(asset.id);
+                    let bytes = await this.withDeadline(() => this.store.read(asset.id)).catch(() => null);
                     if (!bytes && asset.url) {
-                        const response = await fetch(asset.url);
-                        if (!response.ok) throw new Error(`Download failed (${response.status})`);
-                        const downloaded = await response.arrayBuffer();
-                        if (await SampleAssetStore.identify(downloaded) !== asset.id) {
-                            throw new Error('Downloaded sample hash did not match project metadata.');
-                        }
+                        const downloaded = await this.downloadAsset(asset);
                         bytes = downloaded;
-                        try { await this.store.write(asset.id, bytes); asset.local = true; } catch { asset.local = false; }
+                        try { await this.withDeadline(() => this.store.write(asset.id, bytes)); asset.local = true; }
+                        catch { asset.local = false; asset.bytes = bytes; }
+                        asset.cloudFailed = false;
                     } else if (bytes) {
                         asset.local = true;
                     }
@@ -422,10 +475,12 @@ class ArrangementEditor {
                         const buffer = await this.decode(bytes, model);
                         if (this.model !== model) return;
                         asset.buffer = buffer;
+                        asset.fetchFailed = false;
                         this.preview(asset, model);
                     }
                 } catch {
                     asset.fetchFailed = true;
+                    if (asset.url) asset.cloudFailed = true;
                 }
                 asset.loading = false;
                 if (this.model === model) { this.refreshRack(); this.hooks.redraw(); }

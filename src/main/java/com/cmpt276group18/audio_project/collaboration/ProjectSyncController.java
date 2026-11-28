@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageExceptionHandler;
 import org.springframework.messaging.handler.annotation.MessageMapping;
@@ -89,22 +90,8 @@ public class ProjectSyncController {
                     request.snapshot(),
                     request.baseRevision());
 
-            ProjectSyncEvent broadcast = new ProjectSyncEvent(
-                    updated.getId(),
-                    userId,
-                    projectService.displayName(userId),
-                    request.clientId(),
-                    request.type(),
-                    request.targetId(),
-                    updated.getVersion(),
-                    updated.getName(),
-                    request.payload(),
-                    updated.getProjectData(),
-                    null,
-                    Instant.now().toEpochMilli());
-
-            messagingTemplate.convertAndSend("/topic/projects/" + projectId, broadcast);
-        } catch (ProjectVersionConflictException conflict) {
+            broadcast(updated, userId, request.clientId(), request.type(), request.targetId(), request.payload());
+        } catch (ProjectVersionConflictException | OptimisticLockingFailureException conflict) {
             Project current = projectService.findReadable(projectId, userId)
                     .orElseThrow(() -> new ProjectNotFoundException("Project not found"));
             sendPrivate(userPrincipal, new ProjectSyncEvent(
@@ -120,6 +107,9 @@ public class ProjectSyncController {
                     current.getProjectData(),
                     conflict.getMessage(),
                     Instant.now().toEpochMilli()));
+        } catch (ProjectAccessException | ProjectNotFoundException | IllegalArgumentException denied) {
+            sendPrivate(userPrincipal, new ProjectSyncEvent(projectId, userId, null, request.clientId(),
+                    "ERROR", request.targetId(), null, null, null, null, denied.getMessage(), Instant.now().toEpochMilli()));
         }
     }
 
@@ -130,6 +120,17 @@ public class ProjectSyncController {
         return new ProjectSyncEvent(
                 null, userId, null, null, "ERROR", null,
                 null, null, null, null, exception.getMessage(), Instant.now().toEpochMilli());
+    }
+
+    public void broadcastRestSave(Project project, Integer userId, String clientId) {
+        broadcast(project, userId, clientId, "REST_SYNC", null, null);
+    }
+
+    private void broadcast(Project project, Integer userId, String clientId, String type, String targetId, Object payload) {
+        messagingTemplate.convertAndSend("/topic/projects/" + project.getId(),
+                new ProjectSyncEvent(project.getId(), userId, projectService.displayName(userId), clientId,
+                        type, targetId, project.getVersion(), project.getName(), payload,
+                        project.getProjectData(), null, Instant.now().toEpochMilli()));
     }
 
     private void sendPrivate(String userPrincipal, ProjectSyncEvent event) {

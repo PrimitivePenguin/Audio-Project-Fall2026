@@ -36,6 +36,7 @@ import com.cmpt276group18.audio_project.service.ProjectService;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectAccessException;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectNotFoundException;
 import com.cmpt276group18.audio_project.service.R2StorageService;
+import com.cmpt276group18.audio_project.collaboration.ProjectSyncController;
 import com.cmpt276group18.audio_project.service.R2StorageService.PresignedUpload;
 
 /**
@@ -182,7 +183,7 @@ class R2SampleSharingTest {
         void setUp() {
             projectService = mock(ProjectService.class);
             r2 = mock(R2StorageService.class);
-            mvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService, r2)).build();
+            mvc = MockMvcBuilders.standaloneSetup(new ProjectController(projectService, r2, mock(ProjectSyncController.class))).build();
         }
 
         private MockHttpSession loggedIn() {

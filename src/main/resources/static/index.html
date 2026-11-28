@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/css/sequencer.css">
 </head>
 <body>
-<main class="daw-workspace">
+<main id="dawWorkspace" class="daw-workspace">
     <header class="toolbar primary-toolbar" aria-label="Transport and project controls" id="meshContainer1">
         <svg id="toolbarMeshContainer" aria-hidden="true"></svg>
         <h1 class="brand">JukeBox <span>PIANO ROLL</span></h1>
@@ -49,7 +49,7 @@
             </nav>
         </details>
     </header>
-    <section data-daw-controls class="toolbar editing-toolbar" aria-label="Piano-roll editing">
+    <section id="editingToolbar" data-daw-controls class="toolbar editing-toolbar" aria-label="Piano-roll editing">
         <div class="control-group" aria-label="Workspace mode">
             <button id="tracksView" type="button" aria-pressed="false" title="Back to Tracks">Tracks</button>
             <button id="pianoRollView" type="button" aria-pressed="true" title="Edit selected track or All Notes">Piano Roll / Edit Track</button>
@@ -141,9 +141,23 @@
             <canvas id="contourCanvas" aria-hidden="true"></canvas>
         </div>
     </div>
-        <details id="sampleRack" class="sample-dock" open hidden>
-            <summary>Sample Rack</summary>
-            <div class="sample-dock-body">
+    <details id="automationPanel" class="workspace-dock automation-panel" open>
+        <summary id="automationSummary">Automation</summary>
+        <div id="automationResize" class="dock-resize" role="separator" tabindex="0"
+             aria-label="Resize Automation" aria-orientation="horizontal" aria-controls="automationBody"></div>
+        <div id="automationBody" class="automation-body" data-daw-controls data-daw-pointer-inputs>
+            <div id="automationToolbar" class="automation-toolbar"></div>
+            <div id="automationPlot" class="automation-plot">
+                <canvas id="automationCanvas" class="automation-canvas" role="img"
+                        aria-label="Automation lane for the selected channel and parameter"></canvas>
+            </div>
+        </div>
+    </details>
+        <details id="sampleRack" class="workspace-dock sample-dock" open hidden>
+            <summary id="sampleRackSummary">Sample Rack</summary>
+            <div id="sampleRackResize" class="dock-resize" role="separator" tabindex="0"
+                 aria-label="Resize Sample Rack" aria-orientation="horizontal" aria-controls="sampleRackBody"></div>
+            <div id="sampleRackBody" class="sample-dock-body">
                 <div class="control-group wrap-controls">
                     <label>Import audio <input id="rackFiles" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" multiple></label>
                     <button id="addAudioTrack" type="button">Add Audio Track</button>
@@ -165,7 +179,7 @@
                 <p id="audioClipInfo" class="hint"></p>
             </div>
         </details>
-    <footer class="statusbar">
+    <footer id="workspaceStatus" class="statusbar">
         <button id="downloadCollabDraft" type="button" hidden>Download local draft</button>
         <button id="reviewCollabDraft" type="button" hidden>Review local draft</button>
         <button id="discardCollabDraft" type="button" hidden>Discard draft and reload</button>
@@ -228,8 +242,22 @@
 <script src="/js/DrumMachineUI.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
 <script src="/js/ProjectCollabClient.js"></script>
+<script src="/js/sequencer/state.js"></script>
+<script src="/js/sequencer/track-ui.js"></script>
+<script src="/js/sequencer/rendering.js"></script>
+<script src="/js/sequencer/selection.js"></script>
+<script src="/js/sequencer/viewport-ui.js"></script>
+<script src="/js/sequencer/history.js"></script>
+<script src="/js/sequencer/project-ui.js"></script>
+<script src="/js/sequencer/transport-ui.js"></script>
+<script src="/js/sequencer/gestures.js"></script>
+<script src="/js/sequencer/mixer-ui.js"></script>
+<script src="/js/sequencer/export-ui.js"></script>
+<script src="/js/sequencer/automation-ui.js"></script>
+<script src="/js/sequencer/keyboard.js"></script>
+<script src="/js/sequencer/dock-layout.js"></script>
 <script src="/js/sequencer-ui.js"></script>
-<!-- <script src="/js/sequencer-ui.js"></script> -->
+<script>initializeSequencer();</script>
 <script>
 
     

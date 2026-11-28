@@ -42,8 +42,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
+        // Spring defaults to same-origin requests. Forwarded headers preserve the
+        // public HTTPS origin when Render terminates TLS before the servlet.
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns("*")
                 .addInterceptors(new HttpSessionHandshakeInterceptor() {
                     @Override
                     public boolean beforeHandshake(ServerHttpRequest request,

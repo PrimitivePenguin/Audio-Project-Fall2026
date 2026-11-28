@@ -20,8 +20,10 @@ import com.cmpt276group18.audio_project.service.ProjectService.ProjectAccessExce
 
 @Component
 public class ProjectChannelInterceptor implements ChannelInterceptor {
-    private static final Pattern PROJECT_DEST_PATTERN =
-            Pattern.compile("^/(?:topic|app)/projects/([0-9a-fA-F-]{36})(?:/sync)?$");
+    private static final String PROJECT_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+    private static final Pattern PROJECT_SUBSCRIPTION = Pattern.compile("/topic/projects/" + PROJECT_ID);
+    private static final Pattern PROJECT_SEND = Pattern.compile("/app/projects/" + PROJECT_ID + "/sync");
+    private static final String PRIVATE_SUBSCRIPTION = "/user/queue/sync";
 
     private final ProjectService projectService;
 
@@ -37,7 +39,7 @@ public class ProjectChannelInterceptor implements ChannelInterceptor {
         }
 
         StompCommand command = accessor.getCommand();
-        if (command == StompCommand.CONNECT) {
+        if (command == StompCommand.CONNECT || command == StompCommand.STOMP) {
             if (resolveUserId(accessor) == null) {
                 throw new ProjectAccessException("Login required");
             }
@@ -50,16 +52,20 @@ public class ProjectChannelInterceptor implements ChannelInterceptor {
                 throw new ProjectAccessException("Login required");
             }
             String destination = accessor.getDestination();
-            if (destination != null) {
-                Matcher matcher = PROJECT_DEST_PATTERN.matcher(destination);
-                if (matcher.matches()) {
-                    UUID projectId = UUID.fromString(matcher.group(1));
-                    // Throws ProjectAccessException if user is not OWNER, EDITOR, or VIEWER
-                    projectService.roleForUser(projectId, userId);
-                } else if (destination.startsWith("/topic/projects/") || destination.startsWith("/app/projects/")) {
-                    throw new ProjectAccessException("Invalid project destination");
-                }
+            if (command == StompCommand.SUBSCRIBE && PRIVATE_SUBSCRIPTION.equals(destination)) {
+                return message;
             }
+            Pattern allowed = command == StompCommand.SUBSCRIBE ? PROJECT_SUBSCRIPTION : PROJECT_SEND;
+            if (destination == null) {
+                throw new ProjectAccessException("STOMP destination is required");
+            }
+            Matcher matcher = allowed.matcher(destination);
+            if (!matcher.matches()) {
+                throw new ProjectAccessException("STOMP destination is not allowed");
+            }
+            // The sync endpoint also serves REQUEST_STATE. The controller and service
+            // enforce read or edit permission according to the request type.
+            projectService.roleForUser(UUID.fromString(matcher.group(1)), userId);
         }
         return message;
     }

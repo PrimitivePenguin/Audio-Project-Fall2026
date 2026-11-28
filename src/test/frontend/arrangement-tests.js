@@ -222,7 +222,7 @@ const tests = [
     }],
     ['rack is docked and MIDI and blank drops add audio lanes without consuming assets', async () => {
         const html = fs.readFileSync(path.join(__dirname, '../../main/resources/static/index.html'), 'utf8');
-        assert.match(html, /<details id="sampleRack" class="sample-dock" open hidden>/);
+        assert.match(html, /<details id="sampleRack" class="workspace-dock sample-dock" open hidden>/);
         assert.ok(html.indexOf('id="sampleRack"') > html.indexOf('id="pianoViewport"'));
         const h = createEditorHarness();
         note(h);

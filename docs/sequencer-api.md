@@ -2,7 +2,7 @@
 
 The browser editor uses plain JavaScript, one Web Audio lookahead scheduler, a temporary sine voice, and locally bundled `@tonejs/midi` **2.0.28**. Spring Boot serves the existing `static/index.html`. No frontend framework, CDN, database changes or second transport are involved.
 
-Load classic scripts in this order: `vendor/tonejs-midi-2.0.28.js`, `NoteSequence.js`, `AudioArrangement.js`, `SampleAssetStore.js`, `SequencerEngine.js`, `midi-io.js`, `PianoRollEditor.js`, `TrackOverview.js`, `ArrangementEditor.js`, `sequencer-ui.js`. Vendor source, version, checksum and licenses are under `static/js/vendor/`.
+Use the ordered classic-script tags in `static/index.html` as the loader. They load the engine, editor and instrument dependencies before the feature factories in `js/sequencer/` and the `sequencer-ui.js` coordinator. The page then calls `initializeSequencer()`. Vendor source, version, checksum and licenses are under `static/js/vendor/`.
 
 ## Musical data (version 2)
 
@@ -223,6 +223,12 @@ Note-body movement and multi-selection are described below. There is no drag aut
 ### Audio arrangement
 
 Each lane has a speaker button with an accessible pressed state. MIDI instruments and audio clip sources share the master output through independent lane gain nodes. Mute ramps that lane to zero over 8 ms, including sounding and queued sources. Unmute restores the lane without restarting the transport. Project metadata stores the muted lane IDs. Rack cards and their clips use the same deterministic asset color from the existing palette.
+
+Automation and Sample Rack use separate disclosure headers. Open or close each with
+its header or with Enter when focused. Drag the top handle upward for more room
+or downward for less. With a handle focused, use Up/Down to resize or Home/End to
+reach the current limits. The editor remembers expanded heights and disclosure
+preferences in this browser. These settings stay outside project snapshots.
 
 Open **Tracks** and use the bottom **Sample Rack** dock. Import one or more files and drag an asset block into the timeline. A drop on a MIDI lane creates an audio lane immediately below it, and a drop below the lanes appends an audio lane. Select a clip to inspect its source offset and duration. Drag the body to move it between times or audio lanes. Drag either edge to trim it. Duplicate places a new clip immediately after the original at the next representable tick. Shift-click selects multiple clips. Copy, Cut, Paste, Duplicate, Delete, Undo and Redo work from the arrangement. Paste anchors the earliest clip at the cursor and retains each clip’s lane and relative timing. Cut Mode splits a clip after a downward pointer stroke. The split retains the complete trimmed source range and is one Undo action. Clips may overlap and use a shared decoded asset. Use the Clip selector to reach a clip covered by another clip. The lane grips reorder both types of lanes. Double-click a MIDI lane to open its piano roll.
 

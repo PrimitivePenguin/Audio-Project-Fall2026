@@ -60,7 +60,11 @@ body { margin: 0; overflow: hidden; }
     height: 100vh;
     height: 100dvh;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(var(--piano-min-height, 112px), 1fr) auto auto auto;
+    /* Keep wrapped chrome reachable when the viewport cannot fit the minimums. */
+    overflow-y: auto;
+    scrollbar-gutter: stable;
     min-width: 0;
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
@@ -252,8 +256,8 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 
 
 .statusbar { grid-area: 6 / 1; }
-.sample-dock { grid-area: 5 / 1; min-width: 0; border-top: 1px solid var(--steel-400); background: var(--steel-100); }.sample-dock summary { border: 0; border-radius: 0; font-weight: 600; }
-.sample-dock-body { padding: 0 12px 8px; max-height: min(32vh, 260px); overflow: auto; }
+.sample-dock { grid-area: 5 / 1; min-width: 0; border-top: 1px solid var(--steel-400); background: var(--steel-100); }
+.sample-dock-body { padding: 0 12px 8px; height: 172px; overflow: auto; }
 .rack-assets { display: flex; gap: 8px; overflow-x: auto; list-style: none; padding: 3px 0 8px; margin: 0; }
 .rack-assets li { flex: 0 0 220px; display: flex; flex-wrap: wrap; gap: 5px; align-content: start;
     padding: 7px; border: 1px solid var(--steel-400); border-radius: 5px; background: var(--steel-50); }
@@ -294,3 +298,26 @@ button.export-audio-primary:hover { background: var(--steel-700); }
 
 .drum-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .drum-pattern-preview { font-weight: 600; }
+
+.workspace-dock { position: relative; min-width: 0; }
+.workspace-dock > summary { padding: 5px 12px; font-weight: 600; cursor: pointer; }
+.dock-resize {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(112px, 32%);
+    height: 12px;
+    display: grid;
+    place-items: center;
+    cursor: ns-resize;
+    touch-action: none;
+}
+.dock-resize::after { content: ""; width: 40px; height: 3px; border-radius: 2px; background: var(--steel-400); }
+.dock-resize:hover::after, .dock-resize:focus-visible::after { background: var(--accent-steel); }
+.workspace-dock:not([open]) > :not(summary) { display: none; }
+.automation-body { height: 180px; display: flex; flex-direction: column; overflow: auto; overflow-x: hidden; }
+.automation-toolbar { flex: none; }
+.automation-plot { position: relative; flex: 1 0 64px; min-width: 0; }
+.automation-canvas { position: absolute; inset: 0 auto auto 0; touch-action: none; }

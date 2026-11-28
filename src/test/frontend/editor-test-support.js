@@ -17,6 +17,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     let arrangement;
     let activeElement = null;
     let animationCallback = null;
+    let resizeCallback;
     let animationRequests = 0;
     let modalOpen = false;
     const resizeObservers = [];
@@ -45,7 +46,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             if (tagName) this.tagName = tagName.toUpperCase();
             nodes.push(this);
             this.value = '';
-            this.style = {};
+            this.style = { setProperty(name, value) { this[name] = value; } };
             this.children = [];
             this.listeners = {};
             this.listenerCounts = {};
@@ -258,7 +259,13 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             StompJs: options.StompJs,
             devicePixelRatio: pixelRatio,
             addEventListener(name, callback) {
-                windowListeners[name] = name === 'resize' ? () => { callback(); animationCallback?.(); } : callback;
+                const previous = windowListeners[name];
+                const handler = (...args) => { previous?.(...args); callback(...args); };
+                windowListeners[name] = handler;
+                if (name === 'resize' && !previous) resizeCallback = () => {
+                    windowListeners.resize();
+                    animationCallback?.();
+                };
             },
             confirm() {
                 confirmCount++;
@@ -336,11 +343,14 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     if (options.registrationScript) {
         vm.runInContext(options.registrationScript, scope);
     }
-    const source = fs
-        .readFileSync(path.join(directory, 'sequencer-ui.js'), 'utf8')
-        .replace('new SequencerEngine()', 'new CapturedEngine()')
-        .replace('new ArrangementEditor(engine,', 'new CapturedArrangement(engine,');
-    const initialization = vm.runInContext(source, scope);
+    const page = fs.readFileSync(path.join(directory, '../index.html'), 'utf8');
+    for (const [, script] of page.matchAll(/<script src="\/js\/(sequencer\/[^"]+\.js|sequencer-ui\.js)"><\/script>/g)) {
+        vm.runInContext(fs.readFileSync(path.join(directory, script), 'utf8'), scope, { filename: script });
+    }
+    const initialization = vm.runInContext(`initializeSequencer({
+        engine: new CapturedEngine(),
+        createArrangement: (engine, hooks) => new CapturedArrangement(engine, hooks)
+    })`, scope);
 
     const pointer = (x, y, options = {}) => ({
         clientX: x + 20,
@@ -362,7 +372,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         canvasCalls,
         rollColor: (name) => cssValues.get('--roll-' + name)?.trim(),
         intervals,
-        windowListeners,
+        windowListeners: new Proxy(windowListeners, {
+            get(target, key) { return key === 'resize' ? resizeCallback : target[key]; }
+        }),
         documentListeners,
         pointer,
         animate(timestamp) {

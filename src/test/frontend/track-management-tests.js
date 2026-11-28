@@ -90,15 +90,15 @@ for (const cancel of ['escape', 'pointer']) {
     });
 }
 
-test('same-position drops do not create history and accessible buttons reorder with one Undo', () => {
+test('same-position drops do not create history after a grip reorder', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.moveTrackUp.onclick();
+    drag(h, 1, 0);
     drag(h, 0, 0);
     undo(h);
     assert.deepEqual(ids(h), ['piano', 'bass', 'strings', 'empty']);
     redo(h);
-    h.elements.moveTrackDown.onclick();
+    drag(h, 0, 2);
     assert.deepEqual(ids(h), ['piano', 'bass', 'strings', 'empty']);
 });
 
@@ -117,10 +117,15 @@ test('long-list drag edge scrolling uses the existing animation and cancels clea
     assert.equal(h.elements.pianoViewport.scrollTop, top);
 });
 
+function requestDeletion(h) {
+    const { name } = h.engine.sequence.tracks.find((track) => track.id === h.elements.activeTrack.value);
+    h.elements.laneControls.children.find((button) => button.getAttribute('aria-label') === `Delete track ${name}`).onclick();
+}
+
 test('empty deletion is immediate, active selection falls back and last track is protected', () => {
     const h = setup();
     select(h, 'empty');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     assert.ok(!ids(h).includes('empty'));
     assert.equal(Boolean(h.elements.deleteTrackDialog.open), false);
     assert.notEqual(h.elements.activeTrack.value, 'empty');
@@ -136,12 +141,12 @@ test('nonempty deletion requires confirmation; Cancel/Escape have no data or his
     const h = setup();
     select(h, 'bass');
     const before = json(h);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     assert.equal(h.elements.deleteTrackDialog.open, true);
-    assert.match(h.elements.deleteTrackMessage.textContent, /Bass.*1 MIDI notes/);
+    assert.match(h.elements.deleteTrackMessage.textContent, /Bass.*1 MIDI note/);
     h.elements.cancelDeleteTrack.onclick();
     assert.equal(json(h), before);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     key(h, 'Escape');
     assert.equal(h.elements.deleteTrackDialog.open, false);
     undo(h);
@@ -152,7 +157,7 @@ test('confirmed imported-track deletion and Undo/Redo preserve exact order, note
     const h = setup();
     select(h, 'bass');
     const before = json(h);
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.elements.confirmDeleteTrack.onclick();
     assert.deepEqual(ids(h), ['piano', 'strings', 'empty']);
     assert.deepEqual(Array.from(h.engine.sequence.notes, (note) => note.id), ['p', 's']);
@@ -168,13 +173,13 @@ test('confirmed imported-track deletion and Undo/Redo preserve exact order, note
 test('confirmation identifies stable IDs after reordering and rejects stale changed tracks', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.reorderMidiTrack('bass', 3);
     h.elements.confirmDeleteTrack.onclick();
     assert.ok(!ids(h).includes('bass'));
     undo(h);
     select(h, 'bass');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.renameMidiTrack('bass', 'Changed');
     h.elements.confirmDeleteTrack.onclick();
     assert.ok(ids(h).includes('bass'));
@@ -221,7 +226,7 @@ test('deletion and restore require Stop in playing, paused and preparing states;
 test('blocked structural Undo retains its transaction until Stop, then restores and supports note history', () => {
     const h = setup();
     select(h, 'empty');
-    h.elements.deleteMidiTrack.onclick();
+    requestDeletion(h);
     h.engine.isPaused = true;
     undo(h);
     assert.ok(!ids(h).includes('empty'));
@@ -287,8 +292,9 @@ test('note edits and structural transactions share ordered Undo/Redo without inv
     key(h, 'a', { ctrlKey: true });
     h.elements.noteLength.value = '4';
     h.elements.noteLength.onchange();
-    h.elements.moveTrackUp.onclick();
-    h.elements.deleteMidiTrack.onclick();
+    h.elements.tracksView.onclick();
+    drag(h, 1, 0);
+    requestDeletion(h);
     h.elements.confirmDeleteTrack.onclick();
     undo(h);
     assert.equal(h.engine.sequence.notes.find((note) => note.id === 'b').durationTicks, 480);
@@ -305,11 +311,11 @@ test('note edits and structural transactions share ordered Undo/Redo without inv
 test('out-of-history added tracks survive order Undo and new order clears Redo', () => {
     const h = setup();
     select(h, 'bass');
-    h.elements.moveTrackUp.onclick();
+    drag(h, 1, 0);
     const added = h.engine.addMidiTrack('Later');
     undo(h);
     assert.equal(ids(h).at(-1), added.id);
-    h.elements.moveTrackDown.onclick();
+    drag(h, 1, 3);
     const current = ids(h);
     redo(h);
     assert.deepEqual(ids(h), current);
@@ -330,23 +336,11 @@ test('drag cannot open a piano roll or rename/add tracks and outside drops are c
     assert.equal(h.readyEvents[0].detail.editor.getState().mode, 'tracks');
 });
 
-test('existing DashboardManager storage round-trips reordered/deleted canonical tracks and exact notes', () => {
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const vm = require('node:vm');
-    const stored = new Map();
-    const scope = vm.createContext({ localStorage: {
-        getItem(name) { return stored.get(name) ?? null; },
-        setItem(name, value) { stored.set(name, value); }
-    } });
-    vm.runInContext(fs.readFileSync(path.join(__dirname,
-        '../../main/resources/static/js/DashboardManager.js'), 'utf8'), scope);
-    const manager = vm.runInContext('new DashboardManager()', scope);
+test('database project JSON round-trips reordered/deleted canonical tracks and exact notes', () => {
     const h = setup();
     h.engine.reorderMidiTrack('strings', 0);
     h.engine.deleteMidiTrack('bass');
-    const id = manager.saveProject('Track changes', h.engine.sequence.toJSON());
-    const data = manager.getProjects()[id].data;
+    const data = JSON.parse(json(h));
     const loaded = new h.NoteSequence(data.stepCount, data.ppq);
     loaded.name = data.name;
     loaded.tracks = data.tracks;

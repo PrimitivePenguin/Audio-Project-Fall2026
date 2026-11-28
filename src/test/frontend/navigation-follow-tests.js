@@ -33,7 +33,7 @@ async function playing(h, steps = 128, startStep = 0) {
 }
 function playheadX(h) {
     h.paint();
-    const line = h.canvasCalls.find((call) => call.method === 'fillRect' && call.fillStyle === '#df9410');
+    const line = h.canvasCalls.find((call) => call.method === 'fillRect' && call.fillStyle === h.rollColor('playback'));
     return line?.args[0];
 }
 function sample(overrides = {}) {
@@ -141,7 +141,7 @@ function sample(overrides = {}) {
         assert.equal(key(h, 'ArrowRight'), true);
         assert.match(h.elements.noteInfo.textContent, new RegExp(b.id));
         assert.equal(h.elements.selectionCount.textContent, '1 selected');
-        assert.equal(Number(h.elements.noteLength.value), b.durationSteps);
+        assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), b.durationTicks);
         assert.equal(key(h, 'ArrowRight'), false);
         assert.equal(key(h, 'ArrowLeft'), true);
         assert.match(h.elements.noteInfo.textContent, new RegExp(a.id));

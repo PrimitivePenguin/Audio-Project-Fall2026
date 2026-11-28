@@ -60,7 +60,7 @@ body { margin: 0; overflow: hidden; }
     height: 100vh;
     height: 100dvh;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
     min-width: 0;
 }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 12px; }
@@ -77,6 +77,8 @@ input, button, select, summary, .button-link { font: inherit; }
 input { border: 1px solid var(--steel-400); border-radius: 4px; padding: 5px; background: var(--field); color: var(--steel-950); }
 input[type=number] { width: 63px; }
 #noteLength { width: 68px; }
+#zoom { width: 88px; padding: 0; accent-color: var(--accent-steel); }
+#zoomPercentage { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 button, summary, .button-link {
     border: 1px solid var(--steel-400);
     border-radius: 4px;
@@ -96,8 +98,11 @@ button:disabled { opacity: .45; cursor: default; }
 #selectionCount { color: var(--warm-dark); font-weight: 600; white-space: nowrap; }
 #cursorPosition { color: var(--accent-steel); font-size: 12px; margin-left: auto; }
 .piano-viewport { position: relative; isolation: isolate; /* keeps the contour overlay's z-index inside, so popups stay on top */ min-width: 0; min-height: 0; overflow: auto; background: var(--steel-50); overscroll-behavior: contain; }
+/* The spacer supplies the scroll extents while the viewport surfaces stay pinned. */
+.piano-content { display: grid; width: max-content; min-width: 100%; min-height: 100%; }
+.piano-content > * { grid-area: 1 / 1; place-self: start; }
 #pianoSpacer { pointer-events: none; }
-#pianoCanvas { position: absolute; display: block; touch-action: none; user-select: none; }
+#pianoCanvas { position: sticky; top: 0; left: 0; display: block; touch-action: none; user-select: none; }
 .statusbar { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; padding: 6px 12px; background: var(--steel-100); border-top: 1px solid var(--border); font-size: 11px; }
 .statusbar p { margin: 0; }
 #status { flex: 1 1 280px; }
@@ -115,14 +120,7 @@ button:disabled { opacity: .45; cursor: default; }
 .popup-content h2 { margin: 14px 0 8px; font-size: 13px; }
 .popup-content h2:first-child { margin-top: 0; }
 .wrap-controls { flex-wrap: wrap; }
-.hint, #sampleStatus { color: var(--steel-600); font-size: 12px; line-height: 1.5; }
-.sample-panel { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 6px; }
-.sample-panel .transport { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.sample-panel input[type=file] { width: 210px; }
-.sample-triggers { max-height: 180px; overflow: auto; padding-left: 24px; }
-.sample-triggers li { padding: 4px; }
-.sample-triggers button { margin-left: 16px; padding: 3px 8px; }
-.sample-triggers .current { background: var(--warm-light); }
+.hint { color: var(--steel-600); font-size: 12px; line-height: 1.5; }
 dialog { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; padding: 24px; border: 1px solid var(--steel-400); border-radius: 10px; color: var(--steel-950); }
 dialog::backdrop { background: var(--backdrop); }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -154,15 +152,13 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 .ghost-control { color: var(--steel-600); }
 .ghost-control input { accent-color: var(--accent-steel); }
 
-#deleteMidiTrack { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 
 #pianoViewport { grid-area: 3 / 1; }
 
-/* lives inside #pianoViewport at the top-left of the scrolled content;
-   width/height are set from #pianoSpacer in index.html */
+/* Viewport-sized sticky surfaces share the piano canvas coordinate system. */
 #canvasMeshContainer,
-#contourCanvas {   /* canvas renderer: viewport-sized, positioned from the scroll position in index.html */
-    position: absolute;
+#contourCanvas {
+    position: sticky;
     top: 0;
     left: 0;
     z-index: 20;
@@ -178,7 +174,7 @@ dialog p { color: var(--steel-600); line-height: 1.5; }
 #canvasMeshContainer .hi   { opacity: 1; }
 
 
-/* an overlay appended into a container; #canvasMeshContainer is sized from #pianoSpacer instead */
+/* an overlay appended into a container; #canvasMeshContainer is positioned/sized by the viewport adapter */
 .contour-overlay:not(#canvasMeshContainer) { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .piano-viewport, .toolbar { position: relative; }   /* the containers */
 
@@ -223,6 +219,78 @@ rect.is-pressed, path.is-pressed { fill: var(--accent); }
 .drum-step[aria-pressed=true] { background: #e8a33d; border-color: #e8a33d; }
 .drum-step:disabled { opacity: .4; }
 .drum-volume { width: 70px; margin-left: 10px; flex-shrink: 0; }
-.drum-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
 
 .primary-toolbar { z-index: 10; }
+.mix-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin: 0.5rem 0;
+}
+.mix-row label { display: flex; align-items: center; gap: 0.4rem; }
+.mix-row output { min-width: 3.2ch; font-variant-numeric: tabular-nums; }
+
+.drum-pan { width: 5rem; }
+.mix-title { min-width: 6rem; font-weight: 600; }
+.mix-row input[type="range"] { width: 6rem; }
+#trackMixer { max-height: 16rem; overflow-y: auto; }
+.mix-row select { max-width: 6.5rem; }
+.mix-row { row-gap: 0.25rem; }
+.automation-panel { grid-area: 4 / 1; min-width: 0; background: var(--steel-100); border-top: 1px solid var(--steel-400); }
+.automation-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 4px 12px;
+}
+.automation-toolbar label { display: flex; align-items: center; gap: 0.4rem; }
+.automation-toolbar button[aria-pressed="true"] { font-weight: 600; }
+.automation-hint { font-size: 0.85em; opacity: 0.7; }
+.automation-canvas { display: block; }
+
+
+.statusbar { grid-area: 6 / 1; }
+.sample-dock { grid-area: 5 / 1; min-width: 0; border-top: 1px solid var(--steel-400); background: var(--steel-100); }.sample-dock summary { border: 0; border-radius: 0; font-weight: 600; }
+.sample-dock-body { padding: 0 12px 8px; max-height: min(32vh, 260px); overflow: auto; }
+.rack-assets { display: flex; gap: 8px; overflow-x: auto; list-style: none; padding: 3px 0 8px; margin: 0; }
+.rack-assets li { flex: 0 0 220px; display: flex; flex-wrap: wrap; gap: 5px; align-content: start;
+    padding: 7px; border: 1px solid var(--steel-400); border-radius: 5px; background: var(--steel-50); }
+.rack-assets .sample-asset-label {
+    flex-basis: 100%; padding: 0; border: 0; background: transparent; color: inherit;
+    text-align: left; white-space: normal; overflow-wrap: anywhere; font-weight: 600;
+}
+.rack-assets .sample-asset-label[draggable="true"] { cursor: grab; }
+.rack-assets .sample-asset.is-selected { outline: 2px solid var(--accent-steel); outline-offset: -2px; box-shadow: inset 0 0 0 4px var(--steel-50); }
+.rack-assets button { padding: 3px 5px; }
+#sampleRack .control-group { margin-top: 5px; }
+#rackStatus, #audioClipInfo { margin: 5px 0; }
+#sampleRack select, #audioTrackName { max-width: 210px; }
+#clipTools[hidden] { display: none; }
+
+#laneControls { position: sticky; top: 0; left: 0; width: 0; height: 0; z-index: 22; pointer-events: none; }
+.lane-control { position: absolute; width: 24px; height: 24px; padding: 0; pointer-events: auto; font-size: 13px; }
+.lane-mute { left: 8px; }
+.lane-delete { left: 68px; }
+.lane-mute[aria-pressed="true"] { background: var(--steel-300); }
+
+.rack-assets .sample-asset[draggable="true"] { cursor: grab; }
+
+button.export-audio-primary {
+    background: var(--accent-steel);
+    border-color: var(--steel-400);
+    color: white;
+    font-weight: 700;
+    padding-inline: 14px;
+}
+
+button.export-audio-primary:hover { background: var(--steel-700); }
+#audioExportDialog { width: min(420px, calc(100vw - 32px)); }
+#audioExportForm { display: grid; gap: 8px; }
+#audioExportForm h2, #audioExportForm p { margin: 0 0 6px; }
+#audioExportForm input, #audioExportForm select { width: 100%; }
+#audioExportStatus { min-height: 1.5em; }
+
+.drum-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.drum-pattern-preview { font-weight: 600; }

@@ -229,4 +229,34 @@ public class ProjectService {
     public static class ProjectVersionConflictException extends RuntimeException {
         public ProjectVersionConflictException(String message) { super(message); }
     }
+
+        // For R2
+    public void assertEditor(UUID projectId, Integer userId) {
+        requireProject(projectId);
+        requireEditor(projectId, userId);
+    }
+
+    @Transactional
+    public Project applySync(UUID projectId, Integer userId, String name, String snapshot, Long baseRevision) {
+        Project project = requireProject(projectId);
+        requireEditor(projectId, userId);
+        if (baseRevision == null || !Objects.equals(baseRevision, project.getVersion())) {
+            throw new ProjectVersionConflictException("Project revision is out of date");
+        }
+        if (snapshot == null || snapshot.isBlank()) {
+            throw new IllegalArgumentException("Snapshot payload is required");
+        }
+        if (name != null && !name.isBlank()) {
+            project.setName(name.trim());
+        }
+        project.setProjectData(snapshot);
+        return projectRepository.saveAndFlush(project);
+    }
+
+    public String displayName(Integer userId) {
+        return userRepository.findById(userId)
+                .map(user -> user.getUsername() != null && !user.getUsername().isBlank()
+                        ? user.getUsername() : user.getEmail())
+                .orElse("Collaborator");
+    }
 }

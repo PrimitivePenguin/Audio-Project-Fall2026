@@ -286,6 +286,59 @@ class MidiIO {
         return { sequence, warnings: info.warnings };
     }
 
+    // Large imports use the same parser off-thread. Keep the synchronous public API intact.
+    static async parseAsync(input, { signal } = {}) {
+        const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+        const aborted = () => Object.assign(new Error('MIDI import was cancelled.'), { name: 'AbortError' });
+        if (signal?.aborted) throw aborted();
+        if (typeof Worker === 'undefined' || bytes.byteLength < 128 * 1024) return this.parse(bytes);
+        let worker;
+        try {
+            worker = new Worker('/js/midi-import-worker.js');
+        } catch {
+            return this.parse(bytes);
+        }
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
+                worker.terminate();
+                signal?.removeEventListener('abort', cancel);
+            };
+            const cancel = () => { cleanup(); reject(aborted()); };
+            signal?.addEventListener('abort', cancel, { once: true });
+            worker.onmessage = ({ data }) => {
+                cleanup();
+                if (signal?.aborted) { reject(aborted()); return; }
+                if (data.error) { reject(new Error(data.error)); return; }
+                try {
+                    const saved = data.sequence;
+                    const sequence = new NoteSequence(saved.stepCount, saved.ppq);
+                    sequence.name = saved.name;
+                    sequence.tracks = saved.tracks;
+                    sequence.tempos = saved.tempos;
+                    sequence.timeSignatures = saved.timeSignatures;
+                    sequence.importInfo = saved.importInfo;
+                    saved.notes.forEach((note) => sequence.addNote(note));
+                    resolve({ sequence, warnings: data.warnings });
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            // A blocked worker asset/CSP falls back to the existing validated parser.
+            worker.onerror = () => {
+                cleanup();
+                if (signal?.aborted) { reject(aborted()); return; }
+                try { resolve(this.parse(bytes)); } catch (error) { reject(error); }
+            };
+            try {
+                const copy = bytes.slice();
+                worker.postMessage(copy.buffer, [copy.buffer]);
+            } catch (error) {
+                cleanup();
+                reject(error);
+            }
+        });
+    }
+
     static importInto(engine, input) {
         const result = this.parse(input); // Complete validation before mutation.
         result.sequence = engine.importMidiSequence(result.sequence);

@@ -62,6 +62,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             this.focused = true;
             activeElement = this;
         }
+        get valueAsNumber() { return Number(this.value); }
         getContext() {
             return drawingContext;
         }
@@ -74,6 +75,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         append(...children) {
             children.forEach((child) => { child.parentElement = this; });
             this.children.push(...children);
+        }
+        remove() {
+            if (this.parentElement) {
+                this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+                this.parentElement = null;
+            }
         }
         appendChild(child) { this.append(child); return child; }
         prepend(...children) {
@@ -129,10 +136,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         constructor() {
             this.frequency = { value: 0 };
         }
-        connect() { return this; }
-        disconnect() {}
-        start(time) {
+        connect(destination) { this.destination = destination; return this; }
+        disconnect() { this.disconnected = true; }
+        start(time, offset, duration) {
             this.startTime = time;
+            this.offset = offset;
+            this.duration = duration;
         }
         stop(time = 0) {
             this.stopTime = time;
@@ -153,15 +162,25 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             return data;
         }
         createBuffer(channels, length, sampleRate) {
-            return { length, sampleRate, copyToChannel() {} };
+            const pcm = Array.from({ length: channels }, () => new Float32Array(length));
+            return { length, sampleRate, duration: length / sampleRate, numberOfChannels: channels,
+                copyToChannel(data, channel) { pcm[channel].set(data); }, getChannelData(channel) { return pcm[channel]; } };
         }
         createBiquadFilter() { return new AudioSource(); }
-        createGain() {
+        param() {
             return {
-                gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} },
-                connect() { return this; },
-                disconnect() {}
+                value: 0,
+                setValueAtTime(value) { this.value = value; },
+                linearRampToValueAtTime(value) { this.value = value; },
+                setTargetAtTime(value) { this.value = value; },
+                cancelScheduledValues() {}
             };
+        }
+        createGain() {
+            return Object.assign(new AudioSource(), { gain: this.param() });
+        }
+        createStereoPanner() {
+            return Object.assign(new AudioSource(), { pan: this.param() });
         }
         createBufferSource() {
             const source = new AudioSource();
@@ -173,7 +192,10 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         }
     }
 
+    const css = fs.readFileSync(path.resolve(__dirname, '../../main/resources/static/css/sequencer.css'), 'utf8');
+    const cssValues = new Map([...css.matchAll(/(--roll-[\w-]+):\s*([^;]+);/g)].map((match) => [match[1], match[2]]));
     const scope = vm.createContext({
+        getComputedStyle: () => ({ getPropertyValue: (key) => cssValues.get(key) ?? '' }),
         document: {
             get activeElement() {
                 return activeElement;
@@ -195,12 +217,16 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 documentListeners[name] = (event) => {
                     const handlers = [...documentHandlers[name]];
                     documentHandlers[name] = handlers.filter((entry) => !entry.once);
+                    const legacyPress = name === 'keydown' && !event.type && event.key === ' ';
                     handlers.forEach((entry) => entry.callback(event));
+                    if (legacyPress) documentListeners.keyup?.({ ...event, type: 'keyup' });
                 };
             },
             dispatchEvent(event) {
-                readyEvents.push(event);
-                options.onReady?.(event.detail.engine);
+                if (event.type === 'jukebox:ready') {
+                    readyEvents.push(event);
+                    options.onReady?.(event.detail.engine);
+                }
                 documentListeners[event.type]?.(event);
             }
         },
@@ -215,7 +241,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             AudioContext,
             devicePixelRatio: pixelRatio,
             addEventListener(name, callback) {
-                windowListeners[name] = callback;
+                windowListeners[name] = name === 'resize' ? () => { callback(); animationCallback?.(); } : callback;
             },
             confirm() {
                 confirmCount++;
@@ -223,6 +249,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             }
         },
         AbortController,
+        crypto: require('node:crypto').webcrypto,
         CustomEvent: class {
             constructor(type, options) {
                 this.type = type;
@@ -255,15 +282,18 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     for (const file of [
         'vendor/tonejs-midi-2.0.28.js',
         'NoteSequence.js',
+        'AudioArrangement.js',
+        'SampleAssetStore.js',
         'SequencerEngine.js',
         'midi-io.js',
         'PianoRollEditor.js',
-        'TrackOverview.js'
+        'TrackOverview.js',
+        'ArrangementEditor.js'
     ]) {
         vm.runInContext(fs.readFileSync(path.join(directory, file), 'utf8'), scope);
     }
     const api = vm.runInContext(
-        '({ NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
+        '({ AudioArrangement, ArrangementEditor, SampleAssetStore, NoteSequence, SequencerEngine, MidiIO, PianoRollEditor, PianoRollFollow, TrackOverview })',
         scope
     );
     scope.CapturedEngine = class extends api.SequencerEngine {
@@ -300,6 +330,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         readyEvents,
         elements,
         canvasCalls,
+        rollColor: (name) => cssValues.get('--roll-' + name)?.trim(),
         intervals,
         windowListeners,
         documentListeners,
@@ -315,6 +346,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         },
         resize() {
             resizeObservers.forEach((callback) => callback());
+            animationCallback?.();
         },
         setModalOpen(value) {
             modalOpen = value;
@@ -340,6 +372,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         paint() {
             canvasCalls.length = 0;
             elements.pianoViewport.listeners.scroll();
+            animationCallback();
         },
         flushDeferredActions() {
             deferredActions.splice(0).forEach((callback) => callback());

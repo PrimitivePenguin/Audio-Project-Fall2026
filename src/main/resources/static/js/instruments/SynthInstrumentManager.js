@@ -72,6 +72,37 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
         }
     }
 
+    const holdTime = (event, settings) => Math.max(event.when + event.duration,
+        event.when + settings.attack + settings.decay);
+
+    function scheduleVoice(ev, s, ctx, out) {
+        const t0 = ev.when;
+        const tHold = holdTime(ev, s);
+        const tEnd = tHold + s.release;
+        const peak = s.gain * ev.velocity;
+
+        const osc = ctx.createOscillator();
+        osc.type = s.waveform;
+        osc.frequency.value = midiToHz(ev.midi);
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = s.filterCutoff;
+
+        const amp = ctx.createGain();
+        amp.gain.setValueAtTime(0, t0);
+        amp.gain.linearRampToValueAtTime(peak, t0 + s.attack);
+        amp.gain.linearRampToValueAtTime(peak * s.sustain, t0 + s.attack + s.decay);
+        amp.gain.setValueAtTime(peak * s.sustain, tHold);
+        amp.gain.linearRampToValueAtTime(0, tEnd);
+
+        osc.connect(filter).connect(amp).connect(out);
+        osc.start(t0);
+        osc.stop(tEnd + 0.05);
+
+        return { osc, filter, amp };
+    }
+
     // ---- Instrument manager ----
 
     const manager = {
@@ -82,33 +113,24 @@ document.addEventListener('jukebox:ready', ({ detail: { engine, editor, instrume
             }
         },
 
+        createOfflineRenderer() {
+            const settings = new Map(engine.sequence.tracks.map(({ id }) => [id, getSettings(id)]));
+            return {
+                endTime(event) {
+                    const s = settings.get(event.trackId);
+                    return event.channel === 9 ? null : holdTime(event, s) + s.release;
+                },
+                schedule(event, context, output) {
+                    scheduleVoice(event, settings.get(event.trackId), context, output);
+                },
+            };
+        },
+
         createVoice(ev, ctx, out) {
             if (ev.channel === 9) return silentHandle(); // percussion: skip for now
 
             const s = getSettings(ev.trackId);
-            const t0 = ev.when;
-            const tHold = Math.max(ev.when + ev.duration, t0 + s.attack + s.decay);
-            const tEnd = tHold + s.release;
-            const peak = s.gain * ev.velocity;
-
-            const osc = ctx.createOscillator();
-            osc.type = s.waveform;
-            osc.frequency.value = midiToHz(ev.midi);
-
-            const filter = ctx.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.frequency.value = s.filterCutoff;
-
-            const amp = ctx.createGain();
-            amp.gain.setValueAtTime(0, t0);
-            amp.gain.linearRampToValueAtTime(peak, t0 + s.attack);
-            amp.gain.linearRampToValueAtTime(peak * s.sustain, t0 + s.attack + s.decay);
-            amp.gain.setValueAtTime(peak * s.sustain, tHold);
-            amp.gain.linearRampToValueAtTime(0, tEnd);
-
-            osc.connect(filter).connect(amp).connect(out);
-            osc.start(t0);
-            osc.stop(tEnd + 0.05);
+            const { osc, filter, amp } = scheduleVoice(ev, s, ctx, out);
 
             let stopped = false;
             let resolveFinished;

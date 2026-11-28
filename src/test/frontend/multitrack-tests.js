@@ -522,7 +522,7 @@ function ghostRects(h) {
         }
         assert.match(html, /fetch\('\/api\/current-user'\)/);
         assert.match(html, /action="\/logout" method="post"/);
-        assert.match(html, /href="\/dashboard.html"/);
+        assert.match(html, /href="\/dashboard(?:\.html)?"/);
         assert.ok(html.indexOf('/js/TrackOverview.js') < html.indexOf('/js/sequencer-ui.js'));
         assert.match(h.elements.mouseGuide.children.map((child) => child.textContent).join(' '), /double-click a lane/);
         h.elements.activeTrack.focus();

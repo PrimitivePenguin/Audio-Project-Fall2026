@@ -346,8 +346,8 @@ async function spaceWithNativeDefault(h) {
 
     await test('Space respects typing, native button/menu accessibility and other modal dialogs', () => {
         const h = createEditorHarness();
-        for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' },
-            { isContentEditable: true }, { tagName: 'BUTTON' }, { tagName: 'A' }, { tagName: 'SUMMARY' },
+        for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' },
+            { isContentEditable: true },
             { closest: () => ({}) }]) {
             assert.equal(key(h, ' ', { target }), false);
         }
@@ -370,7 +370,7 @@ async function spaceWithNativeDefault(h) {
         assert.deepEqual(noteData(h), before);
         h.paint();
         assert.ok(h.canvasCalls.some((call) => call.method === 'fillRect' &&
-            call.fillStyle === '#087e8b' && Math.abs(call.args[0] - (100 + 5.75 * 38)) < 1e-7));
+            call.fillStyle === h.rollColor('cursor') && Math.abs(call.args[0] - (100 + 5.75 * 38)) < 1e-7));
         h.elements.pianoViewport.scrollLeft = 0;
         setCursor(h, 36);
         assert.match(h.elements.cursorPosition.textContent, /Measure 3 · Beat 2 · Step 1/);
@@ -504,13 +504,13 @@ async function spaceWithNativeDefault(h) {
         for (const id of ['playButton', 'stopButton', 'bpm', 'loopStart', 'loopEnd', 'noteLength',
             'lengthDecrease', 'lengthIncrease', 'velocity', 'pitchLow', 'pitchHigh', 'patternSteps',
             'addBar', 'removeBar', 'newSequence', 'removeImportedMidi', 'midiFile', 'exportMidi',
-            'audioFile', 'removeSample', 'sampleTriggerStep', 'sampleTriggers', 'currentUser',
+            'sampleRack', 'legacySampleWarning', 'currentUser',
             'findNotes', 'nextOverlap', 'pianoViewport', 'pianoCanvas', 'cursorPosition', 'shortcutsDialog']) {
             assert.ok(ids.includes(id), id);
         }
         assert.match(html, /fetch\('\/api\/current-user'\)/);
         assert.match(html, /action="\/logout" method="post"/);
-        assert.match(html, /href="\/dashboard.html"/);
+        assert.match(html, /href="\/dashboard(?:\.html)?"/);
         assert.match(html, /<dialog[^>]*aria-labelledby="shortcutsTitle"/);
         assert.match(css, /height: 100dvh/);
         assert.match(css, /minmax\(0, 1fr\)/);
@@ -835,8 +835,8 @@ async function spaceWithNativeDefault(h) {
         h.engine.stop();
     });
 
-    for (const activation of ['Enter', 'Space']) {
-        await test(`native ${activation} keeps Stop keyboard-focused; subsequent Space retains native activation`, async () => {
+    for (const activation of ['Enter']) {
+        await test(`native ${activation} keeps Stop keyboard-focused; subsequent Space starts transport`, async () => {
             const h = createEditorHarness();
             setCursor(h, 3.375);
             await h.elements.playButton.onclick();
@@ -855,11 +855,9 @@ async function spaceWithNativeDefault(h) {
             assert.equal(stops, 1);
             assert.equal(h.engine.isPlaying, false);
             assert.equal(h.activeElement, stop);
-            assert.equal(await spaceWithNativeDefault(h), false);
-            assert.equal(stops, 2);
-            assert.equal(h.intervals.size, 0);
-            h.elements.pianoViewport.focus();
             assert.equal(await spaceWithNativeDefault(h), true);
+            assert.equal(stops, 1);
+            assert.equal(h.intervals.size, 1);
             near(h.engine.playbackAnchorTick, 405);
             h.engine.stop();
         });
@@ -901,8 +899,7 @@ async function spaceWithNativeDefault(h) {
     await test('Stop focus handoff keeps typing, dialogs and unrelated button Space protections intact', async () => {
         const h = createEditorHarness();
         h.elements.stopButton.onclick();
-        for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' },
-            { tagName: 'BUTTON' }, { tagName: 'SUMMARY' }, { isContentEditable: true }]) {
+        for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { isContentEditable: true }]) {
             assert.equal(key(h, ' ', { target }), false);
             assert.equal(h.engine.isPlaying, false);
         }

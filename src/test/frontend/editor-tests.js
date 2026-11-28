@@ -12,7 +12,7 @@ async function test(name, run) {
 
 function noteRectangles(harness) {
     return harness.canvasCalls.filter(
-        (call) => call.method === 'strokeRect' && call.strokeStyle === '#1b467f'
+        (call) => call.method === 'strokeRect' && call.strokeStyle === harness.rollColor('note-outline')
     );
 }
 
@@ -159,12 +159,12 @@ function ordinaryImport(harness, ppq = 480) {
         await h.importSequence(source);
         const note = h.engine.sequence.notes[0];
         h.clickNote(note);
-        assert.equal(Number(h.elements.noteLength.value), (89 * 4) / 101);
+        assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), 89);
         for (const value of ['', '0', '-1', 'NaN', 'Infinity', '0.00001', '1000']) {
             h.elements.noteLength.value = value;
             h.elements.noteLength.onchange();
             assert.equal(note.durationTicks, 89);
-            assert.equal(Number(h.elements.noteLength.value), (89 * 4) / 101);
+            assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), 89);
         }
         h.elements.noteLength.value = '2';
         h.elements.noteLength.onchange();
@@ -249,7 +249,7 @@ function ordinaryImport(harness, ppq = 480) {
         h.drag(note, 'right', 8, true);
         assert.equal(note.ticks, 17);
         assert.equal(note.durationTicks, 89);
-        assert.equal(Number(h.elements.noteLength.value), note.durationSteps);
+        assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), note.durationTicks);
         const bounds = h.noteBounds(note);
         h.elements.pianoCanvas.onpointerdown(h.pointer(bounds.x + bounds.width - 1, bounds.y + 12));
         h.elements.pianoCanvas.onpointermove(h.pointer(500, bounds.y + 12));
@@ -337,7 +337,6 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(Number(h.elements.pitchLow.value), 36);
         assert.equal(Number(h.elements.pitchHigh.value), 83);
         assert.equal(h.elements.pianoViewport.scrollLeft, 0);
-        assert.equal(h.elements.audioFile.value, '');
         assert.equal(h.elements.midiFile.value, '');
         assert.equal(h.engine.voiceFactory, factory);
         assert.ok(h.engine.audioContext.sources.every((source) => source.stopTime === 0));
@@ -361,10 +360,11 @@ function ordinaryImport(harness, ppq = 480) {
                 ]
             }
         });
-        const pendingAudio = h.elements.audioFile.onchange({
+        const pendingAudio = h.elements.rackFiles.onchange({
             target: {
                 files: [
                     {
+                        size: 1, name: 'sample.wav',
                         arrayBuffer: () =>
                             new Promise((resolve) => {
                                 resolveAudio = resolve;
@@ -373,6 +373,8 @@ function ordinaryImport(harness, ppq = 480) {
                 ]
             }
         });
+        await Promise.resolve();
+        h.engine.initContext();
         h.engine.audioContext.resume = () =>
             new Promise((resolve) => {
                 resolveResume = resolve;
@@ -381,7 +383,7 @@ function ordinaryImport(harness, ppq = 480) {
         h.elements.newSequence.onclick();
         const readyStatus = h.elements.status.textContent;
         resolveMidi(h.MidiIO.encode(ordinaryImport(h)).bytes);
-        resolveAudio({});
+        resolveAudio(new ArrayBuffer(1));
         resolveResume();
         await Promise.all([pendingMidi, pendingAudio, pendingPlay]);
         assert.equal(h.engine.sequence.notes.length, 0);
@@ -424,7 +426,7 @@ function ordinaryImport(harness, ppq = 480) {
         h.elements.pianoCanvas.onpointerdown(start);
         h.elements.pianoCanvas.onpointermove(end);
         assert.equal(note.durationTicks, 89);
-        assert.equal(Number(h.elements.noteLength.value), (126 * 4) / 101);
+        assert.equal(Math.round(h.engine.sequence.stepToTick(Number(h.elements.noteLength.value))), 126);
         h.elements.pianoCanvas.onpointerup(end);
         assert.equal(note.ticks, 17);
         assert.equal(note.durationTicks, 126);
@@ -468,11 +470,11 @@ function ordinaryImport(harness, ppq = 480) {
                 ]
             }
         });
-        const pendingAudio = h.elements.audioFile.onchange({
+        const pendingAudio = h.elements.rackFiles.onchange({
             target: {
                 files: [
                     {
-                        name: 'sample.wav',
+                        size: 1, name: 'sample.wav',
                         arrayBuffer: () =>
                             new Promise((resolve) => {
                                 resolveAudio = resolve;
@@ -481,14 +483,17 @@ function ordinaryImport(harness, ppq = 480) {
                 ]
             }
         });
+        await Promise.resolve();
+        h.engine.initContext();
+        h.engine.audioContext.decodeAudioData = async () => ({ duration: 1, length: 48000, numberOfChannels: 1 });
         h.elements.removeImportedMidi.onclick();
         const readyStatus = h.elements.status.textContent;
         resolveMidi(h.MidiIO.encode(ordinaryImport(h)).bytes);
-        resolveAudio({ sample: true });
+        resolveAudio(new ArrayBuffer(1));
         await Promise.all([pendingMidi, pendingAudio]);
         assert.equal(h.engine.sequence.notes.length, 0);
         assert.equal(h.engine.sequence.importInfo, null);
-        assert.equal(h.engine.tracks.size, 1);
+        assert.equal(h.engine.arrangement.assets.size, 1);
         assert.equal(h.elements.status.textContent, readyStatus);
     });
 
@@ -541,7 +546,6 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(h.engine.sequence.notes.length, 10000);
         assert.equal(h.elements.pianoCanvas.width, 900);
         assert.equal(h.elements.pianoCanvas.height, 600);
-        assert.ok(h.elements.sampleTriggers.children.length <= 50);
         assert.equal(
             h.MidiIO.parse(h.MidiIO.encode(h.engine.sequence).bytes).sequence.notes.length,
             10000
@@ -578,7 +582,7 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(h.engine.sequence.notes.length, 2);
         assert.match(h.elements.noteInfo.textContent, /Release to delete/);
         assert.ok(
-            h.canvasCalls.some((call) => call.method === 'fillRect' && call.fillStyle === '#d44848')
+            h.canvasCalls.some((call) => call.method === 'fillRect' && call.fillStyle === h.rollColor('note-delete'))
         );
         h.elements.pianoCanvas.onpointerup(end);
         h.elements.pianoCanvas.onclick(end);
@@ -690,61 +694,6 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(h.engine.sequence.notes.length, 0);
     });
 
-    await test('sample triggers accept arbitrary 1-based steps, sort numerically, reject invalid/duplicate positions, and remove individually', () => {
-        const h = createEditorHarness();
-        h.engine.setPatternLength(1696);
-        h.engine.addTrack('uploaded', {});
-        for (const step of [1696, 1, 128]) {
-            h.elements.sampleTriggerStep.value = String(step);
-            h.elements.addSampleTrigger.onclick();
-        }
-        const triggers = h.elements.sampleTriggers.children;
-        assert.deepEqual(
-            triggers.map((item) => item.children[0].textContent),
-            ['Step 1', 'Step 128', 'Step 1696']
-        );
-        for (const value of ['0', '-1', '1.5', '1697', '', 'NaN', 'Infinity', '128']) {
-            h.elements.sampleTriggerStep.value = value;
-            h.elements.addSampleTrigger.onclick();
-            assert.equal(h.engine.tracks.get('uploaded').steps.filter(Boolean).length, 3);
-        }
-        triggers[1].children[1].onclick();
-        assert.equal(h.engine.tracks.get('uploaded').steps[127], false);
-        assert.deepEqual(
-            h.elements.sampleTriggers.children.map((item) => item.children[0].textContent),
-            ['Step 1', 'Step 1696']
-        );
-        assert.throws(() => h.engine.setPatternLength(16), /sample triggers/);
-        assert.equal(h.engine.tracks.get('uploaded').steps[1695], true);
-    });
-
-    await test('sample trigger pagination avoids large DOM and remains independent from piano-roll scrolling', () => {
-        const h = createEditorHarness();
-        h.engine.setPatternLength(2000);
-        h.engine.addTrack('uploaded', {});
-        for (let step = 0; step < 120; step++) {
-            h.engine.setStep('uploaded', step, true);
-        }
-        h.elements.sampleTriggerStep.value = '1696';
-        h.elements.addSampleTrigger.onclick();
-        assert.ok(h.elements.sampleTriggers.children.length <= 50);
-        assert.equal(
-            h.elements.sampleTriggers.children.at(-1).children[0].textContent,
-            'Step 1696'
-        );
-        h.elements.samplePreviousPage.onclick();
-        assert.equal(h.elements.sampleTriggers.children.length, 50);
-        const firstLabel = h.elements.sampleTriggers.children[0].children[0].textContent;
-        h.elements.pianoViewport.scrollLeft = 40000;
-        h.paint();
-        assert.equal(h.elements.sampleTriggers.children[0].children[0].textContent, firstLabel);
-        h.elements.sampleNextPage.onclick();
-        assert.equal(
-            h.elements.sampleTriggers.children.at(-1).children[0].textContent,
-            'Step 1696'
-        );
-    });
-
     await test('sample removal during playback cancels only the sample and preserves notes, MIDI metadata, tempo, loops and voices', async () => {
         const h = createEditorHarness();
         await h.importSequence(ordinaryImport(h));
@@ -763,7 +712,7 @@ function ordinaryImport(harness, ppq = 480) {
         await h.engine.play();
         const source = h.engine.audioContext.sources[0];
         const track = h.engine.tracks.get('uploaded');
-        h.elements.removeSample.onclick();
+        h.engine.removeTrack('uploaded');
         assert.equal(source.stopTime, 0);
         assert.equal(track.activeSources.size, 0);
         assert.equal(h.engine.tracks.has('uploaded'), false);
@@ -774,57 +723,14 @@ function ordinaryImport(harness, ppq = 480) {
         assert.equal(h.engine.isPlaying, true);
         assert.equal(stoppedVoices, 0);
         assert.equal(h.engine.pitchedVoices.size, 2);
-        assert.equal(h.elements.audioFile.value, '');
-        assert.equal(h.elements.sampleName.textContent, 'No sample loaded.');
-        assert.equal(h.elements.sampleTriggers.children.length, 0);
         h.engine.stop();
-    });
-
-    await test('Remove Sample invalidates a pending upload and replacement upload retains current triggers', async () => {
-        const h = createEditorHarness();
-        const upload = (name, data) =>
-            h.elements.audioFile.onchange({
-                target: {
-                    files: [{ name, arrayBuffer: async () => data }]
-                }
-            });
-        await upload('first.wav', { sample: 1 });
-        h.elements.sampleTriggerStep.value = '5';
-        h.elements.addSampleTrigger.onclick();
-        await upload('second.wav', { sample: 2 });
-        assert.equal(h.engine.tracks.get('uploaded').steps[4], true);
-        assert.equal(h.elements.sampleName.textContent, 'Sample: second.wav');
-        let resolve;
-        const pending = h.elements.audioFile.onchange({
-            target: {
-                files: [
-                    {
-                        name: 'late.wav',
-                        arrayBuffer: () =>
-                            new Promise((done) => {
-                                resolve = done;
-                            })
-                    }
-                ]
-            }
-        });
-        h.elements.removeSample.onclick();
-        resolve({ sample: 3 });
-        await pending;
-        assert.equal(h.engine.tracks.size, 0);
-        assert.equal(h.elements.sampleName.textContent, 'No sample loaded.');
-        await upload('new.wav', { sample: 4 });
-        assert.equal(h.engine.tracks.size, 1);
-        assert.equal(h.engine.tracks.get('uploaded').steps.filter(Boolean).length, 0);
-        assert.equal(h.elements.sampleName.textContent, 'Sample: new.wav');
     });
 
     await test('arbitrary sample trigger positions use the existing audio-clock scheduler', async () => {
         const h = createEditorHarness();
         h.engine.setPatternLength(1696);
         h.engine.addTrack('uploaded', {});
-        h.elements.sampleTriggerStep.value = '1696';
-        h.elements.addSampleTrigger.onclick();
+        h.engine.setStep('uploaded', 1695, true);
         h.engine.setLoopRange(1695, 1696);
         await h.engine.play();
         assert.equal(h.engine.audioContext.sources.length, 1);

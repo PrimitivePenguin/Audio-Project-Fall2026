@@ -474,6 +474,18 @@ export function buildContourPaths(field, num_color, settings = {}) {
     });
 }
 
+// Geometry-only SVG output also supports bounded viewport caches without DOM allocation.
+export function buildContourStrings(field, numColor, settings = {}) {
+    const s = { ...DEFAULT_SETTINGS, ...settings, res: settings.res ?? field.res ?? gridRes };
+    const { levels, step, minVal } = levelColors(numColor);
+    const segments = buildAllSegments(field, levels.length, minVal, step);
+    return levels.map((threshold, index) => {
+        const pen = new SvgPen();
+        drawLevel(segments[index], threshold, field, s.res, s, pen);
+        return pen.toString();
+    });
+}
+
 // INPUT:  ctx: CanvasRenderingContext2D (already cleared and transformed by the caller),
 //         paths: from buildContourPaths, num_color,
 //         baseStops: colours outside the rects, hiStops: colours inside the rects,

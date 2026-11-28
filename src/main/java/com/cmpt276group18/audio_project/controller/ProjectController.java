@@ -23,6 +23,7 @@ import com.cmpt276group18.audio_project.models.projects.ProjectRole;
 import com.cmpt276group18.audio_project.service.ProjectService;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectAccessException;
 import com.cmpt276group18.audio_project.service.ProjectService.ProjectNotFoundException;
+import com.cmpt276group18.audio_project.service.R2StorageService;
 
 import jakarta.servlet.http.HttpSession;
 
@@ -30,9 +31,11 @@ import jakarta.servlet.http.HttpSession;
 @RequestMapping("/api/projects")
 public class ProjectController {
     private final ProjectService projectService;
+    private final R2StorageService r2StorageService;
 
-    public ProjectController(ProjectService projectService) {
+    public ProjectController(ProjectService projectService, R2StorageService r2StorageService) {
         this.projectService = projectService;
+        this.r2StorageService = r2StorageService;
     }
 
     @GetMapping
@@ -189,4 +192,28 @@ public class ProjectController {
     public record CollaboratorRequest(String usernameOrEmail, ProjectRole role) {}
     public record RoleRequest(ProjectRole role) {}
     public record TransferRequest(String usernameOrEmail) {}
+
+    // For R2
+    @PostMapping("/{projectId}/samples/presign")
+    public ResponseEntity<?> presignSampleUpload(@PathVariable UUID projectId,
+                                                @RequestBody SamplePresignRequest request,
+                                                HttpSession session) {
+        Integer userId = currentUser(session);
+        if (userId == null) return unauthorized();
+        projectService.assertEditor(projectId, userId);
+        return ResponseEntity.ok(r2StorageService.createSampleUpload(
+                projectId, request.sha256(), request.fileName(), request.contentType()));
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<?> badRequest(IllegalArgumentException exception) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", exception.getMessage()));
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<?> storageUnavailable(IllegalStateException exception) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", exception.getMessage()));
+    }
+
+    public record SamplePresignRequest(String sha256, String fileName, String contentType) {}
 }

@@ -34,26 +34,16 @@ function setup() {
 }
 const order = (h) => JSON.stringify(h.engine.sequence.tracks);
 (async () => {
-    for (const mode of ['tracksView', 'pianoRollView']) {
-        for (const id of ['moveTrackUp', 'moveTrackDown']) {
-            await test(`mouse ${id} in ${mode} releases focus and Space never repeats reorder`, async () => {
-                const h = setup();
-                await h.activateControl(mode);
-                await h.activateControl(id);
-                const after = order(h);
-                assert.equal(h.activeElement, h.elements.pianoViewport);
-                assert.equal(h.elements.pianoViewport.focusOptions.preventScroll, true);
-                assert.equal(await space(h), true);
-                assert.equal(h.engine.isPlaying, true);
-                assert.equal(order(h), after);
-                await space(h);
-                assert.equal(h.engine.isPaused, true);
-                await space(h);
-                assert.equal(h.engine.isPlaying, true);
-                assert.equal(order(h), after);
-                h.engine.stop();
-            });
-        }
+    for (const id of ['tracksView', 'pianoRollView', 'resetZoom', 'stopButton']) {
+        await test(`Space captures transport after ${id} with native control focus`, async () => {
+            const h = setup();
+            await h.activateControl(id, 0);
+            assert.equal(h.activeElement, h.elements[id]);
+            assert.equal(await space(h), true);
+            assert.equal(h.engine.isPlaying, true);
+            assert.equal(await space(h), true);
+            assert.equal(h.engine.isPaused, true);
+        });
     }
     await test('pointer summary native action completes once and Space controls transport while options remain open', async () => {
         const h = setup();
@@ -71,28 +61,25 @@ const order = (h) => JSON.stringify(h.engine.sequence.tracks);
         assert.equal(summary.open, true);
         h.engine.stop();
     });
-    await test('keyboard Space and Enter keep buttons and summary natively operable', async () => {
+    await test('Space captures down and up while Enter stays native, including keyboard-only focus', async () => {
         const h = setup();
-        const button = h.elements.moveTrackDown;
-        button.testId = 'moveTrackDown';
-        await h.activateControl('moveTrackDown', 0);
-        assert.equal(h.activeElement, button);
-        const before = order(h);
-        assert.equal(await space(h), false);
-        assert.equal(h.engine.isPlaying, false);
-        // Enter is not an editor shortcut; its generated click retains focus as well.
-        assert.equal(key(h, 'Enter'), false);
-        assert.equal(h.activeElement, button);
-        assert.equal(order(h), before); // Already at the end: invalid/no-op action stays safe.
         const summary = h.elements.workspaceOptions;
         summary.tagName = 'SUMMARY';
-        summary.testId = 'workspaceOptions';
-        summary.onclick = () => { summary.open = !summary.open; };
-        await h.activateControl('workspaceOptions', 0);
-        assert.equal(h.activeElement, summary);
-        await space(h);
-        assert.equal(summary.open, false);
-        assert.equal(h.activeElement, summary);
+        summary.focus();
+        let down = 0, up = 0, stopped = 0;
+        h.documentListeners.keydown({ type: 'keydown', key: ' ', target: summary,
+            preventDefault() { down++; }, stopImmediatePropagation() { stopped++; } });
+        h.documentListeners.keydown({ type: 'keydown', key: ' ', repeat: true, target: summary,
+            preventDefault() { down++; }, stopImmediatePropagation() { stopped++; } });
+        if (h.engine.startPromise) await h.engine.startPromise;
+        assert.equal(h.engine.isPlaying, true);
+        h.elements.stopButton.focus();
+        h.documentListeners.keyup({ type: 'keyup', key: ' ', target: h.activeElement,
+            preventDefault() { up++; }, stopImmediatePropagation() { stopped++; } });
+        assert.deepEqual([down, up, stopped], [2, 1, 3]);
+        assert.equal(key(h, 'Enter'), false);
+        assert.equal(await space(h), true);
+        assert.equal(h.engine.isPaused, true);
     });
     await test('pointer Add returns to workspace while keyboard Add intentionally enters rename input', async () => {
         const h = setup();
@@ -145,10 +132,10 @@ const order = (h) => JSON.stringify(h.engine.sequence.tracks);
         assert.equal(h.elements.pianoViewport.scrollLeft, left);
         h.engine.stop();
     });
-    await test('typing, native dropdowns, sliders and contenteditable remain protected', async () => {
+    await test('text fields and contenteditable retain native text entry', async () => {
         const h = setup();
-        for (const target of [{ tagName: 'INPUT' }, { tagName: 'SELECT' }, { tagName: 'TEXTAREA' },
-            { isContentEditable: true }, { closest: () => ({ role: 'slider' }) }]) {
+        for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' },
+            { isContentEditable: true }]) {
             assert.equal(key(h, ' ', { target }), false);
             assert.equal(h.engine.isPlaying, false);
         }
@@ -192,7 +179,9 @@ const order = (h) => JSON.stringify(h.engine.sequence.tracks);
         const id = h.elements.activeTrack.value;
         h.engine.sequence.addNote({ trackId: id, midi: 60, ticks: 0, durationTicks: 120 });
         h.readyEvents[0].detail.editor.refresh();
-        await h.activateControl('deleteMidiTrack');
+        h.elements.tracksView.onclick();
+        const { name } = h.engine.sequence.tracks.find((track) => track.id === id);
+        h.elements.laneControls.children.find((button) => button.getAttribute('aria-label') === `Delete track ${name}`).onclick();
         assert.equal(h.elements.deleteTrackDialog.open, true);
         assert.equal(h.activeElement, h.elements.cancelDeleteTrack);
         assert.equal(await space(h), false);

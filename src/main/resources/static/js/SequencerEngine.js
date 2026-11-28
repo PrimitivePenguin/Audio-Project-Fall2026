@@ -11,13 +11,48 @@ const SCHEDULE_AHEAD_SEC = 0.1; // how far ahead to schedule audio
 const START_DELAY_SEC = 0.05; // small head start so step 0 isn't late
 
 const DEFAULT_TRACK_GAIN = 0.8;
+const DEFAULT_LANE_GAIN = 1;
+const DEFAULT_PAN = 0;
+const MAX_TRACK_GAIN = 1.5;
+
+const MAX_DELAY_SEC = 4;       // 2 beats at the slowest tempo (40 BPM) = 3 s
+const DELAY_DAMP_HZ = 4000;
+const REVERB_SECONDS = 2;
+
+// Fully-open cutoff for each filter type.
+const FILTER_TYPES = {lowpass: 20000, highpass: 20};
+
+const MIX_PARAMS = {
+    volume: {min: 0, max: MAX_TRACK_GAIN, def: null},
+    pan: {min: -1, max: 1, def: 0},
+    cutoff: {min: 20, max: 20000, def: 20000}, // default follows filter type
+    resonance: {min: 0, max: 15, def: 0},
+    delaySend: {min: 0, max: 1, def: 0},
+    delayBeats: {min: 0.125, max: 2, def: 0.75}, // synced to BPM
+    delayFeedback: {min: 0, max: 0.9, def: 0.4},
+    reverbSend: {min: 0, max: 1, def: 0}
+};
+const AUTOMATABLE_PARAMS = ['volume', 'pan', 'cutoff', 'resonance', 'delaySend', 'delayFeedback', 'reverbSend'];
+const LOG_PARAMS = new Set(['cutoff']);   // interpolated and drawn on a log scale
+const MAX_AUTOMATION_POINTS = 2000;       // per lane
+
+const PARAM_SMOOTHING_SEC = 0.015; // time constant; avoids zipper noise while dragging
 const MASTER_GAIN = 0.7; // headroom so summed tracks don't clip as easily
 
 class SequencerEngine {
+    // Mix state lives here, not on the nodes, so it survives track removal/recreation
+    // and can be set before the AudioContext exists.
+    #mix = new Map();       // trackId -> { volume, pan }
+    #automation = new Map(); // channelId -> Map(paramKey -> [{ tick, value }])
+    #laneBuses = new Map(); // lane trackId (MIDI or audio) -> strip
+    #impulse = null;        // reverb impulse shared by every channel's convolver
+
     constructor() {
         // Audio graph
         this.audioContext = null;
         this.masterGain = null;
+        this.laneGains = new Map(); // track ID to mute node
+        this.mutedLanes = new Set();
 
         // Transport & timing state
         this.bpm = DEFAULT_BPM;
@@ -35,6 +70,9 @@ class SequencerEngine {
         this.loopEnd = TOTAL_STEPS;
         this.sequence = new NoteSequence(this.totalSteps);
         this.nextMidiImportId = 1;
+        this.arrangement = new AudioArrangement();
+        this.clipSources = new Set();
+        this.clipPassEntry = true;
         this.pitchedVoices = new Set();
         this.stepEvents = [];
         this.onError = null;
@@ -68,7 +106,81 @@ class SequencerEngine {
             this.masterGain = this.audioContext.createGain();
             this.masterGain.gain.value = MASTER_GAIN;
             this.masterGain.connect(this.audioContext.destination);
+
         }
+    }
+
+laneOutput(id) {
+    return this.#laneStrip(id).gain;
+}
+
+#laneStrip(id) {
+    let strip = this.#laneBuses.get(id);
+    if (!strip) {
+        this.initContext();
+        // Mute sits last, so a muted lane also silences its delay and reverb tails.
+        const mute = this.audioContext.createGain();
+        mute.gain.value = this.mutedLanes.has(id) ? 0 : 1;
+        mute.connect(this.masterGain);
+        strip = this.#buildStrip(this.getChannelMix(id), mute);
+        strip.mute = mute;
+        this.#laneBuses.set(id, strip);
+        this.laneGains.set(id, mute); // setLaneMuted reads this
+    }
+    return strip;
+}
+
+    setLaneMuted(id, muted) {
+        if (muted) this.mutedLanes.add(id);
+        else this.mutedLanes.delete(id);
+        const gain = this.laneGains.get(id)?.gain;
+        if (!gain) return;
+        const now = this.audioContext.currentTime;
+        if (typeof gain.cancelAndHoldAtTime === 'function') gain.cancelAndHoldAtTime(now);
+        else {
+            const value = gain.value;
+            gain.cancelScheduledValues(now);
+            gain.setValueAtTime(value, now);
+        }
+        gain.linearRampToValueAtTime(muted ? 0 : 1, now + 0.008);
+    }
+
+    // One-shot audition on the shared clock, independent of transport and project data.
+    playPatternPreview(buffer, onEnd) {
+        if (this.isPlaying || this.startPromise || this.patternPreview) return false;
+        this.initContext();
+        const context = this.audioContext;
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.masterGain);
+        const finish = () => {
+            if (this.patternPreview !== stop) return;
+            source.onended = null;
+            source.disconnect();
+            this.patternPreview = null;
+            onEnd?.();
+        };
+        const stop = () => {
+            try { source.stop(); } finally { finish(); }
+        };
+        this.patternPreview = stop;
+        source.onended = finish;
+        try {
+            source.start();
+            if (context.state !== 'running') {
+                context.resume().catch(() => {
+                    if (this.patternPreview === stop) stop();
+                });
+            }
+        } catch (error) {
+            finish();
+            throw error;
+        }
+        return true;
+    }
+
+    stopPatternPreview() {
+        this.patternPreview?.();
     }
 
     // --- Transport Controls ---
@@ -83,6 +195,7 @@ class SequencerEngine {
         const atCompositionEnd = requestedTick === compositionEnd || requestedTick === Math.floor(compositionEnd);
         this.pendingStartTick = !resuming && atCompositionEnd
             ? this.sequence.stepToTick(this.loopStart) : requestedTick;
+        this.stopPatternPreview();
         const token = ++this.runId;
         const start = async () => {
             this.initContext();
@@ -114,6 +227,7 @@ class SequencerEngine {
             this.playbackInitialEndStep = startTick < this.sequence.stepToTick(this.loopEnd)
                 ? this.loopEnd : this.totalSteps;
             this.schedulingEndStep = this.playbackInitialEndStep;
+            this.clipPassEntry = true;
             this.playbackAnchorTime = this.audioContext.currentTime + START_DELAY_SEC;
             const startStep = this.sequence.tickToStep(startTick);
             this.currentStep = Math.floor(startStep);
@@ -148,7 +262,7 @@ class SequencerEngine {
                     this.scheduler();
                 } catch (error) {
                     this.stop();
-                    this.#reportAudioError(error, { phase: 'scheduler', fatal: true });
+                    this.#reportAudioError(error, {phase: 'scheduler', fatal: true});
                 }
             }, SCHEDULE_INTERVAL_MS);
         };
@@ -165,7 +279,8 @@ class SequencerEngine {
                     this.startPromise = null;
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+            });
         return pending;
     }
 
@@ -208,10 +323,10 @@ class SequencerEngine {
 
     getPlaybackPosition() {
         if (this.isPaused) {
-            return { ticks: this.pausedTick, pass: null };
+            return {ticks: this.pausedTick, pass: null};
         }
         if (!this.isPlaying) {
-            return { ticks: this.pendingStartTick ?? this.sequence.stepToTick(this.loopStart), pass: null };
+            return {ticks: this.pendingStartTick ?? this.sequence.stepToTick(this.loopStart), pass: null};
         }
         const sequence = this.sequence;
         const loopStartSeconds = this.stepSeconds(this.loopStart);
@@ -224,7 +339,7 @@ class SequencerEngine {
         const remaining = elapsed - initialDuration;
         const tolerance = 1e-9;
         if (remaining < -tolerance) {
-            return { ticks: sequence.secondsToTicks(initialStartSeconds + elapsed), pass: 0 };
+            return {ticks: sequence.secondsToTicks(initialStartSeconds + elapsed), pass: 0};
         }
         const loopTime = Math.max(0, remaining);
         const cycles = Math.floor((loopTime + tolerance) / loopDuration);
@@ -239,6 +354,7 @@ class SequencerEngine {
         if (this.isStopping) {
             return;
         }
+        this.stopPatternPreview();
         this.isStopping = true;
         this.isPlaying = false;
         this.isPaused = false;
@@ -258,7 +374,7 @@ class SequencerEngine {
             for (const voice of voices) {
                 this.#stopVoice(voice, failures);
             }
-            this.tracks.forEach((track) => {
+                        this.tracks.forEach((track) => {
                 track.activeSources.forEach((source) => {
                     try {
                         source.stop();
@@ -268,9 +384,19 @@ class SequencerEngine {
                 });
                 track.activeSources.clear();
             });
+            for (const source of this.clipSources) {
+                try { source.stop(); } catch (error) { failures.push({ error, phase: 'clip-stop' }); }
+                source.disconnect();
+            }
+            this.clipSources.clear();
+            try {
+                this.#restoreAutomatedParams();
+            } catch (error) {
+                failures.push({ error, phase: 'automation-restore' });
+            }
             this.#callInstrumentHook('stop', [], failures);
             // Report only after every healthy voice and sample has been cancelled.
-            failures.forEach(({ error, ...details }) => this.#reportAudioError(error, details));
+            failures.forEach(({error, ...details}) => this.#reportAudioError(error, details));
         } finally {
             this.isStopping = false;
         }
@@ -280,9 +406,9 @@ class SequencerEngine {
         const failure =
             error instanceof Error
                 ? error
-                : new Error(error?.message ?? String(error), { cause: error });
-        const information = { fatal: false, ...details };
-        this.audioErrors.push({ error: failure, ...information });
+                : new Error(error?.message ?? String(error), {cause: error});
+        const information = {fatal: false, ...details};
+        this.audioErrors.push({error: failure, ...information});
         if (this.audioErrors.length > 50) {
             this.audioErrors.shift();
         }
@@ -305,9 +431,9 @@ class SequencerEngine {
     #stopVoice(voice, failures = null) {
         const report = (error) => {
             if (failures) {
-                failures.push({ error, phase: 'voice-stop' });
+                failures.push({error, phase: 'voice-stop'});
             } else {
-                this.#reportAudioError(error, { phase: 'voice-stop' });
+                this.#reportAudioError(error, {phase: 'voice-stop'});
             }
         };
         try {
@@ -315,7 +441,7 @@ class SequencerEngine {
             // stop() is synchronous by contract, but observe an accidental async rejection too.
             if (result && typeof result.then === 'function') {
                 Promise.resolve(result).catch((error) =>
-                    this.#reportAudioError(error, { phase: 'voice-stop' })
+                    this.#reportAudioError(error, {phase: 'voice-stop'})
                 );
             }
         } catch (error) {
@@ -330,28 +456,28 @@ class SequencerEngine {
                 this.#stopVoice(voice);
             }
         } catch (error) {
-            this.#reportAudioError(error, { phase: 'discarded-voice' });
+            this.#reportAudioError(error, {phase: 'discarded-voice'});
         }
         try {
             if (voice && typeof voice.then === 'function') {
                 Promise.resolve(voice).then(
                     (lateVoice) => this.#discardVoice(lateVoice),
-                    (error) => this.#reportAudioError(error, { phase: 'async-factory' })
+                    (error) => this.#reportAudioError(error, {phase: 'async-factory'})
                 );
                 return;
             }
         } catch (error) {
-            this.#reportAudioError(error, { phase: 'discarded-voice' });
+            this.#reportAudioError(error, {phase: 'discarded-voice'});
         }
         try {
             const finished = completion ?? voice?.finished;
             if (finished && typeof finished.then === 'function') {
                 Promise.resolve(finished).catch((error) =>
-                    this.#reportAudioError(error, { phase: 'discarded-voice' })
+                    this.#reportAudioError(error, {phase: 'discarded-voice'})
                 );
             }
         } catch (error) {
-            this.#reportAudioError(error, { phase: 'discarded-voice' });
+            this.#reportAudioError(error, {phase: 'discarded-voice'});
         }
     }
 
@@ -399,7 +525,7 @@ class SequencerEngine {
         if (this.isPlaying || this.startPromise) {
             throw new Error('Pause or stop playback before adding a MIDI track.');
         }
-        const track = this.sequence.addMusicalTrack({ name });
+        const track = this.sequence.addMusicalTrack({name});
         this.#syncInstrumentTracks();
         return track;
     }
@@ -424,22 +550,68 @@ class SequencerEngine {
 
     assertTrackDeletionStopped() {
         if (this.isPlaying || this.isPaused || this.startPromise) {
-            throw new Error('Press Stop before deleting or restoring MIDI tracks.');
+            throw new Error('Press Stop before deleting or restoring tracks.');
         }
+    }
+    #channelAutomation(id) {
+        return [...(this.#automation.get(id) ?? [])]
+            .map(([key, points]) => ({ key, points: points.map((point) => ({ ...point })) }));
+    }
+
+    #laneDeletionState(id) {
+        const order = this.arrangement.orderedTracks(this.sequence.tracks).map((track) => track.id);
+        return {
+            order, index: order.indexOf(id), mix: this.getChannelMix(id),
+            muted: this.mutedLanes.has(id), automation: this.#channelAutomation(id)
+        };
+    }
+
+    #removeLane(id, state) {
+        this.arrangement.laneOrder = state.order.filter((laneId) => laneId !== id);
+        this.#disconnectLane(id);
+        this.#mix.delete(id);
+        this.#automation.delete(id);
+        this.mutedLanes.delete(id);
+    }
+
+    #restoreLane(id, state) {
+        const order = this.arrangement.laneOrder;
+        const next = state.order.slice(state.index + 1).find((laneId) => order.includes(laneId));
+        order.splice(next ? order.indexOf(next) : Math.min(state.index, order.length), 0, id);
+        this.applyChannelMix(id, state.mix);
+        this.setLaneMuted(id, state.muted);
+        for (const { key, points } of state.automation ?? []) this.setAutomation(id, key, points);
     }
 
     deleteMidiTrack(id) {
         this.assertTrackDeletionStopped();
+        const lane = this.#laneDeletionState(id);
         const record = this.sequence.deleteMusicalTrack(id);
+        this.#removeLane(id, lane);
         this.#syncInstrumentTracks();
-        return record;
+        return { ...record, lane };
     }
 
     restoreMidiTrack(record) {
         this.assertTrackDeletionStopped();
         const track = this.sequence.restoreMusicalTrack(record);
+        if (record.lane) this.#restoreLane(track.id, record.lane);
         this.#syncInstrumentTracks();
         return track;
+    }
+
+    deleteAudioTrack(id) {
+        this.assertTrackDeletionStopped();
+        const lane = this.#laneDeletionState(id);
+        const record = this.arrangement.deleteTrack(id);
+        this.#removeLane(id, lane);
+        return { ...record, lane };
+    }
+
+    restoreAudioTrack(record) {
+        this.assertTrackDeletionStopped();
+        this.arrangement.restoreTrack(record);
+        this.#restoreLane(record.track.id, record.lane);
     }
 
     registerInstrumentManager(manager) {
@@ -469,23 +641,24 @@ class SequencerEngine {
             const result = this.instrumentManager?.[name]?.(...args);
             if (result && typeof result.then === 'function') {
                 Promise.resolve(result).catch((error) =>
-                    this.#reportAudioError(error, { phase: `instruments-${name}` })
+                    this.#reportAudioError(error, {phase: `instruments-${name}`})
                 );
             }
         } catch (error) {
             if (failures) {
-                failures.push({ error, phase: `instruments-${name}` });
+                failures.push({error, phase: `instruments-${name}`});
             } else {
-                this.#reportAudioError(error, { phase: `instruments-${name}` });
+                this.#reportAudioError(error, {phase: `instruments-${name}`});
             }
         }
     }
 
     #syncInstrumentTracks() {
+        this.#pruneLaneBuses();
         this.#cancelPreparation();
         this.instrumentPreparation = null;
         this.#callInstrumentHook('syncTracks', [
-            this.sequence.tracks.map((track) => ({ ...track }))
+            this.sequence.tracks.map((track) => ({...track}))
         ]);
     }
 
@@ -511,7 +684,7 @@ class SequencerEngine {
             let cancel;
             const cancelled = new Promise((resolve, reject) => {
                 cancel = () => reject(new Error('Instrument preparation cancelled.'));
-                controller.signal.addEventListener('abort', cancel, { once: true });
+                controller.signal.addEventListener('abort', cancel, {once: true});
             });
             // Stop releases pending Play even if a faulty manager ignores its signal.
             const preparation = Promise.race([work, cancelled]);
@@ -542,9 +715,13 @@ class SequencerEngine {
         if (this.sequence.tempos.length > 1) {
             throw new Error('Imported tempo map is active; BPM editing is disabled.');
         }
+        if (this.arrangement.clips.size && (this.isPlaying || this.startPromise)) {
+            throw new Error('Pause or stop before changing BPM with audio clips.');
+        }
         const tick = this.getPlaybackTick();
         this.bpm = Math.max(MIN_BPM, Math.min(MAX_BPM, newBpm));
-        this.sequence.tempos = [{ ticks: 0, bpm: this.bpm }];
+        this.#updateDelayTimes();
+        this.sequence.tempos = [{ticks: 0, bpm: this.bpm}];
         if (this.isPlaying) {
             this.playbackAnchorTick = tick;
             this.playbackInitialEndStep = tick < this.sequence.stepToTick(this.loopEnd)
@@ -571,9 +748,13 @@ class SequencerEngine {
                 'Cannot shorten past existing notes or sample triggers. Remove them first.'
             );
         }
+        if (this.arrangement.query(this.sequence, this.sequence.stepToTick(steps), Infinity, true).length) {
+            throw new Error('Cannot shorten past existing audio clips. Trim or move them first.');
+        }
         const wasFullPatternLoop = this.loopStart === 0 && this.loopEnd === this.totalSteps;
         this.totalSteps = this.sequence.stepCount = steps;
         this.tracks.forEach((track) => {
+            if (track.previewOnly) return;
             track.steps = Array.from({ length: steps }, (_, stepIndex) =>
                 Boolean(track.steps[stepIndex])
             );
@@ -602,10 +783,14 @@ class SequencerEngine {
             1,
             ...[...this.tracks.values()].map((track) => track.steps.lastIndexOf(true) + 1)
         );
-        sequence.stepCount = Math.max(sequence.stepCount, lastSampleStep);
+        this.arrangement.retime(this.sequence.ppq, sequence.ppq);
+        const lastClipTick = this.arrangement.clips.size ? this.arrangement.getIndex(sequence).root.maxEnd : 0;
+        const lastClipStep = Math.min(65536, Math.ceil(sequence.tickToStep(lastClipTick) - 1e-10));
+        sequence.stepCount = Math.max(sequence.stepCount, lastSampleStep, lastClipStep);
         this.sequence = sequence;
         this.totalSteps = sequence.stepCount;
         this.tracks.forEach((track) => {
+            if (track.previewOnly) return;
             track.steps = Array.from({ length: this.totalSteps }, (_, i) =>
                 Boolean(track.steps[i])
             );
@@ -616,6 +801,7 @@ class SequencerEngine {
         this.isPaused = false;
         this.pausedTick = null;
         this.bpm = sequence.tempos.find((tempo) => tempo.ticks === 0)?.bpm ?? 120;
+        this.#updateDelayTimes();
         this.#syncInstrumentTracks();
     }
 
@@ -624,7 +810,7 @@ class SequencerEngine {
             throw new Error('Stop before importing MIDI.');
         }
         const importId = `import-${this.nextMidiImportId}`;
-        const combined = this.sequence.withMidiImport(sequence, importId);
+        const combined = this.sequence.withMidiImport(sequence, importId, this.arrangement.clips.size > 0);
         this.replaceSequence(combined);
         this.nextMidiImportId++;
         return combined;
@@ -644,6 +830,11 @@ class SequencerEngine {
         for (const trackId of [...this.tracks.keys()]) {
             this.removeTrack(trackId);
         }
+        this.arrangement = new AudioArrangement();
+        for (const id of this.#laneBuses.keys()) this.#disconnectLane(id);
+        this.#mix.clear();
+        this.#automation.clear();
+        this.mutedLanes.clear();
         this.replaceSequence(new NoteSequence());
     }
 
@@ -682,22 +873,20 @@ class SequencerEngine {
     }
 
     // --- Track & Grid Management ---
-    addTrack(trackId, audioBuffer) {
-        this.initContext(); // guarantees audioContext and masterGain exist
+addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
+    this.initContext();
+    this.removeTrack(trackId);
 
-        this.removeTrack(trackId);
-        // Per-track gain node for volume control
-        const gainNode = this.audioContext.createGain();
-        gainNode.gain.value = DEFAULT_TRACK_GAIN;
-        gainNode.connect(this.masterGain);
-
-        this.tracks.set(trackId, {
-            buffer: audioBuffer,
-            steps: new Array(this.totalSteps).fill(false),
-            gainNode,
-            activeSources: new Set()
-        });
-    }
+    const strip = this.#buildStrip(this.#mixFor(trackId));
+    this.tracks.set(trackId, {
+        buffer: audioBuffer,
+        steps: previewOnly ? [] : new Array(this.totalSteps).fill(false),
+        previewOnly,
+        gainNode: strip.gain, // entry point for sources
+        strip,
+        activeSources: new Set()
+    });
+}
 
     removeTrack(trackId) {
         const track = this.tracks.get(trackId);
@@ -716,14 +905,10 @@ class SequencerEngine {
         track.activeSources.clear();
         track.buffer = null;
         track.steps = [];
-        try {
-            track.gainNode.disconnect();
-        } catch (error) {
-            failures.push(error);
-        }
+        this.#disposeStrip(track.strip);
         this.tracks.delete(trackId);
         failures.forEach((error) =>
-            this.#reportAudioError(error, { phase: 'sample-remove', trackId })
+            this.#reportAudioError(error, {phase: 'sample-remove', trackId})
         );
     }
 
@@ -750,6 +935,7 @@ class SequencerEngine {
                 this.nextNoteTime += untilWrap;
                 this.currentStep = this.loopStart;
                 this.schedulingEndStep = this.loopEnd;
+                this.clipPassEntry = true;
                 const cycles = Math.floor((now - this.nextNoteTime) / loopSeconds);
                 this.nextNoteTime += cycles * loopSeconds;
             }
@@ -761,7 +947,7 @@ class SequencerEngine {
         while (
             this.isPlaying &&
             this.nextNoteTime < this.audioContext.currentTime + SCHEDULE_AHEAD_SEC
-        ) {
+            ) {
             this.scheduleStep(this.currentStep, this.nextNoteTime);
             if (!this.isPlaying || runId !== this.runId) {
                 break;
@@ -779,6 +965,7 @@ class SequencerEngine {
         if (this.currentStep + 1 >= this.schedulingEndStep) {
             this.currentStep = this.loopStart;
             this.schedulingEndStep = this.loopEnd;
+            this.clipPassEntry = true;
         } else {
             this.currentStep++;
         }
@@ -791,14 +978,65 @@ class SequencerEngine {
             (event) => event.time >= this.audioContext.currentTime - 1
         );
         const visibleTime = fromTick === null ? time : this.playbackAnchorTime;
-        this.stepEvents.push({ step: stepIndex, time: visibleTime });
+        this.stepEvents.push({step: stepIndex, time: visibleTime});
+        try {
+            this.#scheduleAutomation(stepIndex, time, fromTick);
+        } catch (error) {
+            this.#reportAudioError(error, {phase: 'automation', fatal: false});
+        }
         this.#schedulePitchedNotes(stepIndex, time, fromTick);
         if (runId !== this.runId) {
             return;
         }
+        this.#scheduleAudioClips(stepIndex, time, fromTick);
+        if (runId !== this.runId) return;
         this.#notifyStepTick(stepIndex, visibleTime);
         if (fromTick === null || fromTick <= this.sequence.stepToTick(stepIndex)) {
             this.#scheduleSampleTracks(stepIndex, time);
+        }
+    }
+
+    #scheduleAudioClips(stepIndex, time, fromTick) {
+        const held = this.clipPassEntry;
+        this.clipPassEntry = false;
+        if (!this.arrangement.clips.size) return;
+        const sequence = this.sequence;
+        const firstTick = fromTick ?? sequence.stepToTick(stepIndex);
+        const endTick = sequence.stepToTick(stepIndex + 1);
+        const clips = this.arrangement.query(sequence, firstTick, endTick, held);
+        if (!clips.length) return;
+        const map = AudioArrangement.timeMap(sequence);
+        const stepSeconds = map.secondsAt(sequence.stepToTick(stepIndex));
+        const firstSeconds = map.secondsAt(firstTick);
+        const cutoff = map.secondsAt(sequence.stepToTick(this.schedulingEndStep));
+        const audioNow = this.audioContext.currentTime;
+        const runId = this.runId;
+        for (const { clip, startSeconds, endSeconds } of clips) {
+            if (this.runId !== runId) return;
+            const buffer = this.arrangement.assets.get(clip.assetId)?.buffer;
+            if (!buffer) continue;
+            const onset = Math.max(startSeconds, firstSeconds, stepSeconds + audioNow - time);
+            const duration = Math.min(endSeconds, cutoff) - onset;
+            if (duration <= 1e-9) continue;
+            let source;
+            try {
+                source = this.audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(this.laneOutput(clip.trackId));
+                this.clipSources.add(source);
+                source.onended = () => {
+                    this.clipSources.delete(source);
+                    source.disconnect();
+                };
+                source.start(Math.max(audioNow, time + onset - stepSeconds),
+                    clip.sourceOffsetSeconds + onset - startSeconds, duration);
+            } catch (error) {
+                if (source) {
+                    this.clipSources.delete(source);
+                    source.disconnect();
+                }
+                this.#reportAudioError(error, { phase: 'clip-start' });
+            }
         }
     }
 
@@ -830,9 +1068,10 @@ class SequencerEngine {
                 this.sequence.ticksToSeconds(soundingFromTick)
         };
         try {
+            const output = this.laneOutput(note.trackId);
             const voice = this.voiceFactory
-                ? this.voiceFactory(event, this.audioContext, this.masterGain)
-                : this.createPitchedVoice(event);
+                ? this.voiceFactory(event, this.audioContext, output)
+                : this.createPitchedVoice(event, output); 
             if (runId !== this.runId) {
                 this.#discardVoice(voice);
                 return;
@@ -864,7 +1103,7 @@ class SequencerEngine {
     #scheduleSampleTracks(stepIndex, time) {
         // Sample tracks share the same step timestamp as pitched notes.
         this.tracks.forEach((track) => {
-            if (!track.steps[stepIndex] || !track.buffer) {
+            if (track.previewOnly || !track.steps[stepIndex] || !track.buffer) {
                 return;
             }
 
@@ -884,12 +1123,12 @@ class SequencerEngine {
     }
 
     // Future instruments implement (event, sharedContext, output) => { stop(), finished: Promise }.
-    createPitchedVoice(event) {
+    createPitchedVoice(event, output = this.masterGain) {
         const oscillator = this.audioContext.createOscillator();
         const gain = this.audioContext.createGain();
         oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
         oscillator.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(output);
         const end = event.when + event.duration;
         const ramp = Math.min(0.005, event.duration / 4);
         gain.gain.setValueAtTime(0, event.when);
@@ -910,9 +1149,505 @@ class SequencerEngine {
             stop: () => {
                 try {
                     oscillator.stop();
-                } catch (_) {}
+                } catch (_) {
+                }
             }
         };
+    }
+
+#isLane(id) {
+    return this.sequence.tracks.some((track) => track.id === id) || this.arrangement.tracks.has(id);
+}
+
+#defaultVolume(id) {
+    return this.#isLane(id) ? DEFAULT_LANE_GAIN : DEFAULT_TRACK_GAIN;
+}
+
+    #defaultFor(id, key, mix) {
+        if (key === 'volume') return this.#defaultVolume(id);
+        if (key === 'cutoff') return FILTER_TYPES[mix?.filterType ?? 'lowpass'];
+        return MIX_PARAMS[key].def;
+    }
+
+    #mixFor(id) {
+        let mix = this.#mix.get(id);
+        if (!mix) {
+            mix = {filterType: 'lowpass'};
+            this.#mix.set(id, mix);
+        }
+        for (const key of Object.keys(MIX_PARAMS)) {
+            mix[key] ??= this.#defaultFor(id, key, mix);
+        }
+        return mix;
+    }
+
+    #isChannel(id) {
+        return this.tracks.has(id) || this.arrangement.tracks.has(id) || this.sequence.tracks.some((track) => track.id === id);
+    }
+  hasChannel(id) {
+    return this.#isChannel(id);
+}
+
+  #strip(id) {
+    return this.tracks.get(id)?.strip ?? this.#laneBuses.get(id) ?? null;
+}
+
+    #smooth(param, value) {
+        const now = this.audioContext.currentTime;
+        param.cancelScheduledValues(now);
+        param.setTargetAtTime(value, now, PARAM_SMOOTHING_SEC);
+    }
+
+    #delaySeconds(beats) {
+        return Math.min(MAX_DELAY_SEC, (beats * 60) / this.bpm);
+    }
+
+// The one place a stored mix value becomes an audio-node change.
+    #applyParam(strip, mix, key, value) {
+        switch (key) {
+            case 'volume':
+                this.#smooth(strip.gain.gain, value);
+                break;
+            case 'pan':
+                this.#smooth(strip.pan.pan, value);
+                break;
+            case 'cutoff':
+                this.#smooth(strip.filter.frequency, value);
+                break;
+            case 'resonance':
+                this.#smooth(strip.filter.Q, value);
+                break;
+            case 'delaySend':
+                if (strip.delay || value > 0) {
+                    this.#smooth(this.#ensureDelay(strip, mix).send.gain, value);
+                }
+                break;
+            case 'delayBeats':
+                if (strip.delay) {
+                    this.#smooth(strip.delay.delay.delayTime, this.#delaySeconds(value));
+                }
+                break;
+            case 'delayFeedback':
+                if (strip.delay) {
+                    this.#smooth(strip.delay.feedback.gain, value);
+                }
+                break;
+            case 'reverbSend':
+                if (strip.reverb || value > 0) {
+                    this.#smooth(this.#ensureReverb(strip, mix).send.gain, value);
+                }
+                break;
+        }
+    }
+
+// Works for sample, drum and MIDI channels, before or during playback.
+    setChannelParam(id, key, value) {
+        const spec = MIX_PARAMS[key];
+        if (!spec || !Number.isFinite(value) || !this.#isChannel(id)) {
+            return false;
+        }
+        const clamped = Math.min(spec.max, Math.max(spec.min, value));
+        const mix = this.#mixFor(id);
+        mix[key] = clamped;
+        const strip = this.#strip(id);
+        if (strip) {
+            this.#applyParam(strip, mix, key, clamped);
+        }
+        return true;
+    }
+
+    setChannelVolume(id, value) {
+        return this.setChannelParam(id, 'volume', value);
+    }
+
+    setChannelPan(id, value) {
+        return this.setChannelParam(id, 'pan', value);
+    }
+
+// Switching type moves a fully-open cutoff to the new type's open position,
+// so the filter doesn't suddenly start cutting the sound.
+    setChannelFilterType(id, type) {
+        if (!Object.hasOwn(FILTER_TYPES, type) || !this.#isChannel(id)) {
+            return false;
+        }
+        const mix = this.#mixFor(id);
+        const previous = mix.filterType;
+        if (previous === type) {
+            return true;
+        }
+        const wasOpen = mix.cutoff === FILTER_TYPES[previous];
+        mix.filterType = type;
+        const strip = this.#strip(id);
+        if (strip) {
+            strip.filter.type = type;
+        }
+        if (wasOpen) {
+            this.setChannelParam(id, 'cutoff', FILTER_TYPES[type]);
+        }
+        return true;
+    }
+
+    resetChannelParam(id, key) {
+        if (!MIX_PARAMS[key]) {
+            return false;
+        }
+        return this.setChannelParam(id, key, this.#defaultFor(id, key, this.#mix.get(id)));
+    }
+
+    getChannelMix(id) {
+        const mix = this.#mix.get(id);
+        const out = {filterType: mix?.filterType ?? 'lowpass'};
+        for (const key of Object.keys(MIX_PARAMS)) {
+            out[key] = mix?.[key] ?? this.#defaultFor(id, key, mix);
+        }
+        return out;
+    }
+
+// Applies any recognised keys and ignores the rest, so old saves still load.
+// The filter type goes first so a saved cutoff isn't remapped afterwards.
+    applyChannelMix(id, mix) {
+        this.setChannelFilterType(id, mix?.filterType);
+        for (const key of Object.keys(MIX_PARAMS)) {
+            this.setChannelParam(id, key, mix?.[key]);
+        }
+    }
+
+// Picks just the valid mix values out of a saved object.
+    extractMix(source) {
+        const out = {};
+        for (const key of Object.keys(MIX_PARAMS)) {
+            if (Number.isFinite(source?.[key])) out[key] = source[key];
+        }
+        if (Object.hasOwn(FILTER_TYPES, source?.filterType)) out.filterType = source.filterType;
+        return out;
+    }
+
+    resetChannelMix(id) {
+        this.#mix.delete(id);
+    }
+
+    // Drum settings are saved via jukeboxDrums.
+    snapshotMix() {
+        return {
+            tracks: this.arrangement.orderedTracks(this.sequence.tracks).map((track) => ({
+                trackId: track.id,
+                ...this.getChannelMix(track.id)
+            }))
+        };
+    }
+
+    restoreMix(state) {
+        if (!Array.isArray(state?.tracks)) {
+            return;
+        }
+        for (const entry of state.tracks) {
+            this.applyChannelMix(entry?.trackId, entry);
+        }
+    }
+
+// gain -> filter -> pan -> master, plus optional per-channel delay and reverb taps off pan.
+    #buildStrip(mix, out = this.masterGain) {
+        const ctx = this.audioContext;
+        const gain = ctx.createGain();
+        const filter = ctx.createBiquadFilter();
+        const pan = ctx.createStereoPanner();
+
+        filter.type = mix.filterType;
+        gain.gain.value = mix.volume;
+        filter.frequency.value = mix.cutoff;
+        filter.Q.value = mix.resonance;
+        pan.pan.value = mix.pan;
+        gain.connect(filter);
+        filter.connect(pan);
+        pan.connect(out);
+        const strip = { gain, filter, pan, out, delay: null, reverb: null };
+        if (mix.delaySend > 0) this.#ensureDelay(strip, mix);
+        if (mix.reverbSend > 0) this.#ensureReverb(strip, mix);
+        return strip;
+    }
+
+// Effects are created the first time their send goes above zero.
+    #ensureDelay(strip, mix) {
+        if (!strip.delay) {
+            const ctx = this.audioContext;
+            const send = ctx.createGain();
+            const delay = ctx.createDelay(MAX_DELAY_SEC);
+            const damp = ctx.createBiquadFilter();
+            const feedback = ctx.createGain();
+            damp.type = 'lowpass';
+            damp.frequency.value = DELAY_DAMP_HZ;
+            send.gain.value = mix.delaySend;
+            delay.delayTime.value = this.#delaySeconds(mix.delayBeats);
+            feedback.gain.value = mix.delayFeedback;
+            strip.pan.connect(send);
+            send.connect(delay);
+            delay.connect(damp);
+            damp.connect(feedback);
+            feedback.connect(delay);   // feedback loop (legal: it contains a DelayNode)
+            damp.connect(strip.out);
+            strip.delay = { send, delay, damp, feedback };
+        }
+        return strip.delay;
+    }
+
+    #ensureReverb(strip, mix) {
+        if (!strip.reverb) {
+            const ctx = this.audioContext;
+            const send = ctx.createGain();
+            const convolver = ctx.createConvolver();
+            this.#impulse ??= this.#makeImpulse(REVERB_SECONDS);
+            convolver.buffer = this.#impulse;
+            send.gain.value = mix.reverbSend;
+            strip.pan.connect(send);
+            send.connect(convolver);
+            convolver.connect(strip.out);
+            strip.reverb = { send, convolver };
+        }
+        return strip.reverb;
+    }
+
+// Decaying stereo noise: a cheap, file-free reverb impulse.
+    #makeImpulse(seconds) {
+        const ctx = this.audioContext;
+        const length = Math.floor(ctx.sampleRate * seconds);
+        const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+        for (let channel = 0; channel < 2; channel++) {
+            const data = impulse.getChannelData(channel);
+            for (let i = 0; i < length; i++) {
+                data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** 3;
+            }
+        }
+        return impulse;
+    }
+
+#disposeStrip(strip) {
+    if (!strip) return;
+    const nodes = [strip.gain, strip.filter, strip.pan, strip.mute,
+        ...Object.values(strip.delay ?? {}), ...Object.values(strip.reverb ?? {})].filter(Boolean);
+    for (const node of nodes) {
+        try { node.disconnect(); } catch (_) {}
+    }
+}
+
+#disconnectLane(id) {
+    const strip = this.#laneBuses.get(id);
+    if (!strip) return;
+    this.#disposeStrip(strip);
+    this.#laneBuses.delete(id);
+    this.laneGains.delete(id);
+}
+
+#pruneLaneBuses() {
+    const midiIds = new Set(this.sequence.tracks.map((track) => track.id));
+    for (const id of this.#laneBuses.keys()) {
+        if (!midiIds.has(id) && !this.arrangement.tracks.has(id)) this.#disconnectLane(id);
+    }
+}
+
+// Delay times are in beats, so a tempo change retimes every active delay.
+    #updateDelayTimes() {
+        if (!this.audioContext) {
+            return;
+        }
+        const strips = [...this.tracks].map(([id, track]) => [id, track.strip]).concat([...this.#laneBuses]);
+        for (const [id, strip] of strips) {
+            if (strip?.delay) {
+                this.#smooth(strip.delay.delay.delayTime, this.#delaySeconds(this.getChannelMix(id).delayBeats));
+            }
+        }
+    }
+
+
+    // --- Automation ---
+    automationParams() {
+        return AUTOMATABLE_PARAMS.map((key) => ({key, ...MIX_PARAMS[key], log: LOG_PARAMS.has(key)}));
+    }
+
+    #cleanPoints(key, points) {
+        if (!Array.isArray(points) || points.length > MAX_AUTOMATION_POINTS) {
+            return null;
+        }
+        const spec = MIX_PARAMS[key];
+        const byTick = new Map();
+        for (const point of points) {
+            if (!Number.isFinite(point?.tick) || !Number.isFinite(point?.value)) {
+                continue;
+            }
+            // Later duplicates win; values are clamped to the parameter's range.
+            byTick.set(Math.max(0, Math.round(point.tick)), Math.min(spec.max, Math.max(spec.min, point.value)));
+        }
+        return [...byTick].sort((a, b) => a[0] - b[0]).map(([tick, value]) => ({tick, value}));
+    }
+
+// Replaces a lane. An empty list removes it. Channels need not exist yet, so lanes
+// can be restored before drums or the sample are created.
+    setAutomation(id, key, points) {
+        if (typeof id !== 'string' || !id || !AUTOMATABLE_PARAMS.includes(key) || !this.#isLane(id)) {
+            return false;
+        }
+        const cleaned = this.#cleanPoints(key, points);
+        if (!cleaned) {
+            return false;
+        }
+        if (!cleaned.length) {
+            const lanes = this.#automation.get(id);
+            if (lanes?.delete(key)) {
+                if (!lanes.size) {
+                    this.#automation.delete(id);
+                }
+                this.#restoreAutomatedParam(id, key);
+            }
+            return true;
+        }
+        let lanes = this.#automation.get(id);
+        if (!lanes) {
+            lanes = new Map();
+            this.#automation.set(id, lanes);
+        }
+        lanes.set(key, cleaned);
+        return true;
+    }
+
+    getAutomation(id, key) {
+        return (this.#automation.get(id)?.get(key) ?? []).map((point) => ({...point}));
+    }
+
+    hasAutomation(id, key) {
+        return this.#automation.get(id)?.has(key) ?? false;
+    }
+
+    clearAutomation(id, key) {
+        return this.setAutomation(id, key, []);
+    }
+
+// Value of a lane at a tick, or null if the parameter has no lane.
+    automationValueAt(id, key, tick) {
+        const points = this.#automation.get(id)?.get(key);
+        return points ? this.#interpolate(points, tick, LOG_PARAMS.has(key)) : null;
+    }
+
+    snapshotAutomation() {
+        const lanes = [];
+        for (const [channelId, keys] of this.#automation) {
+            for (const [key, points] of keys) {
+                lanes.push({channelId, key, points: points.map((point) => ({...point}))});
+            }
+        }
+        return {version: 1, lanes};
+    }
+
+    restoreAutomation(state) {
+        this.#restoreAutomatedParams();
+        this.#automation.clear();
+        if (!Array.isArray(state?.lanes)) {
+            return;
+        }
+        for (const lane of state.lanes) {
+            this.setAutomation(lane?.channelId, lane?.key, lane?.points);
+        }
+    }
+
+    #interpolate(points, tick, log) {
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (tick <= first.tick) return first.value;
+        if (tick >= last.tick) return last.value;
+        let low = 0;
+        let high = points.length - 1;
+        while (high - low > 1) {
+            const middle = (low + high) >> 1;
+            if (points[middle].tick <= tick) low = middle; else high = middle;
+        }
+        const a = points[low];
+        const b = points[high];
+        const fraction = (tick - a.tick) / (b.tick - a.tick);
+        return log ? a.value * (b.value / a.value) ** fraction : a.value + (b.value - a.value) * fraction;
+    }
+
+// Like #strip, but builds a MIDI track's strip if it doesn't exist yet.
+    #stripFor(id) {
+        return this.#strip(id) ?? (this.#isLane(id) ? this.#laneStrip(id) : null);
+    }
+
+// The AudioParam behind a mix key, creating delay/reverb nodes if the lane needs them.
+    #audioParam(strip, mix, key) {
+        switch (key) {
+            case 'volume':
+                return strip.gain.gain;
+            case 'pan':
+                return strip.pan.pan;
+            case 'cutoff':
+                return strip.filter.frequency;
+            case 'resonance':
+                return strip.filter.Q;
+            case 'delaySend':
+                return this.#ensureDelay(strip, mix).send.gain;
+            case 'delayFeedback':
+                return this.#ensureDelay(strip, mix).feedback.gain;
+            case 'reverbSend':
+                return this.#ensureReverb(strip, mix).send.gain;
+            default:
+                return null;
+        }
+    }
+
+// Called for every scheduled step: one set + one ramp per automated parameter.
+    #scheduleAutomation(stepIndex, time, fromTick) {
+        if (!this.#automation.size) {
+            return;
+        }
+        const sequence = this.sequence;
+        const stepStart = sequence.stepToTick(stepIndex);
+        // A partial first step (resume/seek) starts at the chosen tick, not the step boundary.
+        const tick0 = fromTick === null ? stepStart : Math.max(stepStart, fromTick);
+        const tick1 = sequence.stepToTick(stepIndex + 1);
+        const stepOffset = this.stepSeconds(stepIndex);
+const t0 = time + (sequence.ticksToSeconds(tick0) - sequence.ticksToSeconds(stepStart));
+const t1 = time + (sequence.ticksToSeconds(tick1) - sequence.ticksToSeconds(stepStart));
+        for (const [id, lanes] of this.#automation) {
+            const strip = this.#stripFor(id);
+            if (!strip) {
+                continue;
+            }
+            const mix = this.#mixFor(id);
+            for (const [key, points] of lanes) {
+                const param = this.#audioParam(strip, mix, key);
+                if (!param) {
+                    continue;
+                }
+                const log = LOG_PARAMS.has(key);
+                const v0 = this.#interpolate(points, tick0, log);
+                const v1 = this.#interpolate(points, tick1, log);
+                param.setValueAtTime(v0, t0);
+                if (v1 !== v0 && t1 > t0) {
+                    if (log) {
+                        param.exponentialRampToValueAtTime(v1, t1);
+                    } else {
+                        param.linearRampToValueAtTime(v1, t1);
+                    }
+                }
+            }
+        }
+    }
+
+// Snap automated parameters back to their mixer values (Stop/Pause, lane removal).
+    #restoreAutomatedParams() {
+        for (const [id, lanes] of this.#automation) {
+            for (const key of lanes.keys()) {
+                this.#restoreAutomatedParam(id, key);
+            }
+        }
+    }
+
+    #restoreAutomatedParam(id, key) {
+        if (!this.audioContext) {
+            return;
+        }
+        const strip = this.#strip(id);
+        if (strip) {
+            const mix = this.#mixFor(id);
+            this.#applyParam(strip, mix, key, mix[key]);
+        }
     }
 
     // --- UI Event Hook ---
@@ -920,3 +1655,4 @@ class SequencerEngine {
         this.onStepTickCallback = callback;
     }
 }
+

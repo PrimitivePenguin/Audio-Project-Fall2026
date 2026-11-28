@@ -273,7 +273,7 @@ function addChord(engine) {
         assert.equal(preparedContext, h.engine.audioContext);
         assert.equal(preparedOutput, h.engine.masterGain);
         assert.equal(events[0].context, preparedContext);
-        assert.equal(events[0].output, preparedOutput);
+        assert.equal(events[0].output.destination.destination, h.engine.laneGains.get(events[0].event.trackId));
         assert.deepEqual(
             [
                 events[0].event.midi,

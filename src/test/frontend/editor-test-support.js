@@ -14,6 +14,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     const readyEvents = [];
     const deferredActions = [];
     let engine;
+    let arrangement;
     let activeElement = null;
     let animationCallback = null;
     let animationRequests = 0;
@@ -76,6 +77,14 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             children.forEach((child) => { child.parentElement = this; });
             this.children.push(...children);
         }
+        after(element) {
+            const parent = this.parentElement;
+            if (!parent) return;
+            element.remove();
+            parent.children.splice(parent.children.indexOf(this) + 1, 0, element);
+            element.parentElement = parent;
+        }
+        get options() { return this.children; }
         remove() {
             if (this.parentElement) {
                 this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
@@ -166,12 +175,17 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             return { length, sampleRate, duration: length / sampleRate, numberOfChannels: channels,
                 copyToChannel(data, channel) { pcm[channel].set(data); }, getChannelData(channel) { return pcm[channel]; } };
         }
-        createBiquadFilter() { return new AudioSource(); }
+        createBiquadFilter() {
+            return Object.assign(new AudioSource(), { frequency: this.param(), Q: this.param() });
+        }
+        createDelay() { return Object.assign(new AudioSource(), { delayTime: this.param() }); }
+        createConvolver() { return new AudioSource(); }
         param() {
             return {
                 value: 0,
                 setValueAtTime(value) { this.value = value; },
                 linearRampToValueAtTime(value) { this.value = value; },
+                exponentialRampToValueAtTime(value) { this.value = value; },
                 setTargetAtTime(value) { this.value = value; },
                 cancelScheduledValues() {}
             };
@@ -236,9 +250,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             removeItem: (key) => storage.delete(key)
         },
         fetch: options.fetch,
+        URL,
+        clearTimeout,
         window: {
-            location: { pathname: options.pathname ?? '/index.html' },
+            location: { pathname: options.pathname ?? '/index.html', protocol: 'https:', host: 'jukebox.test' },
             AudioContext,
+            StompJs: options.StompJs,
             devicePixelRatio: pixelRatio,
             addEventListener(name, callback) {
                 windowListeners[name] = name === 'resize' ? () => { callback(); animationCallback?.(); } : callback;
@@ -247,6 +264,9 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
                 confirmCount++;
                 return confirmResult;
             }
+        },
+        Option: class extends Element {
+            constructor(text, value) { super('option'); this.textContent = text; this.value = value; }
         },
         AbortController,
         crypto: require('node:crypto').webcrypto,
@@ -266,6 +286,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         },
         setTimeout(callback, delay) {
             if (delay === 0) deferredActions.push(callback);
+            else return setTimeout(callback, delay);
         },
         requestAnimationFrame(callback) {
             animationRequests++;
@@ -288,7 +309,8 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
         'midi-io.js',
         'PianoRollEditor.js',
         'TrackOverview.js',
-        'ArrangementEditor.js'
+        'ArrangementEditor.js',
+        'ProjectCollabClient.js'
     ]) {
         vm.runInContext(fs.readFileSync(path.join(directory, file), 'utf8'), scope);
     }
@@ -302,6 +324,12 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
             engine = this;
         }
     };
+    scope.CapturedArrangement = class extends api.ArrangementEditor {
+        constructor(...args) {
+            super(...args);
+            arrangement = this;
+        }
+    };
     for (const script of options.scripts ?? []) {
         vm.runInContext(fs.readFileSync(path.join(directory, script), 'utf8'), scope);
     }
@@ -310,7 +338,8 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     }
     const source = fs
         .readFileSync(path.join(directory, 'sequencer-ui.js'), 'utf8')
-        .replace('new SequencerEngine()', 'new CapturedEngine()');
+        .replace('new SequencerEngine()', 'new CapturedEngine()')
+        .replace('new ArrangementEditor(engine,', 'new CapturedArrangement(engine,');
     const initialization = vm.runInContext(source, scope);
 
     const pointer = (x, y, options = {}) => ({
@@ -324,6 +353,7 @@ function createEditorHarness(pixelRatio = 1, options = {}) {
     const harness = {
         ...api,
         engine,
+        arrangement,
         ready: Promise.resolve(initialization),
         scope,
         nodes,

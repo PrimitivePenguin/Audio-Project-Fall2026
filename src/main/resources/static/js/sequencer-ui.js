@@ -36,6 +36,12 @@
     const arrangement = new ArrangementEditor(engine, {
         onMutate: (type, targetId) => broadcastSync(type, targetId),
         projectId: () => databaseProject?.id ?? null,
+        readOnly: () => databaseProject?.role === 'VIEWER',
+        onAssetUploaded: (asset) => {
+            broadcastSync('AUDIO_SYNC', asset.id);
+            if (!collab.connected) getElement('rackStatus').textContent =
+                'Sample uploaded. Save Project again to share its cloud URL.';
+        },
         canvas: pianoCanvas, point: canvasPoint, release: releasePointer, run: runEditorAction,
         canEdit: () => !arrangement.deletingAsset && databaseProject?.role !== 'VIEWER' && !engine.isPlaying && !engine.startPromise && !isStartingPlayback,
         clearMidiTrack: () => { if (activeTrackId !== null) setWorkspace('tracks', null); },
@@ -685,200 +691,161 @@
     let loadedInstrumentState = null;
 
 
-let isApplyingRemote = false;
-    let lastSyncedArrangementJson = '';
-    let lastSyncedInstrumentsJson = '';
+    let isApplyingRemote = false;
 
     function broadcastSync(type, targetId = null, payload = null) {
         if (isApplyingRemote || !databaseProject || databaseProject.role === 'VIEWER') return;
         collab.publish(type, targetId, payload);
     }
 
-    function applyProjectDataFromServer(data, serverName = null, preserveView = true) {
-        if (!data || typeof data !== 'object') return false;
-        const prevSelection = new Set(selectedIds);
-        const prevClipSelection = new Set(arrangement.selected);
-        const prevTrackId = activeTrackId;
-        const prevScrollLeft = pianoViewport.scrollLeft;
-        const prevScrollTop = pianoViewport.scrollTop;
-        const cachedAssets = new Map(engine.arrangement.assets);
+    let reviewingDraft = false;
 
+    function applyProjectDataFromServer(data, serverName) {
+        const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
+        if (!data || !integer(data.stepCount, 1, 65536) || !integer(data.ppq, 1, 32767) ||
+            !Array.isArray(data.tracks) || !data.tracks.length || !Array.isArray(data.notes)) {
+            throw new Error('Invalid project timeline.');
+        }
+        const sequence = new NoteSequence(data.stepCount, data.ppq);
+        sequence.name = [serverName, data.name].find((name) => typeof name === 'string' && name) || 'JukeBox';
+        const ids = new Set();
+        sequence.tracks = data.tracks.map((track) => {
+            if (typeof track?.id !== 'string' || !track.id || ids.has(track.id) || typeof track.name !== 'string') {
+                throw new Error('Invalid or duplicate project track.');
+            }
+            ids.add(track.id);
+            return { ...track };
+        });
+        const validEvents = (events, validValue) => Array.isArray(events) && events.length > 0 &&
+            events.every((event, index) => integer(event?.ticks, 0, Number.MAX_SAFE_INTEGER) &&
+                (!index || event.ticks >= events[index - 1].ticks) && validValue(event));
+        if (!validEvents(data.tempos, ({ bpm }) => Number.isFinite(bpm) && bpm > 0) ||
+            !validEvents(data.timeSignatures, ({ timeSignature }) => Array.isArray(timeSignature) &&
+                timeSignature.length === 2 && timeSignature.every((part) => integer(part, 1, 128)))) {
+            throw new Error('Invalid tempo or meter map.');
+        }
+        sequence.tempos = data.tempos;
+        sequence.timeSignatures = data.timeSignatures;
+        sequence.importInfo = data.importInfo ?? null;
+        for (const note of data.notes) sequence.addNote(note);
+        const next = new AudioArrangement(data.arrangement);
+        if (data.arrangement && (data.arrangement.version !== 1 ||
+            next.tracks.size !== data.arrangement.tracks?.length ||
+            next.assets.size !== data.arrangement.assets?.length ||
+            next.clips.size !== data.arrangement.clips?.length ||
+            [...next.tracks.keys()].some((id) => ids.has(id)))) {
+            throw new Error('Invalid audio arrangement.');
+        }
+        const { loopStart, loopEnd } = data;
+        if (!integer(loopStart, 0, data.stepCount - 1) || !integer(loopEnd, loopStart + 1, data.stepCount)) {
+            throw new Error('Invalid project loop.');
+        }
+        for (const [id, asset] of next.assets) {
+            const cached = engine.arrangement.assets.get(id);
+            if (cached?.buffer) {
+                for (const key of ['buffer', 'waveform', 'spectrogram', 'local', 'bytes', 'previewStatus']) {
+                    asset[key] = cached[key];
+                }
+            }
+        }
+
+        const prevNotes = new Set(selectedIds);
+        const prevClips = new Set(arrangement.selected);
+        const prevTrack = activeTrackId;
+        const cursorStep = engine.sequence.tickToStep(editingCursorTick);
+        const { scrollLeft, scrollTop } = pianoViewport;
         isApplyingRemote = true;
         try {
-            const nextStepCount = Number.isInteger(data.stepCount) ? data.stepCount : 16;
-            const nextPpq = Number.isInteger(data.ppq) ? data.ppq : 480;
-            const nextName = serverName || data.name || 'JukeBox';
-
-            if (engine.sequence && engine.sequence.ppq === nextPpq) {
-                engine.sequence.name = nextName;
-                if (nextStepCount !== engine.totalSteps) {
-                    engine.setPatternLength(nextStepCount);
-                }
-                if (Array.isArray(data.tracks) && data.tracks.length) {
-                    const existingTracks = new Map(engine.sequence.tracks.map((t) => [t.id, t]));
-                    engine.sequence.tracks = data.tracks.map((incoming) => {
-                        const existing = existingTracks.get(incoming.id);
-                        return existing ? Object.assign(existing, incoming) : { ...incoming };
-                    });
-                }
-                if (Array.isArray(data.tempos) && data.tempos.length) {
-                    engine.sequence.tempos = data.tempos;
-                }
-                if (Array.isArray(data.timeSignatures) && data.timeSignatures.length) {
-                    engine.sequence.timeSignatures = data.timeSignatures;
-                }
-                engine.sequence.importInfo = data.importInfo || null;
-
-                const incomingNotes = Array.isArray(data.notes) ? data.notes : [];
-                const incomingById = new Map(incomingNotes.map((n) => [n.id, n]));
-                engine.sequence.notes = engine.sequence.notes.filter((n) => incomingById.has(n.id));
-                const existingById = new Map(engine.sequence.notes.map((n) => [n.id, n]));
-                for (const incoming of incomingNotes) {
-                    const existing = existingById.get(incoming.id);
-                    if (existing) {
-                        // Assign only plain data fields so prototype getters (startStep/durationSteps) never throw in Firefox
-                        existing.midi = incoming.midi;
-                        existing.ticks = incoming.ticks;
-                        existing.durationTicks = incoming.durationTicks;
-                        existing.velocity = incoming.velocity;
-                        existing.velocityMidi = incoming.velocityMidi;
-                        existing.trackId = incoming.trackId;
-                        existing.importId = incoming.importId ?? null;
-                    } else {
-                        engine.sequence.addNote({
-                            id: incoming.id,
-                            midi: incoming.midi,
-                            ticks: incoming.ticks,
-                            durationTicks: incoming.durationTicks,
-                            velocity: incoming.velocity,
-                            velocityMidi: incoming.velocityMidi,
-                            trackId: incoming.trackId,
-                            importId: incoming.importId ?? null
-                        });
-                    }
-                }
-            } else {
-                const resumeTick = engine.isPlaying ? engine.getPlaybackTick() : null;
-                const sequence = new NoteSequence(nextStepCount, nextPpq);
-                sequence.name = nextName;
-                sequence.tracks = Array.isArray(data.tracks) && data.tracks.length
-                    ? data.tracks
-                    : sequence.tracks;
-                sequence.tempos = data.tempos || sequence.tempos;
-                sequence.timeSignatures = data.timeSignatures || sequence.timeSignatures;
-                sequence.importInfo = data.importInfo || null;
-                (data.notes || []).forEach((note) => sequence.addNote(note));
-                engine.replaceSequence(sequence);
-                if (resumeTick !== null) {
-                    engine.play(resumeTick);
-                }
-            }
-
-            const nextLoopStart = Number.isInteger(data.loopStart) ? data.loopStart : 0;
-            const nextLoopEnd = Number.isInteger(data.loopEnd) ? data.loopEnd : engine.sequence.stepCount;
-            if (nextLoopStart !== engine.loopStart || nextLoopEnd !== engine.loopEnd) {
-                engine.setLoopRange(nextLoopStart, nextLoopEnd);
-            }
-
-            const arrangementJson = JSON.stringify(data.arrangement ?? null);
-            if (arrangementJson !== lastSyncedArrangementJson &&
-                (data.arrangement || engine.arrangement.assets.size || engine.arrangement.tracks.size)) {
-                try {
-                    const nextArrangement = new AudioArrangement(data.arrangement);
-                    for (const [id, asset] of nextArrangement.assets) {
-                        const cached = cachedAssets.get(id);
-                        if (cached?.buffer) {
-                            asset.buffer = cached.buffer;
-                            asset.waveform = cached.waveform;
-                            asset.spectrogram = cached.spectrogram;
-                            asset.local = cached.local;
-                            asset.previewStatus = cached.previewStatus;
-                        }
-                    }
-                    engine.arrangement = nextArrangement;
-                    arrangement.restoreAssets();
-                    lastSyncedArrangementJson = arrangementJson;
-                } catch (err) {
-                    console.warn('[collab] Skipped arrangement sync:', err);
-                }
-            }
-
-            const instrumentsJson = JSON.stringify(data.instruments ?? null);
-            if (data.instruments?.version === 1 && instrumentsJson !== lastSyncedInstrumentsJson) {
-                try {
-                    loadedInstrumentState = data.instruments;
-                    window.jukeboxSynth?.restoreState(data.instruments.synth ?? null);
-                    window.jukeboxDrums?.restoreState(data.instruments.drums ?? null);
-                    engine.restoreMix(data.instruments.mixer);
-                    engine.restoreAutomation(data.instruments.automation);
-                    lastSyncedInstrumentsJson = instrumentsJson;
-                } catch (err) {
-                    console.warn('[collab] Skipped instrument sync:', err);
-                }
-            }
-
-            engine.mutedLanes = new Set(
-                Array.isArray(data.mutedLanes) ? data.mutedLanes.filter((id) => typeof id === 'string') : []
-            );
-
-            if (preserveView) {
-                invalidateRenderIndex();
-                expandPitchRange(engine.sequence.notes);
-                activeTrackId = engine.sequence.tracks.some((t) => t.id === prevTrackId) ? prevTrackId : null;
-                selectedIds.clear();
-                for (const note of engine.sequence.notes) {
-                    if (prevSelection.has(note.id)) selectedIds.add(note.id);
-                }
-                selectedNoteId = [...selectedIds][0] ?? null;
-                arrangement.setSelection(prevClipSelection, arrangement.trackId);
-                syncEditorState();
-                pianoViewport.scrollLeft = prevScrollLeft;
-                pianoViewport.scrollTop = prevScrollTop;
-                pendingViewportRender = true;
-                renderPianoRoll();
-            }
+            // Transport is local. Stop before replacing models to release old voices and clips.
+            stopPlayback();
+            engine.arrangement = new AudioArrangement();
+            engine.replaceSequence(sequence);
+            engine.arrangement = next;
+            engine.setLoopRange(loopStart, loopEnd);
+            const instruments = data.instruments?.version === 1 ? data.instruments : null;
+            window.jukeboxSynth?.restoreState(instruments?.synth ?? null);
+            engine.restoreMix(instruments?.mixer, true);
+            window.jukeboxDrums?.restoreState(instruments?.drums ?? null);
+            engine.restoreAutomation(instruments?.automation);
+            const mutes = new Set(Array.isArray(data.mutedLanes) ? data.mutedLanes : []);
+            for (const id of new Set([...engine.mutedLanes, ...mutes])) engine.setLaneMuted(id, mutes.has(id));
+            unavailableSample = data.sample ?? null;
+            arrangement.restoreAssets();
+            checkHistory();
+            workspaceSequence = sequence;
+            activeTrackId = sequence.tracks.some((track) => track.id === prevTrack) ? prevTrack : null;
+            for (const note of sequence.notes) if (prevNotes.has(note.id)) selectedIds.add(note.id);
+            selectedNoteId = [...selectedIds][0] ?? null;
+            arrangement.setSelection(prevClips, arrangement.trackId);
+            expandPitchRange(sequence.notes);
+            syncEditorState();
+            setEditingCursor(Math.min(Math.round(sequence.stepToTick(cursorStep)), Math.floor(sequence.stepToTick(sequence.stepCount))), false);
+            pianoViewport.scrollLeft = scrollLeft;
+            pianoViewport.scrollTop = scrollTop;
+            pendingViewportRender = true;
             return true;
         } finally {
             isApplyingRemote = false;
         }
     }
 
+    const draftButton = getElement('downloadCollabDraft');
     const collab = new ProjectCollabClient({
         getProject: () => databaseProject,
         getSnapshot: () => databaseSnapshot(),
+        canPublish: () => !databaseSaveInFlight,
         onRemoteEvent: (event, isFullSnapshot) => {
-            console.debug('[collab] remote event:', event.type, 'rev:', event.revision, 'isPlaying:', engine.isPlaying);
             if (!event.snapshot) return false;
+            if (editGesture || resizeGesture || trackGesture || arrangement.gesture || autoGesture || pointerInput) {
+                collab.conflict('A collaborator saved during an active edit.');
+                broadcastSync('FULL_SYNC', 'draft');
+                return false;
+            }
             try {
-                const parsed = JSON.parse(event.snapshot);
-                const applied = applyProjectDataFromServer(parsed, event.name, true);
-                console.debug('[collab] applied:', applied, 'notes count:', engine.sequence.notes.length);
-                if (applied && !isFullSnapshot && event.actorUsername) {
-                    showStatus(`Updated by ${event.actorUsername} (rev ${event.revision}).`);
-                }
+                const applied = applyProjectDataFromServer(JSON.parse(event.snapshot), event.name);
+                if (applied && !isFullSnapshot) showStatus(`Project updated to revision ${event.revision}.`);
                 return applied;
             } catch (error) {
-                console.error('[collab] Failed to apply remote project sync:', error);
-                showStatus(`Sync apply error: ${error.message}`);
+                showStatus(`Remote update could not be applied: ${error.message}`);
                 return false;
             }
         },
-        onConflict: (event) => {
-            if (event.snapshot) {
-                try {
-                    applyProjectDataFromServer(JSON.parse(event.snapshot), event.name, true);
-                } catch { /* Ignore malformed snapshot */ }
-            }
-            showStatus('Project changed by a collaborator — synced to latest version.');
+        onConflict: (message, draft) => {
+            draftButton.hidden = getElement('discardCollabDraft').hidden = getElement('reviewCollabDraft').hidden = !draft;
+            showStatus(`${message} ${draft ? 'Download the local draft before reloading or resolving manually.' : 'Reload to resume synchronization.'}`);
         },
         onStatus: (message) => {
             if (databaseProject) showStatus(message);
         }
     });
+    draftButton.onclick = () => {
+        const draft = collab.draft ?? collab.readDraft();
+        if (!draft) return;
+        const url = URL.createObjectURL(new Blob([draft.snapshot], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'jukebox-collaboration-draft.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+    };
+    getElement('reviewCollabDraft').onclick = () => runEditorAction(() => {
+        const draft = collab.draft ?? collab.readDraft();
+        if (!draft) return;
+        if (applyProjectDataFromServer(JSON.parse(draft.snapshot), draft.name)) {
+            reviewingDraft = true;
+            showStatus('Viewing the local draft. Save Project can submit this reviewed version after confirmation.');
+        }
+    });
+    getElement('discardCollabDraft').onclick = () => {
+        if (!window.confirm('Discard the saved local draft and reload the latest server version?')) return;
+        collab.pending = collab.inFlight = null;
+        collab.clearDraft();
+        window.location.reload();
+    };
 
     // Re-sync latest state when returning focus to the browser window if no local edit is in flight
     window.addEventListener('focus', () => {
-        if (databaseProject && collab.connected && !collab.inFlight && !collab.outbox.length) {
+        if (databaseProject && collab.connected && !collab.inFlight && !collab.pending) {
             collab.requestState();
         }
     });
@@ -915,37 +882,56 @@ let isApplyingRemote = false;
         if (!databaseProject || databaseProject.role === 'VIEWER' || databaseSaveInFlight) {
             return;
         }
+        if ((collab.blocked && !reviewingDraft) || collab.inFlight) {
+            showStatus(collab.blocked ? 'Resolve the collaboration draft before saving.' : 'Wait for the current collaboration update.');
+            return;
+        }
+        if (reviewingDraft && !window.confirm(
+            `Replace server revision ${databaseProject.version} with the reviewed draft? A newer server revision will reject the save.`)) return;
         databaseSaveInFlight = true;
         try {
-            const unsyncedSamples = await arrangement.ensureAssetsUploaded();
-            const response = await fetch(`/api/projects/${databaseProject.id}`, {
-                method: 'PUT',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: engine.sequence.name,
-                    projectData: JSON.stringify(databaseSnapshot()),
-                    version: databaseProject.version
-                })
+            const summary = arrangement.sampleSaveSummary();
+            const project = databaseProject;
+            const snapshot = JSON.stringify(databaseSnapshot());
+            collab.publish('FULL_SYNC', 'manual-save');
+            const pendingAtSave = collab.pending;
+            const { response, body } = await arrangement.withDeadline(async (signal) => {
+                const response = await fetch(`/api/projects/${project.id}`, {
+                    method: 'PUT', signal, credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'X-Jukebox-Client': collab.clientId },
+                    body: JSON.stringify({ name: engine.sequence.name, projectData: snapshot, version: project.version })
+                });
+                return { response, body: await response.json().catch(() => null) };
             });
-            const body = await response.json().catch(() => null);
             if (!response.ok) {
+                if (response.status === 409) {
+                    collab.conflict(body?.error || 'The server has a newer project revision.');
+                    broadcastSync('FULL_SYNC', 'draft');
+                    return;
+                }
                 throw new Error(body?.error || `Save failed (${response.status})`);
             }
-            databaseProject.version = body.version;
-            if (unsyncedSamples.length) {
-                const count = unsyncedSamples.length;
-                showStatus(
-                    `Saved "${engine.sequence.name}" to the database, but cloud sync is incomplete ` +
-                    `(${count} ${count === 1 ? 'sample' : 'samples'} saved locally only and unavailable in other browsers).`
-                );
-            } else {
-                showStatus(`Saved "${engine.sequence.name}" to the database.`);
+            if (databaseProject !== project) return;
+            if (!Number.isSafeInteger(body?.version)) throw new Error('The server did not confirm a saved revision.');
+            project.version = Math.max(project.version, body.version);
+            if (collab.pending === pendingAtSave || collab.pending?.snapshot === snapshot) {
+                collab.pending = null;
+                collab.clearDraft();
             }
+            if (reviewingDraft) {
+                reviewingDraft = false;
+                if (!collab.pending) collab.clearDraft();
+                draftButton.hidden = getElement('reviewCollabDraft').hidden = getElement('discardCollabDraft').hidden = true;
+                collab.blocked = false;
+                collab.requestState();
+            }
+            showStatus(`Saved "${engine.sequence.name}" to the database.${summary}`);
+            arrangement.ensureAssetsUploaded();
         } catch (error) {
             showStatus(`Save failed: ${error.message}`);
         } finally {
             databaseSaveInFlight = false;
+            collab.flush();
         }
     }
 
@@ -2906,6 +2892,10 @@ let isApplyingRemote = false;
     getElement('nextOverlap').onclick = cycleOverlap;
     getElement('deleteNote').onclick = deleteSelectedNote;
     getElement('saveProject').onclick = saveDatabaseProject;
+    window.addEventListener('online', () => {
+        arrangement.restoreAssets(true);
+        arrangement.ensureAssetsUploaded();
+    });
     getElement('noteLength').onchange = changeLength;
     getElement('noteLength').onkeydown = (event) => {
         const shortcut = editorShortcuts.find((entry) => entry.local && matchesShortcut(entry, event));
@@ -3153,7 +3143,7 @@ let isApplyingRemote = false;
                 refresh();
             });
             input.addEventListener('dblclick', () => {
-                if (!input.disabled) engine.resetChannelParam(id, control.key);
+                if (!input.disabled && engine.resetChannelParam(id, control.key)) broadcastSync('SETTINGS_SYNC', id);
                 refresh();
             });
             return { control, input, readout, toSlider };
@@ -3292,8 +3282,10 @@ let isApplyingRemote = false;
         arrangement.reset();
         window.jukeboxSynth?.restoreState(null);
         window.jukeboxDrums?.restoreState(null);
-        databaseProject = null;
         collab.disconnect();
+        databaseProject = null;
+        reviewingDraft = false;
+        draftButton.hidden = getElement('reviewCollabDraft').hidden = getElement('discardCollabDraft').hidden = true;
         getElement('saveProject').disabled = false;
         newNoteLengthSteps = 1;
         newNoteVelocity = 89;
@@ -4027,6 +4019,7 @@ let isApplyingRemote = false;
         getState: () => ({ mode: workspaceMode, activeTrackId, ghostNotes: ghostNotesEnabled, editingCursorTick, readOnly: databaseProject?.role === 'VIEWER' }),
         setWorkspace,
         setGhostNotes,
+        instrumentChanged: () => broadcastSync('INSTRUMENTS_SYNC', 'instruments'),
         refresh: syncEditorState
     });
     document.dispatchEvent(new CustomEvent('jukebox:ready', { detail: { engine, editor, instrumentState: loadedInstrumentState } }));

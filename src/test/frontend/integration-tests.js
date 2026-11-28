@@ -78,6 +78,10 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
             .map((match) => match[1]).filter((url) => /\.(js|css)$/.test(url));
         assets.push(...[...html.matchAll(/from "([^"]+)"/g)].map((match) => match[1]));
         for (const asset of assets) {
+            if (asset.startsWith('https://')) {
+                assert.equal(new URL(asset).href, 'https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js');
+                continue;
+            }
             assert.ok(asset.startsWith('/'), asset);
             assert.ok(fs.existsSync(path.join(staticDir, asset)));
             assert.equal(new URL(asset, 'http://localhost/project/uuid').pathname,
@@ -337,7 +341,7 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         const mixer = elements.trackMixer;
         const rowIds = () => mixer.children.map((row) => row.dataset.trackId);
         const sliders = (id) => mixer.children.find((row) => row.dataset.trackId === id).children
-            .filter((node) => node.tagName === 'LABEL').map((label) => label.children[1]);
+            .filter((node) => node.tagName === 'LABEL' && node.children[1].type === 'range').map((label) => label.children[1]);
         const set = (slider, value) => {
             slider.value = String(value);
             slider.listeners.input();
@@ -377,21 +381,21 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         assert.notEqual(a.destination, b.destination);
         assert.equal(a.destination.gain.value, .45);
         assert.equal(b.destination.gain.value, 1);
-        assert.equal(b.destination.destination.pan.value, .75);
+        assert.equal(b.destination.destination.destination.pan.value, .75);
         const mute = elements.laneControls.children.find((button) => button.getAttribute('aria-label') === 'Mute Audio A');
         mute.onclick();
-        const muteGain = a.destination.destination.destination.gain;
+        const muteGain = a.destination.destination.destination.destination.gain;
         assert.equal(muteGain.value, 0);
         set(sliders('audio-a')[0], .3);
         set(sliders('audio-a')[1], -.6);
         assert.equal(a.destination.gain.value, .3);
-        assert.equal(a.destination.destination.pan.value, -.6);
+        assert.equal(a.destination.destination.destination.pan.value, -.6);
         assert.equal(muteGain.value, 0);
-        assert.equal(b.destination.destination.pan.value, .75);
+        assert.equal(b.destination.destination.destination.pan.value, .75);
         mute.onclick();
         assert.equal(muteGain.value, 1);
         assert.equal(a.destination.gain.value, .3);
-        assert.equal(a.destination.destination.pan.value, -.6);
+        assert.equal(a.destination.destination.destination.pan.value, -.6);
         engine.stop();
         mute.onclick();
         await elements.saveProject.onclick();
@@ -514,7 +518,8 @@ async function databaseHarness(data = savedData(), role = 'EDITOR', saveStatus =
         assert.match(h.elements.status.textContent, /stale/);
         await h.elements.saveProject.onclick();
         assert.equal(JSON.parse(requests.at(-1).body).version, 7);
-        assert.equal(requests.filter((request) => request.method === 'PUT').length, 2);
+        assert.equal(requests.filter((request) => request.method === 'PUT').length, 1);
+        assert.equal(h.elements.downloadCollabDraft.hidden, false);
     });
     await test('old projects load defaults; invalid instrument records clamp or skip safely without changing composition', async () => {
         const old = savedData(); delete old.instruments;

@@ -1,171 +1,179 @@
 class ProjectCollabClient {
-    constructor({ getProject, getSnapshot, onRemoteEvent, onConflict, onStatus }) {
-        this.getProject = getProject;
-        this.getSnapshot = getSnapshot;
-        this.onRemoteEvent = onRemoteEvent;
-        this.onConflict = onConflict;
-        this.onStatus = onStatus ?? (() => {});
+    constructor({ getProject, getSnapshot, onRemoteEvent, onConflict, onStatus, canPublish = () => true }) {
+        Object.assign(this, { getProject, getSnapshot, onRemoteEvent, onConflict, canPublish, onStatus: onStatus ?? (() => {}) });
         this.clientId = crypto.randomUUID();
+        this.draftId = this.clientId;
+        try {
+            this.draftId = sessionStorage.getItem('jukebox:draft-tab') ?? this.clientId;
+            sessionStorage.setItem('jukebox:draft-tab', this.draftId);
+        } catch {}
         this.client = null;
         this.connected = false;
         this.activeProjectId = null;
-        this.outbox = [];
+        this.pending = null;
         this.inFlight = null;
+        this.blocked = false;
+        this.awaitingState = false;
+    }
+
+    get draftKey() { return `jukebox:collaboration-draft:${this.getProject()?.id}:${this.draftId}`; }
+
+    readDraft() {
+        try { return JSON.parse(localStorage.getItem(this.draftKey)); } catch { return null; }
+    }
+
+    keepDraft() {
+        const project = this.getProject();
+        const draft = this.pending ?? this.inFlight;
+        if (!project || !draft) return;
+        this.draft = { ...draft, baseRevision: project.version };
+        try { localStorage.setItem(this.draftKey, JSON.stringify(this.draft)); }
+        catch { this.onStatus('The local draft is in memory only. Download it before leaving this page.'); }
+    }
+
+    clearDraft() {
+        try { localStorage.removeItem(this.draftKey); } catch {}
+        this.draft = null;
     }
 
     connect(projectId) {
         this.disconnect();
-        if (!projectId || !window.StompJs?.Client) return;
-
         this.activeProjectId = projectId;
+        this.draft = this.readDraft();
+        if (this.draft) this.conflict('A local draft is available. Download it to recover your previous edits.');
+        if (!projectId || !window.StompJs?.Client) return;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const brokerURL = `${protocol}//${window.location.host}/ws`;
-
-        this.client = new window.StompJs.Client({
-            brokerURL,
+        const client = new window.StompJs.Client({
+            brokerURL: `${protocol}//${window.location.host}/ws`,
             reconnectDelay: 2000,
             heartbeatIncoming: 10000,
             heartbeatOutgoing: 10000,
             onConnect: () => {
+                if (this.client !== client) return;
                 this.connected = true;
-                this.client.subscribe('/user/queue/sync', (frame) => this.#handleFrame(frame));
-                this.client.subscribe(`/topic/projects/${projectId}`, (frame) => this.#handleFrame(frame));
+                client.subscribe('/user/queue/sync', (frame) => this.handleFrame(client, frame));
+                client.subscribe(`/topic/projects/${projectId}`, (frame) => this.handleFrame(client, frame));
                 this.requestState();
-                this.onStatus('Live collaboration connected.');
+                if (!this.blocked) this.onStatus('Live collaboration connected.');
             },
             onWebSocketClose: () => {
-                this.connected = false;
-                this.inFlight = null;
-                if (this.activeProjectId) {
-                    this.onStatus('Collaboration disconnected — reconnecting…');
-                }
+                if (this.client !== client) return;
+                this.connected = this.awaitingState = false;
+                this.keepDraft();
+                if (!this.blocked) this.onStatus('Collaboration disconnected. Pending edits are retained.');
             },
-            onStompError: (frame) => {
-                this.onStatus(`Collaboration error: ${frame.headers?.message || 'Connection rejected'}`);
+            onStompError: () => {
+                if (this.client === client) this.conflict('Collaboration rejected the connection. Check access before retrying.');
             }
         });
-
-        this.client.activate();
+        this.client = client;
+        client.activate();
     }
 
     disconnect() {
+        this.keepDraft();
+        const client = this.client;
+        this.client = null;
         this.activeProjectId = null;
-        this.connected = false;
-        this.inFlight = null;
-        this.outbox = [];
-        if (this.client) {
-            const existing = this.client;
-            this.client = null;
-            existing.deactivate();
-        }
+        this.connected = this.awaitingState = this.blocked = false;
+        this.pending = this.inFlight = null;
+        this.draft = null;
+        client?.deactivate();
     }
 
     requestState() {
-        const project = this.getProject();
-        if (!this.connected || !project) return;
-        this.client.publish({
-            destination: `/app/projects/${project.id}/sync`,
-            body: JSON.stringify({
-                clientId: this.clientId,
-                type: 'REQUEST_STATE',
-                targetId: project.id
-            })
-        });
+        if (!this.connected || this.blocked || this.awaitingState) return;
+        this.awaitingState = true;
+        this.send({ clientId: this.clientId, type: 'REQUEST_STATE' });
     }
 
-    publish(type, targetId = null, payload = null) {
+    send(message) {
+        try {
+            this.client.publish({
+                destination: `/app/projects/${this.activeProjectId}/sync`,
+                body: JSON.stringify(message)
+            });
+        } catch {
+            this.conflict('Collaboration could not send the update.');
+        }
+    }
+
+    publish(type, targetId, payload) {
         const project = this.getProject();
         if (!project || project.role === 'VIEWER') return;
-        if (!window.StompJs?.Client) return;
-
-        if (type === 'SETTINGS_SYNC' && this.outbox.at(-1)?.type === 'SETTINGS_SYNC') {
-            this.outbox.at(-1).payload = payload;
-        } else {
-            this.outbox.push({ type, targetId, payload });
-        }
-        this.#flushOutbox();
+        const data = this.getSnapshot();
+        this.pending = { type, targetId, payload, name: data.name, snapshot: JSON.stringify(data) };
+        this.keepDraft();
+        if (this.blocked) this.onConflict(this.conflictMessage, this.draft);
+        this.flush();
     }
 
-    #flushOutbox() {
-        const project = this.getProject();
-        if (!this.connected || !project || this.inFlight || !this.outbox.length) return;
-
-        const next = this.outbox.shift();
-        this.inFlight = next;
-        const snapshotObj = this.getSnapshot();
-
-        this.client.publish({
-            destination: `/app/projects/${project.id}/sync`,
-            body: JSON.stringify({
-                clientId: this.clientId,
-                type: next.type,
-                targetId: next.targetId,
-                baseRevision: project.version,
-                name: snapshotObj.name,
-                payload: next.payload,
-                snapshot: JSON.stringify(snapshotObj)
-            })
-        });
+    flush() {
+        if (!this.connected || this.awaitingState || this.blocked || this.inFlight || !this.pending || !this.canPublish()) return;
+        this.inFlight = { ...this.pending, baseRevision: this.getProject().version };
+        this.pending = null;
+        this.send({ ...this.inFlight, clientId: this.clientId });
     }
 
-    #handleFrame(frame) {
+    conflict(message) {
+        this.blocked = true;
+        this.conflictMessage = message;
+        this.awaitingState = false;
+        this.pending ??= this.inFlight;
+        this.inFlight = null;
+        this.keepDraft();
+        this.onConflict(message, this.draft);
+    }
+
+    handleFrame(client, frame) {
+        if (client !== this.client || this.blocked) return;
         let event;
-        try {
-            event = JSON.parse(frame.body);
-        } catch {
-            return;
-        }
+        try { event = JSON.parse(frame.body); } catch { return; }
         const project = this.getProject();
-        if (!project || (event.projectId && event.projectId !== project.id)) return;
-
-        if (event.type === 'ERROR') {
-            this.inFlight = null;
-            this.outbox = [];
-            this.onStatus(`Sync rejected: ${event.error}`);
+        if (!event || !project || event.projectId !== project.id) return;
+        const privateReply = ['STATE_SNAPSHOT', 'CONFLICT', 'ERROR'].includes(event.type);
+        if (!privateReply && !['NOTES_SYNC', 'TRACKS_SYNC', 'AUDIO_SYNC', 'SETTINGS_SYNC',
+            'INSTRUMENTS_SYNC', 'FULL_SYNC', 'REST_SYNC'].includes(event.type)) return;
+        if (privateReply && event.clientId !== this.clientId) return;
+        if (event.type === 'ERROR' || event.type === 'CONFLICT') {
+            this.conflict(event.type === 'CONFLICT' ? 'The server has a newer project revision.' : 'The server rejected an edit.');
             return;
         }
-
-        if (event.type === 'CONFLICT') {
-            this.inFlight = null;
-            this.outbox = [];
-            if (typeof event.revision === 'number') {
-                project.version = event.revision;
-            }
-            this.onConflict(event);
-            return;
-        }
-
+        if (!Number.isSafeInteger(event.revision) || event.revision < project.version) return;
+        if (event.type === 'REST_SYNC' && event.clientId === this.clientId) return;
         if (event.type === 'STATE_SNAPSHOT') {
-            if (this.inFlight || this.outbox.length > 0) {
-                if (!this.inFlight) {
-                    this.#flushOutbox();
-                }
+            this.awaitingState = false;
+            if (this.inFlight && event.snapshot === this.inFlight.snapshot && event.revision > project.version) {
+                this.inFlight = null;
+                project.version = event.revision;
+                if (!this.pending) this.clearDraft();
+            } else if ((this.inFlight || this.pending) && event.revision > project.version) {
+                this.conflict('The project changed while local edits were pending.');
                 return;
+            } else if (this.inFlight) {
+                this.pending ??= this.inFlight;
+                this.inFlight = null;
             }
-            if (
-                typeof event.revision === 'number' &&
-                typeof project.version === 'number' &&
-                event.revision < project.version
-            ) {
-                return;
-            }
-            if (this.onRemoteEvent(event, true) && typeof event.revision === 'number') {
+            if (!this.pending && event.revision > project.version && this.onRemoteEvent(event, true)) {
                 project.version = event.revision;
             }
+            this.flush();
             return;
         }
-        
-        if (event.clientId === this.clientId) {
-            if (typeof event.revision === 'number') {
-                project.version = event.revision;
-            }
+        if (event.clientId === this.clientId && this.inFlight && event.snapshot === this.inFlight.snapshot) {
+            project.version = event.revision;
             this.inFlight = null;
-            this.#flushOutbox();
+            if (this.pending) this.keepDraft();
+            else {
+                this.clearDraft();
+                this.onStatus(`Project saved at revision ${event.revision}.`);
+            }
+            this.flush();
+        } else if (event.revision <= project.version) {
             return;
-        }
-
-        const applied = this.onRemoteEvent(event, false);
-        if (applied !== false && typeof event.revision === 'number') {
+        } else if (this.pending || this.inFlight) {
+            this.conflict('A collaborator saved while local edits were pending.');
+        } else if (this.onRemoteEvent(event, false)) {
             project.version = event.revision;
         }
     }

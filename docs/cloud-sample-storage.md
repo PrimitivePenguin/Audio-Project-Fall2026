@@ -126,16 +126,15 @@ Project JSON assets gain an optional `url` field:
 
 **Import (`importFiles`)**
 - Hashes the file (SHA-256) to get the asset ID, decodes it, and stores it in the browser.
-- Uploads it to R2 via `uploadAssetToCloud`. A cloud failure does not block the import. It is reported as `"<file> (cloud sync): <error>"` and the sample stays usable locally.
-- If an asset exists with a buffer but no URL, re-importing the file uploads it.
+- Queues an R2 upload in the background. A cloud failure leaves the asset in the browser or in memory, as indicated by its rack status.
 
 **Save (`ensureAssetsUploaded`)**
-- Runs before every project save. Any asset without a `url` that exists in the local store is uploaded first, so saved projects always reference cloud copies where possible.
+- The database write starts without waiting for transfers. Background retries handle samples with available bytes and no valid cloud URL for the current project.
 
 **Load (`restoreAssets`)**
-1. Read from the local store.
-2. If missing and the asset has a `url`, download it, check the SHA-256 against the asset ID, cache it locally, then decode.
-3. If the download fails or the hash doesn't match, the asset is flagged `fetchFailed` and is not retried automatically. The rack offers relinking as before.
+1. Try the local store.
+2. After a miss or storage error, download from the available URL, check SHA-256, try caching it, then decode.
+3. After a failed transfer, retry from the rack or relink the exact original bytes. The next online event can also trigger a retry.
 
 **Rack status labels**
 
@@ -166,3 +165,22 @@ Project JSON assets gain an optional `url` field:
 - The server does not verify that uploaded bytes match the claimed SHA-256 or content type. Verification happens client-side on download.
 - Objects are never deleted from R2 when a sample is removed from a project.
 - Samples are stored per project, so the same file used in two projects is uploaded twice.
+
+### Saving and retrying transfers
+
+Save Project writes the current composition and available URLs to PostgreSQL first. It
+reports how many assets have a cloud URL for this project, are browser-only, are
+memory-only, or are missing. Uploads run in the background with a 12-second deadline
+per sample transfer. A later accepted collaboration update publishes the uploaded
+URL. If live collaboration is unavailable, save explicitly again after upload.
+
+Use **Retry sample transfers** to retry failed downloads and uploads and to check a
+stored cloud copy for staleness. The browser also retries when it comes back online.
+A sample shared into a different project is uploaded under that project's key.
+Downloads are hash-checked even when IndexedDB is unavailable. If both the database
+request and WebSocket are unreachable, a server save requires reconnecting.
+
+Cloud object reads still use public URLs. Project roles protect presigning and
+project metadata, and do not make an already-distributed object URL private.
+Rack deletion does not clean up R2 objects. Presigning validates the claimed hash
+and media type, while the original byte integrity check takes place on download.

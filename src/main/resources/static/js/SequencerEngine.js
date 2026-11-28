@@ -45,7 +45,7 @@ class SequencerEngine {
     #mix = new Map();       // trackId -> { volume, pan }
     #automation = new Map(); // channelId -> Map(paramKey -> [{ tick, value }])
     #laneBuses = new Map(); // lane trackId (MIDI or audio) -> strip
-    #impulse = null;        // reverb impulse shared by every channel's convolver
+
 
     constructor() {
         // Audio graph
@@ -979,17 +979,17 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         );
         const visibleTime = fromTick === null ? time : this.playbackAnchorTime;
         this.stepEvents.push({step: stepIndex, time: visibleTime});
-        try {
-            this.#scheduleAutomation(stepIndex, time, fromTick);
-        } catch (error) {
-            this.#reportAudioError(error, {phase: 'automation', fatal: false});
-        }
         this.#schedulePitchedNotes(stepIndex, time, fromTick);
         if (runId !== this.runId) {
             return;
         }
         this.#scheduleAudioClips(stepIndex, time, fromTick);
         if (runId !== this.runId) return;
+        try {
+            this.#scheduleAutomation(stepIndex, time, fromTick);
+        } catch (error) {
+            this.#reportAudioError(error, {phase: 'automation', fatal: false});
+        }
         this.#notifyStepTick(stepIndex, visibleTime);
         if (fromTick === null || fromTick <= this.sequence.stepToTick(stepIndex)) {
             this.#scheduleSampleTracks(stepIndex, time);
@@ -1199,7 +1199,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
     }
 
     #delaySeconds(beats) {
-        return Math.min(MAX_DELAY_SEC, (beats * 60) / this.bpm);
+        return SequencerEngine.delaySeconds(beats, this.bpm);
     }
 
 // The one place a stored mix value becomes an audio-node change.
@@ -1219,7 +1219,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
                 break;
             case 'delaySend':
                 if (strip.delay || value > 0) {
-                    this.#smooth(this.#ensureDelay(strip, mix).send.gain, value);
+                    this.#smooth(SequencerEngine.ensureDelay(strip, mix).send.gain, value);
                 }
                 break;
             case 'delayBeats':
@@ -1234,7 +1234,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
                 break;
             case 'reverbSend':
                 if (strip.reverb || value > 0) {
-                    this.#smooth(this.#ensureReverb(strip, mix).send.gain, value);
+                    this.#smooth(SequencerEngine.ensureReverb(strip, mix).send.gain, value);
                 }
                 break;
         }
@@ -1336,7 +1336,13 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         };
     }
 
-    restoreMix(state) {
+    restoreMix(state, replace = false) {
+        if (replace) {
+            this.#mix.clear();
+            for (const track of this.arrangement.orderedTracks(this.sequence.tracks)) {
+                this.applyChannelMix(track.id, this.getChannelMix(track.id));
+            }
+        }
         if (!Array.isArray(state?.tracks)) {
             return;
         }
@@ -1347,7 +1353,14 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
 
 // gain -> filter -> pan -> master, plus optional per-channel delay and reverb taps off pan.
     #buildStrip(mix, out = this.masterGain) {
-        const ctx = this.audioContext;
+        return SequencerEngine.buildStrip(this.audioContext, mix, out, this.bpm);
+    }
+
+    static delaySeconds(beats, bpm) {
+        return Math.min(MAX_DELAY_SEC, beats * 60 / bpm);
+    }
+
+    static buildStrip(ctx, mix, out, bpm) {
         const gain = ctx.createGain();
         const filter = ctx.createBiquadFilter();
         const pan = ctx.createStereoPanner();
@@ -1360,16 +1373,16 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         gain.connect(filter);
         filter.connect(pan);
         pan.connect(out);
-        const strip = { gain, filter, pan, out, delay: null, reverb: null };
-        if (mix.delaySend > 0) this.#ensureDelay(strip, mix);
-        if (mix.reverbSend > 0) this.#ensureReverb(strip, mix);
+        const strip = { ctx, bpm, gain, filter, pan, out, delay: null, reverb: null };
+        if (mix.delaySend > 0) SequencerEngine.ensureDelay(strip, mix);
+        if (mix.reverbSend > 0) SequencerEngine.ensureReverb(strip, mix);
         return strip;
     }
 
 // Effects are created the first time their send goes above zero.
-    #ensureDelay(strip, mix) {
+    static ensureDelay(strip, mix) {
         if (!strip.delay) {
-            const ctx = this.audioContext;
+            const { ctx } = strip;
             const send = ctx.createGain();
             const delay = ctx.createDelay(MAX_DELAY_SEC);
             const damp = ctx.createBiquadFilter();
@@ -1377,7 +1390,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
             damp.type = 'lowpass';
             damp.frequency.value = DELAY_DAMP_HZ;
             send.gain.value = mix.delaySend;
-            delay.delayTime.value = this.#delaySeconds(mix.delayBeats);
+            delay.delayTime.value = this.delaySeconds(mix.delayBeats, strip.bpm);
             feedback.gain.value = mix.delayFeedback;
             strip.pan.connect(send);
             send.connect(delay);
@@ -1390,13 +1403,13 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         return strip.delay;
     }
 
-    #ensureReverb(strip, mix) {
+    static ensureReverb(strip, mix) {
         if (!strip.reverb) {
-            const ctx = this.audioContext;
+            const { ctx } = strip;
             const send = ctx.createGain();
             const convolver = ctx.createConvolver();
-            this.#impulse ??= this.#makeImpulse(REVERB_SECONDS);
-            convolver.buffer = this.#impulse;
+            if (!this.#impulses.has(ctx)) this.#impulses.set(ctx, this.#makeImpulse(ctx));
+            convolver.buffer = this.#impulses.get(ctx);
             send.gain.value = mix.reverbSend;
             strip.pan.connect(send);
             send.connect(convolver);
@@ -1407,14 +1420,17 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
     }
 
 // Decaying stereo noise: a cheap, file-free reverb impulse.
-    #makeImpulse(seconds) {
-        const ctx = this.audioContext;
-        const length = Math.floor(ctx.sampleRate * seconds);
+    static #impulses = new WeakMap();
+
+    static #makeImpulse(ctx) {
+        const length = Math.floor(ctx.sampleRate * REVERB_SECONDS);
+        let seed = 1;
         const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
         for (let channel = 0; channel < 2; channel++) {
             const data = impulse.getChannelData(channel);
             for (let i = 0; i < length; i++) {
-                data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** 3;
+                seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+                data[i] = (seed / 2147483648 - 1) * (1 - i / length) ** 3;
             }
         }
         return impulse;
@@ -1451,7 +1467,8 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         }
         const strips = [...this.tracks].map(([id, track]) => [id, track.strip]).concat([...this.#laneBuses]);
         for (const [id, strip] of strips) {
-            if (strip?.delay) {
+            strip.bpm = this.bpm;
+            if (strip.delay) {
                 this.#smooth(strip.delay.delay.delayTime, this.#delaySeconds(this.getChannelMix(id).delayBeats));
             }
         }
@@ -1523,7 +1540,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
 // Value of a lane at a tick, or null if the parameter has no lane.
     automationValueAt(id, key, tick) {
         const points = this.#automation.get(id)?.get(key);
-        return points ? this.#interpolate(points, tick, LOG_PARAMS.has(key)) : null;
+        return points ? SequencerEngine.interpolateAutomation(points, tick, LOG_PARAMS.has(key)) : null;
     }
 
     snapshotAutomation() {
@@ -1547,7 +1564,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
         }
     }
 
-    #interpolate(points, tick, log) {
+    static interpolateAutomation(points, tick, log) {
         const first = points[0];
         const last = points[points.length - 1];
         if (tick <= first.tick) return first.value;
@@ -1570,7 +1587,7 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
     }
 
 // The AudioParam behind a mix key, creating delay/reverb nodes if the lane needs them.
-    #audioParam(strip, mix, key) {
+    static automationParam(strip, mix, key) {
         switch (key) {
             case 'volume':
                 return strip.gain.gain;
@@ -1581,51 +1598,75 @@ addTrack(trackId, audioBuffer, { previewOnly = false } = {}) {
             case 'resonance':
                 return strip.filter.Q;
             case 'delaySend':
-                return this.#ensureDelay(strip, mix).send.gain;
+                return SequencerEngine.ensureDelay(strip, mix).send.gain;
             case 'delayFeedback':
-                return this.#ensureDelay(strip, mix).feedback.gain;
+                return SequencerEngine.ensureDelay(strip, mix).feedback.gain;
             case 'reverbSend':
-                return this.#ensureReverb(strip, mix).send.gain;
+                return SequencerEngine.ensureReverb(strip, mix).send.gain;
             default:
                 return null;
         }
     }
 
-// Called for every scheduled step: one set + one ramp per automated parameter.
-    #scheduleAutomation(stepIndex, time, fromTick) {
-        if (!this.#automation.size) {
-            return;
+    // A slope in tick space changes its slope in seconds at tempo boundaries.
+    static scheduleAutomationCurve(strip, mix, key, points, from, to, timeMap, offset = 0) {
+        const param = this.automationParam(strip, mix, key);
+        if (!param) return;
+        const logarithmic = LOG_PARAMS.has(key);
+        const time = (tick) => Math.max(0, offset + timeMap.secondsAt(tick));
+        let previous = this.interpolateAutomation(points, from, logarithmic);
+        param.setValueAtTime(previous, time(from));
+        const boundaries = new Set([to]);
+        let lo = 0;
+        let hi = points.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (points[mid].tick <= from) lo = mid + 1;
+            else hi = mid;
         }
+        for (let i = lo; i < points.length && points[i].tick < to; i++) boundaries.add(points[i].tick);
+        for (let i = timeMap.upperBound(from, 'ticks'); i < timeMap.points.length && timeMap.points[i].ticks < to; i++) {
+            boundaries.add(timeMap.points[i].ticks);
+        }
+        for (const tick of [...boundaries].sort((a, b) => a - b)) {
+            const value = this.interpolateAutomation(points, tick, logarithmic);
+            if (value === previous) param.setValueAtTime(value, time(tick));
+            else if (logarithmic) param.exponentialRampToValueAtTime(value, time(tick));
+            else param.linearRampToValueAtTime(value, time(tick));
+            previous = value;
+        }
+    }
+
+    static scheduleDelayTempo(strip, beats, from, to, map, offset = 0) {
+        if (!strip.delay) return;
+        const param = strip.delay.delay.delayTime;
+        param.setValueAtTime(this.delaySeconds(beats, map.tempoAt(from)), Math.max(0, offset + map.secondsAt(from)));
+        for (let i = map.upperBound(from, 'ticks'); i < map.points.length && map.points[i].ticks < to; i++) {
+            const { ticks, bpm } = map.points[i];
+            param.setValueAtTime(this.delaySeconds(beats, bpm), Math.max(0, offset + map.secondsAt(ticks)));
+        }
+    }
+
+    #scheduleAutomation(stepIndex, time, fromTick) {
         const sequence = this.sequence;
-        const stepStart = sequence.stepToTick(stepIndex);
-        // A partial first step (resume/seek) starts at the chosen tick, not the step boundary.
-        const tick0 = fromTick === null ? stepStart : Math.max(stepStart, fromTick);
-        const tick1 = sequence.stepToTick(stepIndex + 1);
-        const stepOffset = this.stepSeconds(stepIndex);
-const t0 = time + (sequence.ticksToSeconds(tick0) - sequence.ticksToSeconds(stepStart));
-const t1 = time + (sequence.ticksToSeconds(tick1) - sequence.ticksToSeconds(stepStart));
+        const tempoChanges = sequence.tempos.length > 1;
+        if (!this.#automation.size && !tempoChanges) return;
+        const start = sequence.stepToTick(stepIndex);
+        const from = fromTick === null ? start : Math.max(start, fromTick);
+        const to = sequence.stepToTick(stepIndex + 1);
+        const map = AudioArrangement.timeMap(sequence);
+        const offset = time - map.secondsAt(start);
         for (const [id, lanes] of this.#automation) {
             const strip = this.#stripFor(id);
-            if (!strip) {
-                continue;
-            }
+            if (!strip) continue;
             const mix = this.#mixFor(id);
             for (const [key, points] of lanes) {
-                const param = this.#audioParam(strip, mix, key);
-                if (!param) {
-                    continue;
-                }
-                const log = LOG_PARAMS.has(key);
-                const v0 = this.#interpolate(points, tick0, log);
-                const v1 = this.#interpolate(points, tick1, log);
-                param.setValueAtTime(v0, t0);
-                if (v1 !== v0 && t1 > t0) {
-                    if (log) {
-                        param.exponentialRampToValueAtTime(v1, t1);
-                    } else {
-                        param.linearRampToValueAtTime(v1, t1);
-                    }
-                }
+                SequencerEngine.scheduleAutomationCurve(strip, mix, key, points, from, to, map, offset);
+            }
+        }
+        if (tempoChanges) {
+            for (const [id, strip] of this.#laneBuses) {
+                if (strip.delay) SequencerEngine.scheduleDelayTempo(strip, this.getChannelMix(id).delayBeats, from, to, map, offset);
             }
         }
     }

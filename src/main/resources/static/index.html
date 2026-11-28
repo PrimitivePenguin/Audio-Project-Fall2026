@@ -149,6 +149,7 @@
                     <button id="addAudioTrack" type="button">Add Audio Track</button>
                 </div>
                 <input id="relinkAudioFile" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" hidden>
+                <button id="retrySampleTransfers" type="button">Retry sample transfers</button>
                 <p id="rackStatus" class="hint" role="status">Drag a loaded sample onto an audio lane. Audio is stored in this browser when local storage is available.</p>
                 <ul id="rackAssets" class="rack-assets"></ul>
                 <div class="control-group wrap-controls">
@@ -165,6 +166,9 @@
             </div>
         </details>
     <footer class="statusbar">
+        <button id="downloadCollabDraft" type="button" hidden>Download local draft</button>
+        <button id="reviewCollabDraft" type="button" hidden>Review local draft</button>
+        <button id="discardCollabDraft" type="button" hidden>Discard draft and reload</button>
         <p id="status" role="status">Ready. Click or drag the ruler to set the precise paste and playback-start cursor.</p>
         <p id="compositionInfo">0 notes · 1 musical track</p>
         <span class="cursor-legend"><i></i> Edit cursor <i class="playback-key"></i> Playback</span>
